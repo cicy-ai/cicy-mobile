@@ -1,6 +1,7 @@
 import { File } from 'expo-file-system';
 
 import { useAuthStore } from '@/src/store/auth';
+import { getDeviceLocale, normalizeChineseVariant } from '@/src/lib/locale';
 
 type STTResult = { text: string };
 
@@ -35,7 +36,8 @@ export async function transcribeAudio(fileUri: string, opts?: { language?: strin
     name: 'audio.m4a',
     type: 'audio/m4a',
   } as any);
-  if (opts?.language) form.append('language', opts.language);
+  const language = opts?.language || getDeviceLocale().whisperLang;
+  if (language) form.append('language', language);
 
   const url = `${serverUrl}/api/stt`;
   console.log('[stt] upload', { url, bytes, uri: fileUri });
@@ -63,5 +65,5 @@ export async function transcribeAudio(fileUri: string, opts?: { language?: strin
   }
   const json = (await res.json()) as STTResult;
   if (!json?.text) throw new Error('empty transcript');
-  return json;
+  return { text: normalizeChineseVariant(json.text) };
 }

@@ -1,3 +1,4 @@
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, View } from 'react-native';
 
@@ -64,30 +65,44 @@ export function HistoryView({ agentId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<FlatList<HistoryTurn>>(null);
 
-  // Initial: latest PAGE_SIZE turns. API returns oldest→newest, we reverse.
-  // We strip any "active" status (streaming/pending/tool_use/thinking) on
-  // load — the snapshot may have been saved mid-reply on the last session,
-  // and we don't want the typing dots to be on permanently. WS events will
-  // re-arm streaming if the reply is genuinely still in flight.
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const data = await api.getHistoryView(agentId, { limit: PAGE_SIZE, offset: 0 });
-        if (!alive) return;
-        const items = (data.data ?? []).slice().reverse().map(deactivate);
-        setTurns(items);
-        setExhausted(items.length < PAGE_SIZE);
-      } catch (e: any) {
-        if (alive) setError(String(e?.message ?? e));
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [agentId]);
+  // Re-fetch on every screen focus, not just on agentId change. The backend's
+  // /api/agents/history-view/ already merges current.json + reply.json into the
+  // returned turns (the "complete approach" — see agentInspectorBuildSnapshotHistory
+  // in api/mgr/agent_inspector.go), so a fresh fetch on each open guarantees the
+  // in-flight turn is visible even after backgrounding the app or coming back
+  // from another screen. WS pushes only update state going forward; they do not
+  // replay the current snapshot, so without this re-fetch the user can land on
+  // a stale view.
+  //
+  // We strip any "active" status (streaming/pending/tool_use/thinking) on load —
+  // a frozen-mid-reply snapshot would otherwise keep the typing dots on forever.
+  // WS events will re-arm streaming if the reply is genuinely still in flight.
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
+      setLoading(true);
+      (async () => {
+        try {
+          const data = await api.getHistoryView(agentId, { limit: PAGE_SIZE, offset: 0 });
+          if (!alive) return;
+          const items = (data.data ?? []).slice().reverse().map(deactivate);
+          setTurns(items);
+          setExhausted(items.length < PAGE_SIZE);
+          setError(null);
+          // Reset the WS dedupe ring so a stale signature from before the
+          // re-fetch doesn't suppress the first legitimate event after focus.
+          lastEventKeyRef.current = '';
+        } catch (e: any) {
+          if (alive) setError(String(e?.message ?? e));
+        } finally {
+          if (alive) setLoading(false);
+        }
+      })();
+      return () => {
+        alive = false;
+      };
+    }, [agentId]),
+  );
 
   // Pull-to-refresh = "load older". In inverted mode the visual top is where
   // the oldest item lives, so this aligns with the user's mental model. New
@@ -399,6 +414,24 @@ function handleWsMessage(
         };
         return next;
       }
+      // The history-view snapshot does not include history_id on its turns —
+      // so the first current_updated for a snapshot turn won't match by id and
+      // would otherwise duplicate the q as a fresh shell. Bind the real
+      // history_id to the most recent snapshot turn whose question matches.
+      if (question && prev.length > 0) {
+        const top = prev[0];
+        if (Number(top.history_id ?? 0) === 0 && String(top.q ?? '').trim() === question) {
+          const next = prev.slice();
+          next[0] = {
+            ...top,
+            history_id: historyId,
+            conversation_id: data.conversation_id ?? top.conversation_id,
+            turn_id: data.turn_id ?? top.turn_id,
+            status,
+          };
+          return next;
+        }
+      }
       // NEW turn shell — prepend (newest-first because the FlatList is inverted).
       const shell: HistoryTurn = {
         q: question,
@@ -418,9 +451,29 @@ function handleWsMessage(
     const delta = String(data?.delta ?? '');
     if (!delta) return;
     setTurns((prev) => {
-      const idx = prev.findIndex((t) => Number(t.history_id ?? 0) === historyId);
+      let idx = prev.findIndex((t) => Number(t.history_id ?? 0) === historyId);
       if (idx < 0) {
-        // No shell yet — create one so the first chunk still renders.
+        // Same snapshot-no-history_id problem as in current_updated: if the
+        // top turn is the un-bound snapshot turn (no history_id, no answer
+        // yet), bind this history_id to it instead of stacking a new shell.
+        if (prev.length > 0) {
+          const top = prev[0];
+          if (Number(top.history_id ?? 0) === 0 && !String(top.a ?? '').trim()) {
+            const next = prev.slice();
+            next[0] = {
+              ...top,
+              history_id: historyId,
+              conversation_id: data.conversation_id ?? top.conversation_id,
+              turn_id: data.turn_id ?? top.turn_id,
+            };
+            idx = 0;
+            // Fall through to the delta-append logic below.
+            prev = next;
+          }
+        }
+      }
+      if (idx < 0) {
+        // Truly no candidate — create a shell so the first chunk still renders.
         const shell: HistoryTurn = {
           q: '',
           a: delta,

@@ -194,7 +194,6 @@ export default function Chat() {
                 onTranscript={(t) => submit(t)}
                 onError={(m) => setVoiceError(m)}
                 disabled={sending}
-                language="zh"
               />
             ) : (
               <View

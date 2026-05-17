@@ -48,7 +48,8 @@
         {
           "microphonePermission": "Allow $(PRODUCT_NAME) to use the microphone to send voice messages to your agent."
         }
-      ]
+      ],
+      "expo-localization"
     ],
     "experiments": {
       "typedRoutes": false,
