@@ -44,39 +44,40 @@ type Props = {
 
 const PAGE_SIZE = 3;
 
-// Mobile history view — minimal logic:
-//   1. On mount, fetch the latest 3 turns
-//   2. Pull-to-refresh fetches 3 OLDER turns (prepended) until exhausted
-//   3. Everything after that is in-memory state, updated by chat-ws pushes
+// Mobile history view — two-block model:
 //
-// We never re-fetch the full snapshot mid-session; once a turn is in state it
-// only mutates from ai_chunk / status_change / current_updated events.
+//   ┌─ historyTurns ────────────────────────┐  q's with history_id, fetched
+//   │   committed past turns (visual top)   │  from /api/agents/history-view/
+//   │   • have history_id from the db        │  (i.e., backed by history.db)
+//   │   • pull-to-refresh loads older        │
+//   └────────────────────────────────────────┘
+//   ┌─ liveTurns ───────────────────────────┐  q's pushed from WS in-memory
+//   │   active/in-flight (visual bottom)     │  (current.json + reply.json),
+//   │   • may have no history_id             │  identified by q text, never
+//   │   • appended/updated by WS only        │  matched against historyTurns
+//   └────────────────────────────────────────┘
+//
+// On exit/reopen, the live block clears and we re-fetch 3 history items +
+// the in-flight snapshot. The two blocks are NEVER reconciled against each
+// other — that's exactly why we used to see duplicate q's (the snapshot's
+// merged in-flight turn collided with WS-created shells).
 export function HistoryView({ agentId }: Props) {
   const theme = useTheme();
   const { serverUrl, token, clientId } = useAuthStore();
 
-  // We hold turns in **newest-first** order to play nicely with `inverted`
-  // FlatList semantics (data[0] renders at the visual bottom, which is where
-  // we want the latest turn).
-  const [turns, setTurns] = useState<HistoryTurn[]>([]);
+  // Both arrays stored newest-first so the inverted FlatList renders the
+  // latest live turn at the visual bottom and older history at the visual top.
+  const [historyTurns, setHistoryTurns] = useState<HistoryTurn[]>([]);
+  const [liveTurns, setLiveTurns] = useState<HistoryTurn[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [exhausted, setExhausted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<FlatList<HistoryTurn>>(null);
 
-  // Re-fetch on every screen focus, not just on agentId change. The backend's
-  // /api/agents/history-view/ already merges current.json + reply.json into the
-  // returned turns (the "complete approach" — see agentInspectorBuildSnapshotHistory
-  // in api/mgr/agent_inspector.go), so a fresh fetch on each open guarantees the
-  // in-flight turn is visible even after backgrounding the app or coming back
-  // from another screen. WS pushes only update state going forward; they do not
-  // replay the current snapshot, so without this re-fetch the user can land on
-  // a stale view.
-  //
-  // We strip any "active" status (streaming/pending/tool_use/thinking) on load —
-  // a frozen-mid-reply snapshot would otherwise keep the typing dots on forever.
-  // WS events will re-arm streaming if the reply is genuinely still in flight.
+  // Re-fetch on every screen focus, not just on agentId change. The live
+  // block clears each time — anything still in flight will re-arrive through
+  // either the snapshot split or fresh WS events.
   useFocusEffect(
     useCallback(() => {
       let alive = true;
@@ -85,12 +86,25 @@ export function HistoryView({ agentId }: Props) {
         try {
           const data = await api.getHistoryView(agentId, { limit: PAGE_SIZE, offset: 0 });
           if (!alive) return;
-          const items = (data.data ?? []).slice().reverse().map(deactivate);
-          setTurns(items);
+          // API returns oldest→newest; we want newest-first.
+          const items = (data.data ?? []).slice().reverse();
+          // Split: any turn still in an active status is "live" (in-flight,
+          // straight from current.json + reply.json on the backend); the rest
+          // are committed history. A frozen-mid-reply snapshot turn keeps its
+          // active status here so we can route subsequent WS events to it.
+          const liveItems: HistoryTurn[] = [];
+          const committedItems: HistoryTurn[] = [];
+          for (const t of items) {
+            if (ACTIVE_STATUSES.has((t.status ?? '').toLowerCase())) {
+              liveItems.push(t);
+            } else {
+              committedItems.push(deactivate(t));
+            }
+          }
+          setHistoryTurns(committedItems);
+          setLiveTurns(liveItems);
           setExhausted(items.length < PAGE_SIZE);
           setError(null);
-          // Reset the WS dedupe ring so a stale signature from before the
-          // re-fetch doesn't suppress the first legitimate event after focus.
           lastEventKeyRef.current = '';
         } catch (e: any) {
           if (alive) setError(String(e?.message ?? e));
@@ -104,19 +118,21 @@ export function HistoryView({ agentId }: Props) {
     }, [agentId]),
   );
 
-  // Pull-to-refresh = "load older". In inverted mode the visual top is where
-  // the oldest item lives, so this aligns with the user's mental model. New
-  // older items go to the END of our newest-first array.
+  // Pull-to-refresh = "load older committed history". Only touches the
+  // historyTurns array; liveTurns is independent.
   const loadOlder = useCallback(async () => {
     if (refreshing || exhausted) return;
     setRefreshing(true);
     try {
-      const data = await api.getHistoryView(agentId, { limit: PAGE_SIZE, offset: turns.length });
+      const data = await api.getHistoryView(agentId, {
+        limit: PAGE_SIZE,
+        offset: historyTurns.length + liveTurns.length,
+      });
       const older = (data.data ?? []).slice().reverse().map(deactivate);
       if (older.length === 0) {
         setExhausted(true);
       } else {
-        setTurns((prev) => [...prev, ...older]);
+        setHistoryTurns((prev) => [...prev, ...older]);
         if (older.length < PAGE_SIZE) setExhausted(true);
       }
     } catch {
@@ -124,26 +140,30 @@ export function HistoryView({ agentId }: Props) {
     } finally {
       setRefreshing(false);
     }
-  }, [agentId, refreshing, exhausted, turns.length]);
+  }, [agentId, refreshing, exhausted, historyTurns.length, liveTurns.length]);
 
-  // WS pushes — everything stays in memory after the initial fetch.
+  // WS pushes — only ever mutate liveTurns; historyTurns is a read-only window
+  // from the server until the next re-fetch.
   const client = useMemo(() => {
     if (!serverUrl || !token || !agentId) return null;
     return new ChatWsClient({ serverUrl, token, clientId, agentId });
   }, [serverUrl, token, clientId, agentId]);
 
-  // Track the last event signature to deduplicate replays on WS reconnect.
   const lastEventKeyRef = useRef<string>('');
 
   useEffect(() => {
     if (!client) return;
-    const off = client.on((msg) => handleWsMessage(msg, agentId, setTurns, lastEventKeyRef));
+    const off = client.on((msg) => handleWsMessage(msg, agentId, setLiveTurns, lastEventKeyRef));
     client.connect();
     return () => {
       off();
       client.close();
     };
   }, [client, agentId]);
+
+  // Combined render data: live above (= data[0..], renders at visual bottom),
+  // then history. Inverted FlatList means data[0] = visual bottom.
+  const data = useMemo(() => [...liveTurns, ...historyTurns], [liveTurns, historyTurns]);
 
   if (loading) {
     return (
@@ -165,7 +185,7 @@ export function HistoryView({ agentId }: Props) {
   return (
     <FlatList
       ref={listRef}
-      data={turns}
+      data={data}
       inverted
       keyExtractor={(t, i) => `${t.history_id ?? t.turn_id ?? t.ts ?? 'n'}#${i}`}
       contentContainerStyle={styles.list}
@@ -181,7 +201,7 @@ export function HistoryView({ agentId }: Props) {
       ListFooterComponent={
         // In inverted mode the footer renders at the visual TOP. Use it to
         // surface the loading / exhausted state for earlier turns.
-        turns.length === 0 ? null : refreshing ? (
+        data.length === 0 ? null : refreshing ? (
           <View style={styles.loadMoreRow}>
             <ActivityIndicator size="small" color={theme.textMuted} />
           </View>
@@ -359,16 +379,19 @@ function splitFencedCode(input: string): Segment[] {
   return out;
 }
 
-// Pure in-memory WS handling — never re-fetches the snapshot. State is held
-// newest-first (prev[0] = latest turn) because the FlatList is `inverted`.
+// WS handler — only ever mutates the LIVE block. Live turns are identified
+// by q text (stable per logical turn), not history_id (which changes between
+// audit sessions inside one logical turn — tool_use → tool_result → next
+// call each gets its own MaxHistoryID). Events with no q text (ai_chunk,
+// status_change) target the latest live turn (live[0]).
 //
-// Matching by `history_id` (not array position) keeps streaming chunks landing
-// on the correct turn even if a `current_updated` for a NEW turn races ahead.
-// Mirrors desktop CurrentHistoryView.tsx semantics.
+// "有什么推什么" — whatever the WS pushes, we display it. We never collide
+// with the committed history block: history is read-only from the server
+// until the next re-fetch.
 function handleWsMessage(
   msg: WsServerMessage,
   agentId: string,
-  setTurns: React.Dispatch<React.SetStateAction<HistoryTurn[]>>,
+  setLive: React.Dispatch<React.SetStateAction<HistoryTurn[]>>,
   lastEventKeyRef: React.MutableRefObject<string>,
 ) {
   const type = String(msg?.type ?? '').trim();
@@ -385,60 +408,43 @@ function handleWsMessage(
     thinking?: string;
     updated_at?: string;
   };
-  // Ignore cross-talk from other agents on the same socket.
   const evtAgent = String(data?.agent_id ?? '').trim();
   if (evtAgent && evtAgent !== agentId) return;
-  // Without a real history_id we can't anchor the update to a turn.
-  const historyId = Number(data?.history_id ?? 0);
-  if (historyId <= 0) return;
 
   const sig = eventKey(type, data);
   if (sig && sig === lastEventKeyRef.current) return;
   lastEventKeyRef.current = sig;
 
+  const historyId = Number(data?.history_id ?? 0);
+
   if (type === 'current_updated') {
     const question = String(data?.question ?? '').trim();
     const status = String(data?.status ?? 'thinking').trim() || 'thinking';
-    setTurns((prev) => {
-      const idx = prev.findIndex((t) => Number(t.history_id ?? 0) === historyId);
-      if (idx >= 0) {
-        // EXISTING turn: only refresh question / status / conv_id. Never
-        // overwrite the accumulated answer/steps — those grow from ai_chunk.
-        const next = prev.slice();
-        next[idx] = {
-          ...prev[idx],
-          q: question || prev[idx].q,
-          conversation_id: data.conversation_id ?? prev[idx].conversation_id,
-          turn_id: data.turn_id ?? prev[idx].turn_id,
-          status,
-        };
-        return next;
-      }
-      // The history-view snapshot does not include history_id on its turns —
-      // so the first current_updated for a snapshot turn won't match by id and
-      // would otherwise duplicate the q as a fresh shell. Bind the real
-      // history_id to the most recent snapshot turn whose question matches.
-      if (question && prev.length > 0) {
-        const top = prev[0];
-        if (Number(top.history_id ?? 0) === 0 && String(top.q ?? '').trim() === question) {
+    setLive((prev) => {
+      // Match by q text within the live block — that's the only stable key
+      // across audit-session boundaries inside one logical turn.
+      if (question) {
+        const idx = prev.findIndex((t) => String(t.q ?? '').trim() === question);
+        if (idx >= 0) {
           const next = prev.slice();
-          next[0] = {
-            ...top,
-            history_id: historyId,
-            conversation_id: data.conversation_id ?? top.conversation_id,
-            turn_id: data.turn_id ?? top.turn_id,
+          next[idx] = {
+            ...prev[idx],
+            q: question,
+            history_id: historyId || prev[idx].history_id,
+            conversation_id: data.conversation_id ?? prev[idx].conversation_id,
+            turn_id: data.turn_id ?? prev[idx].turn_id,
             status,
           };
           return next;
         }
       }
-      // NEW turn shell — prepend (newest-first because the FlatList is inverted).
+      // New live turn — prepend (newest-first).
       const shell: HistoryTurn = {
         q: question,
         a: '',
         steps: [],
         status,
-        history_id: historyId,
+        history_id: historyId || undefined,
         conversation_id: data.conversation_id,
         turn_id: data.turn_id,
       };
@@ -450,42 +456,22 @@ function handleWsMessage(
   if (type === 'ai_chunk') {
     const delta = String(data?.delta ?? '');
     if (!delta) return;
-    setTurns((prev) => {
-      let idx = prev.findIndex((t) => Number(t.history_id ?? 0) === historyId);
-      if (idx < 0) {
-        // Same snapshot-no-history_id problem as in current_updated: if the
-        // top turn is the un-bound snapshot turn (no history_id, no answer
-        // yet), bind this history_id to it instead of stacking a new shell.
-        if (prev.length > 0) {
-          const top = prev[0];
-          if (Number(top.history_id ?? 0) === 0 && !String(top.a ?? '').trim()) {
-            const next = prev.slice();
-            next[0] = {
-              ...top,
-              history_id: historyId,
-              conversation_id: data.conversation_id ?? top.conversation_id,
-              turn_id: data.turn_id ?? top.turn_id,
-            };
-            idx = 0;
-            // Fall through to the delta-append logic below.
-            prev = next;
-          }
-        }
-      }
-      if (idx < 0) {
-        // Truly no candidate — create a shell so the first chunk still renders.
-        const shell: HistoryTurn = {
+    setLive((prev) => {
+      if (prev.length === 0) {
+        // No live turn yet — create one with empty q. current_updated will
+        // fill the q in when it arrives.
+        return [{
           q: '',
           a: delta,
           steps: [{ type: 'text', text: delta }],
           status: 'streaming',
-          history_id: historyId,
+          history_id: historyId || undefined,
           conversation_id: data.conversation_id,
           turn_id: data.turn_id,
-        };
-        return [shell, ...prev];
+        }];
       }
-      const current = prev[idx];
+      // Append to the latest live turn — that's always the in-flight one.
+      const current = prev[0];
       const steps = (current.steps ?? []).slice();
       const textIdx = steps.findIndex((s) => s.type === 'text');
       if (textIdx >= 0) {
@@ -495,11 +481,12 @@ function handleWsMessage(
         steps.push({ type: 'text', text: delta });
       }
       const next = prev.slice();
-      next[idx] = {
+      next[0] = {
         ...current,
         a: (current.a ?? '') + delta,
         steps,
         status: 'streaming',
+        history_id: historyId || current.history_id,
       };
       return next;
     });
@@ -510,10 +497,9 @@ function handleWsMessage(
     const status = String(data?.status ?? '').trim();
     if (!status) return;
     const thinking = String(data?.thinking ?? '');
-    setTurns((prev) => {
-      const idx = prev.findIndex((t) => Number(t.history_id ?? 0) === historyId);
-      if (idx < 0) return prev;
-      const current = prev[idx];
+    setLive((prev) => {
+      if (prev.length === 0) return prev;
+      const current = prev[0];
       const steps = (current.steps ?? []).slice();
       if (thinking) {
         const thinkIdx = steps.findIndex((s) => s.type === 'thinking');
@@ -524,7 +510,7 @@ function handleWsMessage(
         }
       }
       const next = prev.slice();
-      next[idx] = { ...current, status, steps };
+      next[0] = { ...current, status, steps };
       return next;
     });
   }
