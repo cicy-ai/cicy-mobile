@@ -22,6 +22,8 @@ rsync -az --delete \
   --exclude='.expo' \
   --exclude='ios/Pods' \
   --exclude='ios/build' \
+  --exclude='ios/*.xcworkspace' \
+  --exclude='ios/Podfile.lock' \
   --exclude='android/build' \
   --exclude='android/.gradle' \
   --exclude='*.log' \
