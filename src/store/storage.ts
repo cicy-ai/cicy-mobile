@@ -34,10 +34,18 @@ function makeNativeStorage(): Storage {
   // Require synchronously — on native this resolves to the real module; on web
   // we never enter this branch so Metro never asks for it.
   const SecureStore = require('expo-secure-store') as typeof import('expo-secure-store');
+  // On Android, requiresAuthentication defaults to true on some devices and can
+  // block indefinitely waiting for biometric confirmation. Explicitly disable it
+  // so storage never hangs on app start.
+  const opts = Platform.OS === 'android'
+    ? { requireAuthentication: false } as Parameters<typeof SecureStore.setItemAsync>[2]
+    : undefined;
+  const withTimeout = <T>(p: Promise<T>, ms = 3000): Promise<T | null> =>
+    Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]) as Promise<T | null>;
   return {
-    getItem: (key) => SecureStore.getItemAsync(key),
-    setItem: (key, value) => SecureStore.setItemAsync(key, value),
-    removeItem: (key) => SecureStore.deleteItemAsync(key),
+    getItem: (key) => withTimeout(SecureStore.getItemAsync(key, opts)),
+    setItem: (key, value) => SecureStore.setItemAsync(key, value, opts),
+    removeItem: (key) => SecureStore.deleteItemAsync(key, opts),
   };
 }
 

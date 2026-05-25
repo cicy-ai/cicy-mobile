@@ -10,6 +10,8 @@ type DeviceLocale = {
   raw: string;
   // ISO 639-1 primary language code passed to Whisper: "zh", "en", "ja"...
   whisperLang: string;
+  // BCP-47 for iOS/Android Speech Recognition: "zh-CN", "en-US", "ja-JP"...
+  nativeSpeechLang: string;
   // For zh: 'simplified' or 'traditional' — null for non-Chinese
   chineseVariant: ChineseVariant;
 };
@@ -32,9 +34,17 @@ export function getDeviceLocale(): DeviceLocale {
     }
   }
 
+  // Map ISO 639-1 to BCP-47 for native speech recognition
+  const speechMap: Record<string, string> = {
+    zh: 'zh-CN', en: 'en-US', ja: 'ja-JP', ko: 'ko-KR',
+    fr: 'fr-FR', de: 'de-DE', es: 'es-ES', pt: 'pt-BR',
+  };
+  const nativeSpeechLang = speechMap[primary] || raw || 'en-US';
+
   cached = {
     raw,
     whisperLang: primary,
+    nativeSpeechLang,
     chineseVariant,
   };
   return cached;

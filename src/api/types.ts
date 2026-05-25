@@ -13,6 +13,9 @@ export type Agent = {
   status?: string;
   agent_type?: string;
   machine_id?: string;
+  // Working directory of the worker pane (joined client-side from /api/panes).
+  // Not present in /api/poll output — we look it up by pane name.
+  workspace?: string;
 };
 
 export type PollData = {
@@ -81,6 +84,11 @@ export type Pane = {
   active?: number;
   use_custom_gateway?: boolean;
   default_model?: string;
+  // "master" | "worker" | "" — masters are hosts (e.g. w-10001), workers are
+  // children panes that route through them. Mobile filters by this.
+  role?: string;
+  // Absolute path the agent runs in, e.g. "/home/cicy/cicy-ai/workers/w-10036".
+  workspace?: string;
 };
 
 export type PanesResponse = {

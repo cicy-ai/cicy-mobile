@@ -1,0 +1,64 @@
+{
+  "common": {
+    "tryAgain": "重试",
+    "continue": "继续",
+    "cancel": "取消",
+    "ok": "确定",
+    "openSettings": "打开设置",
+    "signOut": "退出登录"
+  },
+  "agents": {
+    "title": "Agents",
+    "errorTitle": "无法连接",
+    "connectedCount": "{{count}} 个已连接",
+    "noServer": "（未设置服务器）",
+    "emptyHint": "暂无 agent。请在桌面上的 cicy-code 启动一个。",
+    "emptyTeamTitle": "还没有团队",
+    "emptyTeamHint": "扫描 cicy-code 网页二维码即可加入。",
+    "scanToAdd": "扫码添加团队"
+  },
+  "teams": {
+    "drawerTitle": "团队",
+    "drawerSubtitle": "{{count}} 个工作区",
+    "addTeam": "扫码添加团队",
+    "remove": "移除",
+    "removeConfirmTitle": "移除该团队？",
+    "removeConfirmBody": "“{{title}}” 将从此设备移除。可重新扫码恢复。",
+    "editTitleTitle": "重命名团队",
+    "titlePlaceholder": "比如：工作 / 个人"
+  },
+  "chat": {
+    "messagePlaceholder": "输入消息…",
+    "missingCreds": "缺少服务器或 token",
+    "sendFailed": "发送失败：{{error}}",
+    "voiceError": "{{error}}",
+    "statusUnknown": "未知",
+    "tabHistory": "历史",
+    "tabCli": "终端"
+  },
+  "voice": {
+    "holdToTalk": "按住说话",
+    "releaseToSend": "松开发送",
+    "transcribing": "识别中…",
+    "permissionDenied": "麦克风权限被拒绝",
+    "startError": "启动失败：{{error}}",
+    "stopError": "停止失败：{{error}}",
+    "noRecording": "没有录到音频",
+    "startRecordError": "无法开始录音：{{error}}"
+  },
+  "scan": {
+    "title": "扫码加入团队",
+    "subtitle": "用手机扫描 cicy-code 网页生成的二维码，把这台设备加入到你的工作区。",
+    "requestingPermission": "请求相机权限…",
+    "permissionTitle": "需要相机权限",
+    "permissionBody": "扫码登录需要访问相机。请在系统设置里开启。",
+    "grantPermission": "授予相机权限",
+    "stepOpenWeb": "在电脑上打开 cicy-code 网页",
+    "stepShowQr": "右上角点击二维码图标显示登录码",
+    "stepAimHere": "把二维码对准上方扫描框",
+    "successHint": "已识别，正在加入…",
+    "invalidTitle": "无法识别",
+    "invalidBody": "二维码内容无效：{{raw}}",
+    "errorTitle": "登录失败"
+  }
+}

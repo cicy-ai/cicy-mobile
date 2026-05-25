@@ -1,81 +1,113 @@
 #!/bin/bash
-# run-ios-auto.sh — Mac 侧全自动脚本：pod install + patch + Metro + build + install + launch
-# 在 Mac 上直接运行：bash ~/projects/cicy-mobile/scripts/run-ios-auto.sh
-
+# Run cicy-mobile on iOS simulator (Mac via SSH)
 set -e
-LOG=/tmp/run-ios-auto.log
-exec > >(tee -a "$LOG") 2>&1
-echo "[$(date)] === run-ios-auto.sh START ==="
+MAC="mac"
+SIM_ID="62CFF72A-4483-4864-90C8-5A4A400A2B4F"
+PROJ="$HOME/projects/cicy-mobile"
 
-PROJ_DIR="$HOME/projects/cicy-mobile"
-POD_BIN_DIR="/usr/local/opt/ruby/bin:/Users/ton/.local/share/gem/ruby/4.0.0/bin"
-export PATH="$POD_BIN_DIR:/usr/local/bin:$PATH"
-export LANG=en_US.UTF-8
-SIM_ID="62CFF72A-4483-4864-90C8-5A4A400A2B4F"  # iPhone 14
+echo "=== rsync to Mac ==="
+rsync -az --delete \
+  --exclude='node_modules' \
+  --exclude='ios/Pods' \
+  --exclude='ios/Podfile.lock' \
+  --exclude='ios/*.xcworkspace' \
+  --exclude='android' \
+  "$PROJ/" "$MAC:~/projects/cicy-mobile/"
 
-# 1. pod install
-echo "[$(date)] pod install..."
-cd "$PROJ_DIR/ios"
-ALL_PROXY=socks5://127.0.0.1:1085 pod install 2>&1 | tail -5
+echo "=== pod install ==="
+ssh "$MAC" "cd ~/projects/cicy-mobile/ios && \
+  PATH=/usr/local/opt/ruby/bin:/Users/ton/.local/share/gem/ruby/4.0.0/bin:\$PATH \
+  LANG=en_US.UTF-8 pod install 2>&1 | tail -5"
 
-# 2. patch pbxproj: SWIFT_VERSION 5.0 → 5.9 (支持 @MainActor)
-echo "[$(date)] patch pbxproj SWIFT_VERSION..."
-sed -i '' 's/SWIFT_VERSION = 5.0;/SWIFT_VERSION = 5.9;/g' Pods/Pods.xcodeproj/project.pbxproj
-grep 'SWIFT_VERSION' Pods/Pods.xcodeproj/project.pbxproj | sort -u
+echo "=== patch ==="
+ssh "$MAC" "
+# 1. Pods pbxproj: SWIFT_VERSION = 5.9
+sed -i '' 's/SWIFT_VERSION = 6.0;/SWIFT_VERSION = 5.9;/g' ~/projects/cicy-mobile/ios/Pods/Pods.xcodeproj/project.pbxproj
+sed -i '' 's/SWIFT_VERSION = 6;/SWIFT_VERSION = 5.9;/g'  ~/projects/cicy-mobile/ios/Pods/Pods.xcodeproj/project.pbxproj
 
-# 3. patch ExpoModulesCore xcconfig: 加 -disable-actor-data-race-checks
-echo "[$(date)] patch ExpoModulesCore xcconfig..."
-python3 << 'PYEOF'
-import re, glob
-for path in glob.glob('/Users/ton/projects/cicy-mobile/ios/Pods/Target Support Files/ExpoModulesCore/ExpoModulesCore.*.xcconfig'):
-    content = open(path).read()
-    def add_flag(m):
-        line = m.group(0).rstrip()
-        if '-disable-actor-data-race-checks' in line:
-            return line
-        return line + ' -Xfrontend -disable-actor-data-race-checks'
-    content = re.sub(r'OTHER_SWIFT_FLAGS = .*', add_flag, content)
-    open(path, 'w').write(content)
-    print(f"  patched: {path}")
+# 2. ExpoModulesCore xcconfig: disable-actor-data-race-checks
+python3 /tmp/patch_all_xcconfig.py 2>/dev/null || python3 << 'PYEOF'
+import os, re
+pods = '/Users/ton/projects/cicy-mobile/ios/Pods/Target Support Files/'
+for target in ['ExpoModulesCore','ExpoImage','ExpoRouter','Expo','ExpoAsset','ExpoCamera',
+               'ExpoFont','ExpoHaptics','ExpoKeepAwake','ExpoLinking','ExpoLocalization',
+               'ExpoLogBox','ExpoSecureStore','ExpoSplashScreen','ExpoSymbols','ExpoSystemUI',
+               'ExpoWebBrowser','ExpoAudio','ExpoFileSystem','EXConstants','ExpoGlassEffect',
+               'RCTSwiftUI','RCTSwiftUIWrapper']:
+    for cfg in ['debug','release']:
+        path = f'{pods}{target}/{target}.{cfg}.xcconfig'
+        if not os.path.exists(path): continue
+        c = open(path).read()
+        if 'SWIFT_VERSION' not in c: c = 'SWIFT_VERSION = 5.9\n' + c
+        if '-disable-actor-data-race-checks' not in c:
+            c = re.sub(r'^OTHER_SWIFT_FLAGS = ', 'OTHER_SWIFT_FLAGS = -Xfrontend -disable-actor-data-race-checks ', c, flags=re.MULTILINE)
+        open(path,'w').write(c)
+print('xcconfig patched')
 PYEOF
 
-# 4. 启动 iOS 模拟器
-echo "[$(date)] booting simulator $SIM_ID..."
-xcrun simctl boot "$SIM_ID" 2>/dev/null || true
-open -a Simulator 2>/dev/null || true
-sleep 3
+# 3. expo-configure-project.sh: remove LinkPreview/RouterToolbar from provider
+python3 << 'PYEOF'
+import re, os
+path = '/Users/ton/projects/cicy-mobile/ios/Pods/Target Support Files/Pods-mobile/expo-configure-project.sh'
+c = open(path).read()
+if 'LinkPreviewNativeModule' not in c:
+    provider = '/Users/ton/projects/cicy-mobile/ios/Pods/Target Support Files/Pods-mobile/ExpoModulesProvider.swift'
+    c += f'\n\nsed -i \"\" \"/LinkPreviewNativeModule/d\" \"{provider}\" 2>/dev/null || true\nsed -i \"\" \"/RouterToolbarModule/d\" \"{provider}\" 2>/dev/null || true\n'
+    open(path,'w').write(c)
+    print('expo-configure-project.sh patched')
+PYEOF
 
-# 5. 启动 Metro bundler (后台)
-echo "[$(date)] starting Metro bundler..."
-cd "$PROJ_DIR"
-pkill -f 'expo start' 2>/dev/null || true
-pkill -f 'react-native start' 2>/dev/null || true
+# 4. RNSScreenWindowTraits: disable assert
+python3 << 'PYEOF'
+import re
+path = '/Users/ton/projects/cicy-mobile/node_modules/react-native-screens/ios/RNSScreenWindowTraits.mm'
+c = open(path).read()
+c2 = re.sub(
+    r'(\+ \(void\)assertViewControllerBasedStatusBarAppearenceSet\s*\{).*?(\+ \(void\)updateStatusBarAppearance)',
+    r'\1\n  // disabled\n}\n\n\2',
+    c, flags=re.DOTALL
+)
+if c2 != c:
+    open(path,'w').write(c2)
+    print('RNSScreenWindowTraits patched')
+PYEOF
+"
+
+echo "=== build ==="
+ssh "$MAC" "
+xcrun simctl boot $SIM_ID 2>/dev/null; true
+mkdir -p ~/ddata
+nohup sh -c 'nice -n 15 xcodebuild \
+  -workspace /Users/ton/projects/cicy-mobile/ios/mobile.xcworkspace \
+  -scheme mobile -configuration Debug \
+  -destination id=$SIM_ID \
+  -derivedDataPath ~/ddata -jobs 1 \
+  build > ~/xbuild.log 2>&1; echo exit:\$? >> ~/xbuild.log' >/dev/null 2>&1 &
+echo build started"
+
+echo "Waiting for build..."
+for i in \$(seq 1 120); do
+  sleep 60
+  result=\$(ssh -o ConnectTimeout=10 $MAC "grep -E 'BUILD SUCCEEDED|BUILD FAILED|exit:' ~/xbuild.log 2>/dev/null | head -2" 2>/dev/null)
+  echo "[\${i}min] \${result:-building...}"
+  echo "\$result" | grep -qE 'BUILD SUCCEEDED|BUILD FAILED' && break
+done
+
+echo "=== install & launch ==="
+ssh "$MAC" "
+# patch Info.plist in app bundle
+/usr/libexec/PlistBuddy -c 'Set :UIViewControllerBasedStatusBarAppearance NO' ~/ddata/Build/Products/Debug-iphonesimulator/mobile.app/Info.plist 2>/dev/null || true
+xcrun simctl install booted ~/ddata/Build/Products/Debug-iphonesimulator/mobile.app
+xcrun simctl terminate booted ai.cicy.mobile 2>/dev/null; true
 sleep 1
-nohup /usr/local/bin/npx expo start --no-dev --port 8081 > /tmp/metro.log 2>&1 &
-METRO_PID=$!
-echo "Metro PID: $METRO_PID"
-sleep 8
+# set Metro bundler URL
+xcrun simctl spawn booted defaults write ai.cicy.mobile RCT_packager_hostname localhost 2>/dev/null || true
+xcrun simctl launch booted ai.cicy.mobile
+"
 
-# 6. xcodebuild
-echo "[$(date)] xcodebuild..."
-cd "$PROJ_DIR/ios"
-xcodebuild \
-  -workspace mobile.xcworkspace \
-  -scheme mobile \
-  -configuration Debug \
-  -destination "id=$SIM_ID" \
-  -derivedDataPath /tmp/cicy-mobile-ddata \
-  build 2>&1 | grep -E '^(Build|error:|warning:|.*BUILD|Compiling|Linking|Installing|Launching)' | tail -30
+echo "=== start Metro ==="
+ssh "$MAC" "cd ~/projects/cicy-mobile && pkill -f 'expo start' 2>/dev/null; true
+nohup npx expo start --port 8081 > ~/metro.log 2>&1 &
+echo Metro started"
 
-# 7. 找 .app 安装到模拟器
-APP_PATH=$(find /tmp/cicy-mobile-ddata -name "mobile.app" -type d 2>/dev/null | head -1)
-if [ -n "$APP_PATH" ]; then
-  echo "[$(date)] installing $APP_PATH..."
-  xcrun simctl install "$SIM_ID" "$APP_PATH"
-  echo "[$(date)] launching app..."
-  xcrun simctl launch "$SIM_ID" "ai.cicy.mobile"
-  echo "[$(date)] === iOS DONE ==="
-else
-  echo "[$(date)] ERROR: mobile.app not found, build may have failed"
-  exit 1
-fi
+echo "=== Done! App launched on simulator ==="

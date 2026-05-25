@@ -1,41 +1,148 @@
+import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { ActivityIndicator, AppState, type AppStateStatus, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 
 import { Button } from '@/src/components/Button';
+import { AgentAvatar } from '@/src/components/AgentAvatar';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
-import { StatusDot } from '@/src/components/StatusDot';
+import { TeamAvatar } from '@/src/components/TeamAvatar';
+import { TeamDrawer } from '@/src/components/TeamDrawer';
+import { TeamTitleModal } from '@/src/components/TeamTitleModal';
 import { Text } from '@/src/components/Text';
 import { api } from '@/src/api/http';
 import type { Agent } from '@/src/api/types';
 import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, useTheme } from '@/src/theme';
 
+// We only show the master "w-10001" and its direct workers. Backend returns
+// every agent regardless of which host it belongs to, so we filter client-side.
+// Hardcoded for now — extend currentTeam with a host field once we support
+// multi-host teams.
+const HOST_PANE = 'w-10001';
+// Background-aware refresh cadence. 5s feels live without hammering the API.
+const POLL_INTERVAL_MS = 5000;
+
 export default function Agents() {
+  const { t } = useTranslation();
   const theme = useTheme();
-  const serverUrl = useAuthStore((s) => s.serverUrl);
+  const teams = useAuthStore((s) => s.teams);
+  const currentTeamId = useAuthStore((s) => s.currentTeamId);
+  const currentTeam = teams.find((tm) => tm.id === currentTeamId) ?? null;
+
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [titleModalOpen, setTitleModalOpen] = useState(false);
 
   const load = useCallback(async () => {
+    if (!currentTeam) {
+      setAgents([]);
+      setError(null);
+      return;
+    }
     setError(null);
     try {
-      const data = await api.poll();
-      setAgents(data.agents ?? []);
+      // poll() returns workers (and statuses); panes() lets us pull the
+      // master row for HOST_PANE because /api/poll omits role=master rows.
+      const [poll, panes] = await Promise.all([api.poll(), api.getPanes()]);
+
+      const masters: Agent[] = panes
+        .filter(
+          (p) =>
+            p.role === 'master' &&
+            typeof p.pane_id === 'string' &&
+            p.pane_id.startsWith(`${HOST_PANE}:`),
+        )
+        .map((p) => ({
+          name: HOST_PANE,
+          pane_id: HOST_PANE,
+          agent_type: p.agent_type,
+          title: p.title || HOST_PANE,
+          status: 'active',
+          workspace: p.workspace,
+        }));
+
+      // Build a lookup so we can attach workspace to each worker. /api/poll
+      // doesn't include it, but /api/panes does — keyed by the worker name
+      // ("w-10036") which is the prefix of pane_id ("w-10036:main.0").
+      const workspaceByName = new Map<string, string>();
+      for (const p of panes) {
+        if (typeof p.pane_id !== 'string' || !p.workspace) continue;
+        const key = p.pane_id.split(':')[0];
+        if (key) workspaceByName.set(key, p.workspace);
+      }
+
+      const workers = (poll.agents ?? [])
+        .filter((a) => a.pane_id === HOST_PANE)
+        .map((a) => ({
+          ...a,
+          workspace: a.name ? workspaceByName.get(a.name) : undefined,
+        }));
+
+      setAgents([...masters, ...workers]);
     } catch (e: any) {
       setError(String(e?.message ?? e));
     }
-  }, []);
+  }, [currentTeam]);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
+      setLoading(true);
       await load();
-      setLoading(false);
+      if (!cancelled) setLoading(false);
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [load]);
+
+  // Poll every POLL_INTERVAL_MS while the agents screen is mounted AND the app
+  // is foregrounded. We pause on background to avoid burning battery / data
+  // when the user has the app off-screen, then immediately refresh on return.
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  useEffect(() => {
+    if (!currentTeam) return;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const start = () => {
+      if (timer) return;
+      timer = setInterval(() => {
+        // Don't show the spinner — silent background refresh.
+        load();
+      }, POLL_INTERVAL_MS);
+    };
+    const stop = () => {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    if (appStateRef.current === 'active') start();
+
+    const sub = AppState.addEventListener('change', (next) => {
+      const prev = appStateRef.current;
+      appStateRef.current = next;
+      if (next === 'active' && prev !== 'active') {
+        // App resumed — refresh once immediately, then resume the interval.
+        load();
+        start();
+      } else if (next !== 'active') {
+        stop();
+      }
+    });
+
+    return () => {
+      stop();
+      sub.remove();
+    };
+  }, [currentTeam, load]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -43,88 +150,186 @@ export default function Agents() {
     setRefreshing(false);
   }, [load]);
 
+  // Single header used across every state — keeps menu/title/scan placement
+  // consistent so loading/error/empty/list don't shift around.
+  const renderHeader = () => (
+    <View style={styles.headerRow}>
+      <PressableScale
+        onPress={() => setDrawerOpen(true)}
+        haptic
+        scaleTo={0.94}
+        style={styles.iconBtn}
+        hitSlop={6}
+      >
+        {currentTeam ? (
+          <TeamAvatar id={currentTeam.id} title={currentTeam.title} size={36} bordered />
+        ) : (
+          <View
+            style={[
+              styles.iconBtnFallback,
+              { backgroundColor: theme.surface, borderColor: theme.border },
+            ]}
+          >
+            <Ionicons name="menu" size={22} color={theme.text} />
+          </View>
+        )}
+      </PressableScale>
+
+      <View style={styles.titleWrap}>
+        {currentTeam ? (
+          <PressableScale
+            onPress={() => setTitleModalOpen(true)}
+            haptic={false}
+            scaleTo={0.97}
+            style={styles.titleBtn}
+          >
+            <Text variant="h3" numberOfLines={1} style={{ textAlign: 'center' }}>
+              {currentTeam.title}
+            </Text>
+            <Text
+              variant="caption"
+              tone="faint"
+              numberOfLines={1}
+              ellipsizeMode="middle"
+              style={{ textAlign: 'center', marginTop: 1 }}
+            >
+              {currentTeam.serverUrl.replace(/^https?:\/\//, '')}
+            </Text>
+          </PressableScale>
+        ) : (
+          <Text variant="h3" tone="muted" style={{ textAlign: 'center' }}>
+            {t('agents.title')}
+          </Text>
+        )}
+      </View>
+
+      <PressableScale
+        onPress={() => router.push('/scan')}
+        haptic
+        scaleTo={0.94}
+        style={[styles.iconBtnFallback, { backgroundColor: theme.surface, borderColor: theme.border }]}
+        hitSlop={6}
+      >
+        <Ionicons name="scan-outline" size={22} color={theme.text} />
+      </PressableScale>
+    </View>
+  );
+
+  const drawerEl = <TeamDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />;
+  const titleModalEl =
+    currentTeam && (
+      <TeamTitleModal
+        open={titleModalOpen}
+        team={currentTeam}
+        onClose={() => setTitleModalOpen(false)}
+      />
+    );
+
+  if (teams.length === 0) {
+    return (
+      <Screen>
+        {renderHeader()}
+        <View style={styles.center}>
+          <View style={[styles.bigIcon, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+            <Ionicons name="qr-code-outline" size={56} color={theme.textMuted} />
+          </View>
+          <Text variant="title" style={{ marginTop: spacing.lg }}>
+            {t('agents.emptyTeamTitle')}
+          </Text>
+          <Text tone="muted" variant="callout" style={{ marginTop: spacing.sm, textAlign: 'center' }}>
+            {t('agents.emptyTeamHint')}
+          </Text>
+          <View style={{ height: spacing.xl }} />
+          <Button title={t('agents.scanToAdd')} onPress={() => router.push('/scan')} />
+        </View>
+        {drawerEl}
+      </Screen>
+    );
+  }
+
   if (loading) {
     return (
       <Screen>
+        {renderHeader()}
         <View style={styles.center}>
           <ActivityIndicator color={theme.textMuted} />
         </View>
+        {drawerEl}
+        {titleModalEl}
       </Screen>
     );
   }
 
   if (error) {
     return (
-      <Screen padded>
-        <View style={styles.center}>
-          <Text variant="title">Couldn't reach cicy-code</Text>
+      <Screen>
+        {renderHeader()}
+        <View style={[styles.center, { paddingHorizontal: spacing.xl }]}>
+          <Ionicons name="cloud-offline-outline" size={48} color={theme.textMuted} />
+          <Text variant="title" style={{ marginTop: spacing.md }}>
+            {t('agents.errorTitle')}
+          </Text>
           <Text variant="callout" tone="muted" style={{ marginTop: spacing.sm, textAlign: 'center' }}>
             {error}
           </Text>
           <View style={{ height: spacing.xl }} />
-          <Button title="Try again" onPress={onRefresh} />
-          <View style={{ height: spacing.sm }} />
-          <Button title="Open settings" variant="ghost" onPress={() => router.push('/settings')} />
+          <Button title={t('common.tryAgain')} onPress={onRefresh} />
         </View>
+        {drawerEl}
+        {titleModalEl}
       </Screen>
     );
   }
 
   return (
     <Screen>
+      {renderHeader()}
       <FlatList
         data={agents}
         keyExtractor={(a) => String(a.name ?? a.id ?? a.pane_id ?? '')}
         contentContainerStyle={{
-          paddingHorizontal: spacing.xl,
-          paddingTop: spacing.lg,
+          paddingHorizontal: spacing.lg,
+          paddingTop: spacing.sm,
           paddingBottom: spacing['2xl'],
-          gap: spacing.md,
+          gap: spacing.sm,
         }}
         ListHeaderComponent={
-          <View style={{ marginBottom: spacing.lg }}>
-            <Text variant="display">Agents</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: spacing.sm }}>
-              <Text variant="callout" tone="muted">
-                {agents.length} connected
-              </Text>
-              <Text variant="caption" tone="faint">
-                ·
-              </Text>
-              <PressableScale haptic={false} onPress={() => router.push('/settings')} style={{ flex: 1 }}>
-                <Text variant="caption" tone="faint" numberOfLines={1} ellipsizeMode="head">
-                  {serverUrl ?? '(no server)'}
-                </Text>
-              </PressableScale>
-            </View>
-          </View>
+          agents.length > 0 ? (
+            <Text
+              variant="caption"
+              tone="faint"
+              style={{ marginLeft: spacing.sm, marginBottom: spacing.xs, textTransform: 'uppercase', letterSpacing: 0.5 }}
+            >
+              {t('agents.connectedCount', { count: agents.length })}
+            </Text>
+          ) : null
         }
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.textMuted} />
         }
         ListEmptyComponent={
           <View style={styles.center}>
-            <Text tone="muted" variant="callout" style={{ textAlign: 'center' }}>
-              No agents yet. Start one in cicy-code on your desktop.
+            <Ionicons name="terminal-outline" size={48} color={theme.textMuted} />
+            <Text tone="muted" variant="callout" style={{ marginTop: spacing.md, textAlign: 'center' }}>
+              {t('agents.emptyHint')}
             </Text>
-            <View style={{ height: spacing.lg }} />
-            <Button title="Open settings" variant="secondary" onPress={() => router.push('/settings')} fullWidth={false} />
           </View>
         }
         renderItem={({ item }) => <AgentRow agent={item} />}
       />
+      {drawerEl}
+      {titleModalEl}
     </Screen>
   );
 }
 
 function AgentRow({ agent }: { agent: Agent }) {
   const theme = useTheme();
-  // The chat-ws hub keys subscriptions on `name` (e.g. "w-10018") — that's
-  // what the web UI uses too. `id` is a DB row id that nothing routes by.
   const routeId = agent.name || agent.id || agent.pane_id;
-  const status = (agent.status ?? 'idle').toLowerCase();
-  const tone: 'ok' | 'warn' | 'muted' =
-    status.includes('think') || status.includes('busy') ? 'warn' : status === 'idle' ? 'ok' : 'muted';
+
+  // Show worker id ("w-10036") under the title — that's the chat-ws routing
+  // key and the only stable identifier across renames.
+  const workerId = agent.name || String(routeId);
 
   return (
     <PressableScale
@@ -134,36 +339,64 @@ function AgentRow({ agent }: { agent: Agent }) {
         { backgroundColor: theme.surface, borderColor: theme.border },
       ]}
     >
+      <AgentAvatar agentType={agent.agent_type} title={agent.title || agent.name || String(routeId)} size={40} />
       <View style={{ flex: 1, gap: 2 }}>
-        <Text variant="h3">{agent.title || agent.name || String(routeId)}</Text>
-        <Text variant="caption" tone="faint">
-          {agent.name || String(routeId)}
-          {agent.agent_type ? ` · ${agent.agent_type}` : ''}
+        <Text variant="bodyMedium" numberOfLines={1}>
+          {agent.title || agent.name || String(routeId)}
+        </Text>
+        <Text variant="caption" tone="muted" numberOfLines={1}>
+          {workerId}
         </Text>
       </View>
-      <View style={rowStyles.statusGroup}>
-        <StatusDot tone={tone} pulse={tone === 'warn'} />
-        <Text variant="caption" tone="muted" style={{ textTransform: 'capitalize' }}>
-          {status}
-        </Text>
-      </View>
+      <Ionicons name="chevron-forward" size={18} color={theme.textFaint} />
     </PressableScale>
   );
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xl },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  bigIcon: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md,
+  },
+  iconBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconBtnFallback: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  titleWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.sm },
+  titleBtn: { alignItems: 'center', maxWidth: '100%', paddingVertical: 2, paddingHorizontal: spacing.sm },
 });
 
 const rowStyles = StyleSheet.create({
   card: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
     gap: spacing.md,
   },
-  statusGroup: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 });

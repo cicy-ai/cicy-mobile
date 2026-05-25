@@ -1,0 +1,64 @@
+{
+  "common": {
+    "tryAgain": "Try again",
+    "continue": "Continue",
+    "cancel": "Cancel",
+    "ok": "OK",
+    "openSettings": "Open settings",
+    "signOut": "Sign Out"
+  },
+  "agents": {
+    "title": "Agents",
+    "errorTitle": "Couldn't reach server",
+    "connectedCount": "{{count}} connected",
+    "noServer": "(no server)",
+    "emptyHint": "No agents yet. Start one in cicy-code on your desktop.",
+    "emptyTeamTitle": "No team yet",
+    "emptyTeamHint": "Scan the QR code in the cicy-code web app to join.",
+    "scanToAdd": "Scan to add team"
+  },
+  "teams": {
+    "drawerTitle": "Teams",
+    "drawerSubtitle": "{{count}} workspaces",
+    "addTeam": "Scan to add team",
+    "remove": "Remove",
+    "removeConfirmTitle": "Remove this team?",
+    "removeConfirmBody": "\"{{title}}\" will be removed from this device. You can re-add it by scanning again.",
+    "editTitleTitle": "Rename team",
+    "titlePlaceholder": "e.g. Work / Personal"
+  },
+  "chat": {
+    "messagePlaceholder": "Message…",
+    "missingCreds": "missing server or token",
+    "sendFailed": "Send failed: {{error}}",
+    "voiceError": "{{error}}",
+    "statusUnknown": "unknown",
+    "tabHistory": "History",
+    "tabCli": "Terminal"
+  },
+  "voice": {
+    "holdToTalk": "Hold to talk",
+    "releaseToSend": "Release to send",
+    "transcribing": "Transcribing…",
+    "permissionDenied": "Microphone permission denied",
+    "startError": "Could not start: {{error}}",
+    "stopError": "Stop error: {{error}}",
+    "noRecording": "No recording produced",
+    "startRecordError": "Could not start recording: {{error}}"
+  },
+  "scan": {
+    "title": "Add team",
+    "subtitle": "Scan the QR code from the cicy-code web app to add this device to a team.",
+    "requestingPermission": "Requesting camera permission…",
+    "permissionTitle": "Camera permission needed",
+    "permissionBody": "Scanning a QR code requires camera access. Enable it in system settings.",
+    "grantPermission": "Grant camera permission",
+    "stepOpenWeb": "Open cicy-code in your browser on a computer",
+    "stepShowQr": "Click the QR code icon in the top-right corner",
+    "stepAimHere": "Aim the QR code at the frame above",
+    "successHint": "Got it — joining…",
+    "invalidTitle": "Couldn't read code",
+    "invalidBody": "QR payload invalid: {{raw}}",
+    "errorTitle": "Sign-in failed"
+  }
+}

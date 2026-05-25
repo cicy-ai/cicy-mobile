@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, View } from 'react-native';
 import Animated, {
   useAnimatedStyle,
@@ -22,6 +23,7 @@ type Props = {
 // Full-width push-to-talk bar (WeChat-style). The bar IS the affordance —
 // no separate icon. Hold to record, release to send.
 export function VoiceBar({ onTranscript, onError, disabled, language }: Props) {
+  const { t } = useTranslation();
   const theme = useTheme();
   const { phase, start, stop, durationMs } = useVoiceRecorder({ onTranscript, onError, language });
 
@@ -47,10 +49,10 @@ export function VoiceBar({ onTranscript, onError, disabled, language }: Props) {
   const bgColor = isRecording ? theme.accent : theme.surface;
   const fgColor = isRecording ? theme.accentText : theme.text;
   const label = isBusy
-    ? 'Transcribing…'
+    ? t('voice.transcribing')
     : isRecording
-    ? `松开发送  ${formatDuration(durationMs / 1000)}`
-    : '按住说话';
+    ? `${t('voice.releaseToSend')}  ${formatDuration(durationMs / 1000)}`
+    : t('voice.holdToTalk');
 
   return (
     <Pressable

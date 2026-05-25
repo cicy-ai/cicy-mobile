@@ -1,26 +1,40 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
+  Keyboard,
   KeyboardAvoidingView,
+  Platform,
   StyleSheet,
   TextInput,
   View,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 
+import { AgentAvatar } from '@/src/components/AgentAvatar';
 import { HistoryView } from '@/src/components/HistoryView';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
-import { StatusDot } from '@/src/components/StatusDot';
 import { Text } from '@/src/components/Text';
 import { VoiceBar } from '@/src/components/VoiceBar';
 import { api } from '@/src/api/http';
 import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 
+type StatusTone = 'ok' | 'warn' | 'busy' | 'muted';
+
+function classifyStatus(status?: string): StatusTone {
+  const s = (status || '').toLowerCase();
+  if (s.includes('think') || s.includes('streaming') || s.includes('busy')) return 'busy';
+  if (s.includes('error') || s.includes('fail')) return 'warn';
+  if (s === 'idle' || !s) return 'ok';
+  return 'muted';
+}
+
 export default function Chat() {
+  const { t } = useTranslation();
   const theme = useTheme();
   const { agentId: rawAgentId } = useLocalSearchParams<{ agentId: string }>();
   const agentId = String(rawAgentId);
@@ -31,25 +45,50 @@ export default function Chat() {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [mode, setMode] = useState<'voice' | 'text'>('voice');
-  // Detail tab: 'history' (structured turns) vs 'cli' (live ttyd terminal).
-  // useCustomGateway === false → agent talks to anthropic.com directly, no
-  // turns recorded, no point showing the History tab at all.
-  const [useCustomGateway, setUseCustomGateway] = useState<boolean | null>(null);
-  const [tab, setTab] = useState<'history' | 'cli'>('history');
+  // Track keyboard visibility for the small bottom-padding bump while typing.
+  const [keyboardShown, setKeyboardShown] = useState(false);
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, () => setKeyboardShown(true));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardShown(false));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
 
-  // Fetch /api/panes once on entry to learn the gateway flag for this agent.
+  // Tab + agent metadata. Both come from /api/panes — fetch once on entry.
+  const [tab, setTab] = useState<'history' | 'cli'>('history');
+  const [agentMeta, setAgentMeta] = useState<{
+    title?: string;
+    agentType?: string;
+    status?: string;
+    machineLabel?: string;
+    useCustomGateway: boolean | null;
+  }>({ useCustomGateway: null });
+
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const panes = await api.getPanes();
+        const [panes, poll] = await Promise.all([
+          api.getPanes().catch(() => []),
+          api.poll().catch(() => ({ agents: [] })),
+        ]);
         if (!alive) return;
-        const match = panes.find((p) => p.pane_id?.split(':')[0] === agentId);
-        const flag = !!match?.use_custom_gateway;
-        setUseCustomGateway(flag);
-        if (!flag) setTab('cli'); // History is useless for non-gateway agents.
+        const pane = panes.find((p) => p.pane_id?.split(':')[0] === agentId);
+        const agent = poll.agents?.find(
+          (a: any) => (a.name || a.pane_id?.split(':')[0]) === agentId,
+        );
+        const useCustomGateway = pane?.use_custom_gateway === true;
+        setAgentMeta({
+          title: agent?.title || pane?.title,
+          agentType: pane?.agent_type || agent?.agent_type,
+          status: agent?.status,
+          machineLabel: (pane as any)?.machine_label,
+          useCustomGateway,
+        });
+        if (!useCustomGateway) setTab('cli');
       } catch {
-        if (alive) setUseCustomGateway(null); // unknown — assume both tabs OK
+        if (alive) setAgentMeta((m) => ({ ...m, useCustomGateway: null }));
       }
     })();
     return () => {
@@ -57,7 +96,6 @@ export default function Chat() {
     };
   }, [agentId]);
 
-  // ttyd URL — same shape the web UI uses (see app/src/config.ts:130).
   const ttydUrl = useMemo(() => {
     if (!serverUrl || !token || !agentId) return null;
     return `${serverUrl}/ttyd/${encodeURIComponent(agentId)}/?token=${encodeURIComponent(token)}&mode=1`;
@@ -71,7 +109,7 @@ export default function Chat() {
     try {
       await api.sendToAgent(agentId, trimmed, true);
     } catch (e: any) {
-      setVoiceError(`Send failed: ${String(e?.message ?? e)}`);
+      setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
     } finally {
       setSending(false);
     }
@@ -84,56 +122,88 @@ export default function Chat() {
     await submit(text);
   };
 
+  const status = agentMeta.status;
+  const tone = classifyStatus(status);
+  const statusColor =
+    tone === 'busy' ? theme.warn : tone === 'warn' ? theme.danger : tone === 'ok' ? theme.ok : theme.textMuted;
+  const showTabs = agentMeta.useCustomGateway !== false;
+  const displayTitle = agentMeta.title || agentId;
+
   return (
-    // No Stack header — we draw our own minimal nav row below. Stack's header
-    // forces react-native-screens to add bottom safe-area padding to the
-    // screen content, which painted a cream strip under the composer.
     <Screen>
+      {/* ─── Header: back / avatar + title + status pill / spacer ─── */}
       <View style={[styles.navRow, { borderBottomColor: theme.border }]}>
-        <PressableScale onPress={() => router.back()} haptic scaleTo={0.94} style={styles.backBtn}>
+        <PressableScale onPress={() => router.back()} haptic scaleTo={0.94} style={styles.backBtn} hitSlop={6}>
           <Ionicons name="chevron-back" size={26} color={theme.text} />
         </PressableScale>
-        <View style={styles.headerTitle}>
-          <StatusDot tone={loaded ? 'ok' : 'warn'} pulse={!loaded} />
-          <Text variant="caption" tone="muted" numberOfLines={1}>
-            {agentId}
+        <AgentAvatar agentType={agentMeta.agentType} title={displayTitle} size={36} />
+        <View style={styles.headerInfo}>
+          <Text variant="bodyMedium" numberOfLines={1}>
+            {displayTitle}
           </Text>
+          <View style={styles.headerSubRow}>
+            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+            <Text variant="caption" tone="muted" numberOfLines={1}>
+              {status || t('chat.statusUnknown')}
+            </Text>
+            {agentMeta.machineLabel ? (
+              <>
+                <Text variant="caption" tone="faint">·</Text>
+                <Text variant="caption" tone="faint" numberOfLines={1}>
+                  {agentMeta.machineLabel}
+                </Text>
+              </>
+            ) : null}
+          </View>
         </View>
-        <View style={{ flex: 1 }} />
-        {useCustomGateway !== false ? (
-          <View style={[styles.tabRow, { backgroundColor: theme.surfaceMuted }]}>
-            {(['history', 'cli'] as const).map((tabName) => (
+      </View>
+
+      {/* ─── Tabs: only when both views are useful ─── */}
+      {showTabs ? (
+        <View style={[styles.tabBar, { borderBottomColor: theme.border }]}>
+          {(['history', 'cli'] as const).map((tabName) => {
+            const active = tab === tabName;
+            const label = tabName === 'history' ? t('chat.tabHistory') : t('chat.tabCli');
+            const icon = tabName === 'history' ? 'time-outline' : 'terminal-outline';
+            return (
               <PressableScale
                 key={tabName}
                 onPress={() => setTab(tabName)}
-                haptic={tab !== tabName}
-                scaleTo={0.96}
-                style={[
-                  styles.tabChip,
-                  tab === tabName && { backgroundColor: theme.surface },
-                ]}
+                haptic={!active}
+                scaleTo={0.97}
+                style={styles.tabItem}
               >
+                <Ionicons
+                  name={icon as any}
+                  size={16}
+                  color={active ? theme.accent : theme.textMuted}
+                  style={{ marginRight: 6 }}
+                />
                 <Text
                   variant="caption"
-                  tone={tab === tabName ? 'default' : 'muted'}
-                  style={{ textTransform: 'uppercase' }}
+                  style={{
+                    color: active ? theme.accent : theme.textMuted,
+                    fontWeight: active ? '600' : '400',
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.5,
+                  }}
                 >
-                  {tabName}
+                  {label}
                 </Text>
+                {/* Underline appears under the active tab */}
+                {active && (
+                  <View
+                    style={[styles.tabUnderline, { backgroundColor: theme.accent }]}
+                    pointerEvents="none"
+                  />
+                )}
               </PressableScale>
-            ))}
-          </View>
-        ) : null}
-      </View>
+            );
+          })}
+        </View>
+      ) : null}
 
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        // The KAV already starts below the status header, so no vertical offset
-        // is needed. `padding` on both platforms reliably lifts the composer;
-        // Android's adjustResize can be flaky in edge-to-edge mode.
-        behavior="padding"
-        keyboardVerticalOffset={0}
-      >
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
         {tab === 'cli' ? (
           <View style={{ flex: 1, backgroundColor: '#000' }}>
             {ttydUrl ? (
@@ -157,7 +227,7 @@ export default function Chat() {
               />
             ) : (
               <View style={styles.loading}>
-                <Text tone="muted">missing server or token</Text>
+                <Text tone="muted">{t('chat.missingCreds')}</Text>
               </View>
             )}
           </View>
@@ -172,6 +242,9 @@ export default function Chat() {
             <Text variant="caption" tone="danger" numberOfLines={2}>
               {voiceError}
             </Text>
+            <PressableScale onPress={() => setVoiceError(null)} hitSlop={8}>
+              <Ionicons name="close" size={16} color={theme.textMuted} />
+            </PressableScale>
           </View>
         ) : null}
 
@@ -181,10 +254,9 @@ export default function Chat() {
             {
               backgroundColor: theme.bg,
               borderTopColor: theme.border,
-              // No bottom inset padding — Stack screen content already lives
-              // above the system nav, and adding insets.bottom on top left a
-              // visible cream gap below the talk button. Just the visual
-              // breathing room from the stylesheet's `paddingBottom`.
+              paddingBottom: keyboardShown
+                ? (Platform.OS === 'ios' ? 45 : spacing.lg + 18)
+                : spacing.lg,
             },
           ]}
         >
@@ -205,7 +277,7 @@ export default function Chat() {
                 <TextInput
                   value={input}
                   onChangeText={setInput}
-                  placeholder="Message…"
+                  placeholder={t('chat.messagePlaceholder')}
                   placeholderTextColor={theme.textFaint}
                   multiline
                   autoFocus
@@ -223,24 +295,25 @@ export default function Chat() {
                     },
                   ]}
                 >
-                  <Text
-                    style={{
-                      color: input.trim() ? theme.accentText : theme.textFaint,
-                      fontSize: 18,
-                      lineHeight: 18,
-                    }}
-                  >
-                    ↑
-                  </Text>
+                  {sending ? (
+                    <ActivityIndicator size="small" color={input.trim() ? theme.accentText : theme.textFaint} />
+                  ) : (
+                    <Ionicons
+                      name="arrow-up"
+                      size={18}
+                      color={input.trim() ? theme.accentText : theme.textFaint}
+                    />
+                  )}
                 </PressableScale>
               </View>
             )}
 
-            {/* Mode toggle sits to the RIGHT of the input/voice bar. Keypad
-                glyph when in voice mode (tap → switch to typing); broadcast
-                arc-fan glyph when in text mode (tap → switch to voice). */}
+            {/* Mode toggle on the right — keypad in voice mode, mic in text mode. */}
             <PressableScale
-              onPress={() => setMode((m) => (m === 'voice' ? 'text' : 'voice'))}
+              onPress={() => {
+                setMode((m) => (m === 'voice' ? 'text' : 'voice'));
+                if (mode === 'text') Keyboard.dismiss();
+              }}
               haptic
               scaleTo={0.94}
               style={[styles.modeToggle, { backgroundColor: theme.surface, borderColor: theme.border }]}
@@ -248,7 +321,7 @@ export default function Chat() {
               {mode === 'voice' ? (
                 <Ionicons name="keypad-outline" size={20} color={theme.text} />
               ) : (
-                <MaterialCommunityIcons name="broadcast" size={22} color={theme.text} />
+                <MaterialCommunityIcons name="microphone-outline" size={22} color={theme.text} />
               )}
             </PressableScale>
           </View>
@@ -258,14 +331,6 @@ export default function Chat() {
   );
 }
 
-function hostLabel(serverUrl: string | null): string {
-  if (!serverUrl) return '';
-  return serverUrl.replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, '');
-}
-
-// Force a phone-friendly viewport. Runs before the page's own scripts so the
-// xterm renderer measures the right pixel width on first paint instead of
-// re-flowing later.
 const MOBILE_VIEWPORT_INJECT = `
   (function(){
     var existing = document.querySelector('meta[name="viewport"]');
@@ -278,10 +343,6 @@ const MOBILE_VIEWPORT_INJECT = `
   true;
 `;
 
-// Hunt down the xterm Terminal instance, shrink fonts for mobile, and re-fit.
-// ttyd exposes the terminal on window.term in current builds; if that changes
-// we still try every Terminal-shaped object we can find. Idempotent and retries
-// because the terminal can be constructed after page load on slow networks.
 const MOBILE_XTERM_INJECT = `
   (function(){
     var FONT_SIZE = 12;
@@ -333,7 +394,6 @@ const MOBILE_XTERM_INJECT = `
     }
     if (document.readyState === 'complete') loop();
     else window.addEventListener('load', loop);
-    // Re-fit on orientation change / keyboard show.
     window.addEventListener('resize', function(){ setTimeout(tune, 100); });
   })();
   true;
@@ -343,8 +403,8 @@ const styles = StyleSheet.create({
   navRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingLeft: spacing.sm,
+    gap: spacing.sm,
+    paddingLeft: spacing.xs,
     paddingRight: spacing.lg,
     paddingVertical: spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -356,23 +416,34 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: 20,
   },
-  headerTitle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  tabRow: {
-    flexDirection: 'row',
-    padding: 3,
-    borderRadius: radius.pill,
+  headerInfo: {
+    flex: 1,
     gap: 2,
   },
-  tabChip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: 4,
-    borderRadius: radius.pill,
+  headerSubRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 6,
+  },
+  statusDot: { width: 7, height: 7, borderRadius: 4 },
+  tabBar: {
+    flexDirection: 'row',
+    paddingHorizontal: spacing.xl,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: spacing.xl,
+  },
+  tabItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+  },
+  tabUnderline: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: -StyleSheet.hairlineWidth,
+    height: 2,
+    borderRadius: 1,
   },
   loading: {
     ...StyleSheet.absoluteFillObject,
@@ -380,6 +451,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   errorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
     paddingHorizontal: spacing.xl,
     paddingVertical: spacing.sm,
     borderTopWidth: StyleSheet.hairlineWidth,

@@ -1,16 +1,16 @@
 {
   "expo": {
-    "name": "mobile",
-    "slug": "mobile",
+    "name": "CiCy",
+    "slug": "cicy-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "mobile",
+    "scheme": "cicymobile",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "ai.cicy.mobile"
+      "bundleIdentifier": "com.cicy.ai.mobile.ios"
     },
     "android": {
       "adaptiveIcon": {
@@ -27,7 +27,7 @@
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ],
-      "package": "ai.cicy.mobile"
+      "package": "com.cicy.ai.mobile.adr"
     },
     "web": {
       "output": "static",
@@ -41,9 +41,9 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
+          "backgroundColor": "#E8651A",
           "dark": {
-            "backgroundColor": "#000000"
+            "backgroundColor": "#E8651A"
           }
         }
       ],
@@ -57,7 +57,14 @@
           "microphonePermission": "Allow $(PRODUCT_NAME) to use the microphone to send voice messages to your agent."
         }
       ],
-      "expo-localization"
+      "expo-localization",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow $(PRODUCT_NAME) to use your microphone for voice input.",
+          "speechRecognitionPermission": "Allow $(PRODUCT_NAME) to recognize your speech."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false,
