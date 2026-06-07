@@ -25,7 +25,8 @@
     "removeConfirmTitle": "Remove this team?",
     "removeConfirmBody": "\"{{title}}\" will be removed from this device. You can re-add it by scanning again.",
     "editTitleTitle": "Rename team",
-    "titlePlaceholder": "e.g. Work / Personal"
+    "titlePlaceholder": "e.g. Work / Personal",
+    "defaultTitle": "My Team"
   },
   "chat": {
     "messagePlaceholder": "Message…",
@@ -34,7 +35,13 @@
     "voiceError": "{{error}}",
     "statusUnknown": "unknown",
     "tabHistory": "History",
-    "tabCli": "Terminal"
+    "tabCli": "Terminal",
+    "loadEarlier": "load earlier",
+    "beginningOfHistory": "· beginning of history ·",
+    "noTurnsTitle": "No recorded turns",
+    "noTurnsBody": "This agent hasn't generated any history yet, or it's routing directly to anthropic.com.\n\nSwitch to the CLI tab to see the live terminal.",
+    "systemLabel": "system",
+    "thinkingLabel": "Thinking"
   },
   "voice": {
     "holdToTalk": "Hold to talk",
@@ -44,7 +51,9 @@
     "startError": "Could not start: {{error}}",
     "stopError": "Stop error: {{error}}",
     "noRecording": "No recording produced",
-    "startRecordError": "Could not start recording: {{error}}"
+    "startRecordError": "Could not start recording: {{error}}",
+    "micDenied": "Microphone permission denied",
+    "recordStartFailed": "Could not start recording: {{error}}"
   },
   "scan": {
     "title": "Add team",
@@ -59,6 +68,10 @@
     "successHint": "Got it — joining…",
     "invalidTitle": "Couldn't read code",
     "invalidBody": "QR payload invalid: {{raw}}",
-    "errorTitle": "Sign-in failed"
+    "errorTitle": "Sign-in failed",
+    "scanQr": "Scan QR code",
+    "or": "or",
+    "addManual": "Add",
+    "pastePlaceholder": "https://… ?flag=addTeam&token=…"
   }
 }

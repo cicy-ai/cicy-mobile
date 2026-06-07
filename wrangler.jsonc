@@ -1,0 +1,21 @@
+{
+  // Assets-only Cloudflare Worker hosting the exported PWA (dist/). The app is
+  // a pure client ("纯工具"): each team's cicy-code server is its backend,
+  // reached directly at the HTTPS address carried in the add-team QR (the
+  // server's CICY_PUBLIC_URL; CORS is answered by the backend itself). No
+  // reverse proxy, no backend of its own.
+  "name": "cicy-mobile",
+  "compatibility_date": "2025-06-01",
+  // Custom domain on the cicy-ai.com zone (same CF account). `wrangler deploy`
+  // creates the DNS record + cert automatically.
+  "routes": [{ "pattern": "telegram-bot.cicy-ai.com", "custom_domain": true }],
+  // Keep the workers.dev URL alive too — the old @cicy_openclaw_bot menu button
+  // still points at cicy-mobile.w3c-offical.workers.dev (routes disable it by default).
+  "workers_dev": true,
+  "assets": {
+    "directory": "./dist",
+    // expo-router static export is multi-page; unknown paths fall back to the
+    // SPA shell and the client router takes over.
+    "not_found_handling": "single-page-application"
+  }
+}

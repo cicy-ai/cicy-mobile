@@ -13,6 +13,7 @@ import { PressableScale } from './PressableScale';
 import { Text } from './Text';
 import { transcribeAudio } from '@/src/api/stt';
 import { useTheme } from '@/src/theme';
+import i18n from '@/src/i18n';
 
 type Phase = 'idle' | 'recording' | 'transcribing';
 
@@ -57,7 +58,7 @@ export function MicButton({ onTranscript, onError, disabled, size = 36, language
     if (disabled || phase !== 'idle') return;
     try {
       if (!(await ensurePermission())) {
-        onError?.('Microphone permission denied');
+        onError?.(i18n.t('voice.micDenied'));
         return;
       }
       await recorder.prepareToRecordAsync();
@@ -67,7 +68,7 @@ export function MicButton({ onTranscript, onError, disabled, size = 36, language
       if (!IS_WEB) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
     } catch (e: any) {
       setPhase('idle');
-      onError?.(`Could not start recording: ${String(e?.message ?? e)}`);
+      onError?.(i18n.t('voice.recordStartFailed', { error: String(e?.message ?? e) }));
     }
   }
 

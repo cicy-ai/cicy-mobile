@@ -1,5 +1,15 @@
+import { Platform } from 'react-native';
+
 import { useAuthStore } from '@/src/store/auth';
-import type { HistoryView, Pane, PanesResponse, PollData } from './types';
+import type {
+  CurrentHistoryResp,
+  CurrentReplyResp,
+  HistoryIdsResp,
+  HistoryView,
+  Pane,
+  PanesResponse,
+  PollData,
+} from './types';
 
 function requireAuth() {
   const { serverUrl, token } = useAuthStore.getState();
@@ -13,7 +23,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      'X-Cicy-Token': token,
+      // X-Cicy-Token is a non-safelisted custom header. On web it forces a CORS
+      // preflight, and cicy-code's allow-list doesn't include it, so the browser
+      // blocks the request ("Failed to fetch"). The server authenticates via
+      // Authorization: Bearer anyway (X-Cicy-Token on its own returns 401), so we
+      // only send it on native, where there's no CORS to satisfy.
+      ...(Platform.OS === 'web' ? {} : { 'X-Cicy-Token': token }),
       Authorization: `Bearer ${token}`,
       ...(init?.headers ?? {}),
     },
@@ -58,4 +73,35 @@ export const api = {
     const res = await request<PanesResponse | Pane[]>('/api/panes');
     return Array.isArray(res) ? res : (res?.panes ?? []);
   },
+
+  // ── Two-part history (committed window + reply tail), mirrors desktop ──
+  // history-ids: latest conversation id + maxID (id of q_last) + model/provider.
+  getHistoryIds: (paneId: string, conversationId?: string) =>
+    request<HistoryIdsResp>(
+      `/api/agents/history-ids/${encodeURIComponent(paneId)}` +
+        (conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : ''),
+    ),
+
+  // current-history: windowed committed items (raw current.json messages).
+  // `before` pages older (loadEarlier); omit it for the latest window.
+  getCurrentHistory: (
+    paneId: string,
+    opts?: { limit?: number; before?: number; conversationId?: string },
+  ) => {
+    const p = new URLSearchParams();
+    if (opts?.limit != null) p.set('limit', String(opts.limit));
+    if (opts?.before != null) p.set('before', String(opts.before));
+    if (opts?.conversationId) p.set('conversation_id', opts.conversationId);
+    const qs = p.toString();
+    return request<CurrentHistoryResp>(
+      `/api/agents/current-history/${encodeURIComponent(paneId)}${qs ? `?${qs}` : ''}`,
+    );
+  },
+
+  // current-reply: the in-flight answer for q_last (history_id == maxID + 1).
+  getCurrentReply: (paneId: string, conversationId?: string) =>
+    request<CurrentReplyResp>(
+      `/api/agents/current-reply/${encodeURIComponent(paneId)}` +
+        (conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : ''),
+    ),
 };

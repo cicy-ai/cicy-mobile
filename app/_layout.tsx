@@ -12,6 +12,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useColorScheme } from 'react-native';
 import { darkTheme, lightTheme } from '@/src/theme/tokens';
 import { useAuthStore } from '@/src/store/auth';
+import { initWebApp } from '@/src/lib/telegram';
 // Side-effect import: configures i18next with the device locale before any
 // screen renders. Must come after expo-localization (which getDeviceLocale
 // imports) is available.
@@ -51,6 +52,12 @@ export default function RootLayout() {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  // If we're inside Telegram, signal ready + request full height. No-op in a
+  // plain browser / native app.
+  useEffect(() => {
+    initWebApp();
+  }, []);
 
   // Once auth has hydrated we know which initial screen expo-router will pick,
   // so it's safe to dismiss the native splash. Doing it any earlier would

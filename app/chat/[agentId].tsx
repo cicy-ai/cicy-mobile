@@ -11,27 +11,22 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
 
 import { AgentAvatar } from '@/src/components/AgentAvatar';
 import { HistoryView } from '@/src/components/HistoryView';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
+import { TerminalView } from '@/src/components/TerminalView';
 import { Text } from '@/src/components/Text';
 import { VoiceBar } from '@/src/components/VoiceBar';
 import { api } from '@/src/api/http';
+import { isTelegram, showBackButton } from '@/src/lib/telegram';
 import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 
-type StatusTone = 'ok' | 'warn' | 'busy' | 'muted';
-
-function classifyStatus(status?: string): StatusTone {
-  const s = (status || '').toLowerCase();
-  if (s.includes('think') || s.includes('streaming') || s.includes('busy')) return 'busy';
-  if (s.includes('error') || s.includes('fail')) return 'warn';
-  if (s === 'idle' || !s) return 'ok';
-  return 'muted';
-}
+// Voice input relies on native speech-recognition / audio recording, neither of
+// which we wire up on web — so web defaults to (and stays in) text mode.
+const IS_WEB = Platform.OS === 'web';
 
 export default function Chat() {
   const { t } = useTranslation();
@@ -39,12 +34,20 @@ export default function Chat() {
   const { agentId: rawAgentId } = useLocalSearchParams<{ agentId: string }>();
   const agentId = String(rawAgentId);
   const { serverUrl, token } = useAuthStore();
+  // Inside the Telegram Mini App we drop our own header and reuse Telegram's
+  // native back button + title bar (saves vertical space).
+  const inTg = isTelegram();
+  useEffect(() => {
+    if (!inTg) return;
+    return showBackButton(() => router.back());
+  }, [inTg]);
 
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [pending, setPending] = useState<{ text: string; nonce: number } | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const [mode, setMode] = useState<'voice' | 'text'>('voice');
+  const [mode, setMode] = useState<'voice' | 'text'>(IS_WEB ? 'text' : 'voice');
   // Track keyboard visibility for the small bottom-padding bump while typing.
   const [keyboardShown, setKeyboardShown] = useState(false);
   useEffect(() => {
@@ -86,7 +89,6 @@ export default function Chat() {
           machineLabel: (pane as any)?.machine_label,
           useCustomGateway,
         });
-        if (!useCustomGateway) setTab('cli');
       } catch {
         if (alive) setAgentMeta((m) => ({ ...m, useCustomGateway: null }));
       }
@@ -106,9 +108,12 @@ export default function Chat() {
     if (!trimmed || sending) return;
     setSending(true);
     setVoiceError(null);
+    setTab('history'); // make the instant feedback visible
+    setPending({ text: trimmed, nonce: Date.now() }); // optimistic: show q now
     try {
       await api.sendToAgent(agentId, trimmed, true);
     } catch (e: any) {
+      setPending(null); // failed → drop the optimistic q
       setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
     } finally {
       setSending(false);
@@ -122,16 +127,17 @@ export default function Chat() {
     await submit(text);
   };
 
-  const status = agentMeta.status;
-  const tone = classifyStatus(status);
-  const statusColor =
-    tone === 'busy' ? theme.warn : tone === 'warn' ? theme.danger : tone === 'ok' ? theme.ok : theme.textMuted;
-  const showTabs = agentMeta.useCustomGateway !== false;
+  // Every agent can take pushed messages and serve history now, so always show
+  // both tabs. We used to hide history (and default to the terminal) for
+  // non-gateway claude-code-direct agents.
+  const showTabs = true;
   const displayTitle = agentMeta.title || agentId;
 
   return (
     <Screen>
-      {/* ─── Header: back / avatar + title + status pill / spacer ─── */}
+      {/* ─── Header: back / avatar + title. Hidden inside Telegram, which
+          provides its own back button + title bar. ─── */}
+      {!inTg && (
       <View style={[styles.navRow, { borderBottomColor: theme.border }]}>
         <PressableScale onPress={() => router.back()} haptic scaleTo={0.94} style={styles.backBtn} hitSlop={6}>
           <Ionicons name="chevron-back" size={26} color={theme.text} />
@@ -141,22 +147,16 @@ export default function Chat() {
           <Text variant="bodyMedium" numberOfLines={1}>
             {displayTitle}
           </Text>
-          <View style={styles.headerSubRow}>
-            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-            <Text variant="caption" tone="muted" numberOfLines={1}>
-              {status || t('chat.statusUnknown')}
-            </Text>
-            {agentMeta.machineLabel ? (
-              <>
-                <Text variant="caption" tone="faint">·</Text>
-                <Text variant="caption" tone="faint" numberOfLines={1}>
-                  {agentMeta.machineLabel}
-                </Text>
-              </>
-            ) : null}
-          </View>
+          {agentMeta.machineLabel ? (
+            <View style={styles.headerSubRow}>
+              <Text variant="caption" tone="faint" numberOfLines={1}>
+                {agentMeta.machineLabel}
+              </Text>
+            </View>
+          ) : null}
         </View>
       </View>
+      )}
 
       {/* ─── Tabs: only when both views are useful ─── */}
       {showTabs ? (
@@ -207,24 +207,7 @@ export default function Chat() {
         {tab === 'cli' ? (
           <View style={{ flex: 1, backgroundColor: '#000' }}>
             {ttydUrl ? (
-              <WebView
-                source={{ uri: ttydUrl }}
-                originWhitelist={['*']}
-                javaScriptEnabled
-                domStorageEnabled
-                allowsInlineMediaPlayback
-                mediaPlaybackRequiresUserAction={false}
-                onLoadEnd={() => setLoaded(true)}
-                startInLoadingState
-                injectedJavaScriptBeforeContentLoaded={MOBILE_VIEWPORT_INJECT}
-                injectedJavaScript={MOBILE_XTERM_INJECT}
-                renderLoading={() => (
-                  <View style={styles.loading}>
-                    <ActivityIndicator color={theme.textMuted} />
-                  </View>
-                )}
-                style={{ flex: 1, backgroundColor: '#000' }}
-              />
+              <TerminalView url={ttydUrl} onLoadEnd={() => setLoaded(true)} />
             ) : (
               <View style={styles.loading}>
                 <Text tone="muted">{t('chat.missingCreds')}</Text>
@@ -233,7 +216,7 @@ export default function Chat() {
           </View>
         ) : (
           <View style={{ flex: 1, backgroundColor: theme.bg }}>
-            <HistoryView agentId={agentId} />
+            <HistoryView agentId={agentId} pending={pending} />
           </View>
         )}
 
@@ -308,96 +291,31 @@ export default function Chat() {
               </View>
             )}
 
-            {/* Mode toggle on the right — keypad in voice mode, mic in text mode. */}
-            <PressableScale
-              onPress={() => {
-                setMode((m) => (m === 'voice' ? 'text' : 'voice'));
-                if (mode === 'text') Keyboard.dismiss();
-              }}
-              haptic
-              scaleTo={0.94}
-              style={[styles.modeToggle, { backgroundColor: theme.surface, borderColor: theme.border }]}
-            >
-              {mode === 'voice' ? (
-                <Ionicons name="keypad-outline" size={20} color={theme.text} />
-              ) : (
-                <MaterialCommunityIcons name="microphone-outline" size={22} color={theme.text} />
-              )}
-            </PressableScale>
+            {/* Mode toggle on the right — keypad in voice mode, mic in text mode.
+                Hidden on web, which has no voice backend and stays in text mode. */}
+            {!IS_WEB && (
+              <PressableScale
+                onPress={() => {
+                  setMode((m) => (m === 'voice' ? 'text' : 'voice'));
+                  if (mode === 'text') Keyboard.dismiss();
+                }}
+                haptic
+                scaleTo={0.94}
+                style={[styles.modeToggle, { backgroundColor: theme.surface, borderColor: theme.border }]}
+              >
+                {mode === 'voice' ? (
+                  <Ionicons name="keypad-outline" size={20} color={theme.text} />
+                ) : (
+                  <MaterialCommunityIcons name="microphone-outline" size={22} color={theme.text} />
+                )}
+              </PressableScale>
+            )}
           </View>
         </View>
       </KeyboardAvoidingView>
     </Screen>
   );
 }
-
-const MOBILE_VIEWPORT_INJECT = `
-  (function(){
-    var existing = document.querySelector('meta[name="viewport"]');
-    if (existing) existing.remove();
-    var m = document.createElement('meta');
-    m.name = 'viewport';
-    m.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';
-    (document.head || document.documentElement).appendChild(m);
-  })();
-  true;
-`;
-
-const MOBILE_XTERM_INJECT = `
-  (function(){
-    var FONT_SIZE = 12;
-    var LINE_HEIGHT = 1.15;
-    var FONT_FAMILY = 'Menlo, "SF Mono", Consolas, monospace';
-    var tries = 0;
-    function looksLikeTerm(t){
-      return t && typeof t === 'object' && t.options && typeof t.resize === 'function';
-    }
-    function findTerm(){
-      if (looksLikeTerm(window.term)) return window.term;
-      if (window.tty && looksLikeTerm(window.tty.term)) return window.tty.term;
-      if (window.terminal && looksLikeTerm(window.terminal)) return window.terminal;
-      return null;
-    }
-    function findFit(){
-      if (window.fitAddon && typeof window.fitAddon.fit === 'function') return window.fitAddon;
-      return null;
-    }
-    function tune(){
-      var t = findTerm();
-      if (!t) return false;
-      try {
-        if (t.options) {
-          t.options.fontSize = FONT_SIZE;
-          t.options.lineHeight = LINE_HEIGHT;
-          t.options.fontFamily = FONT_FAMILY;
-        } else {
-          t.setOption && t.setOption('fontSize', FONT_SIZE);
-          t.setOption && t.setOption('lineHeight', LINE_HEIGHT);
-          t.setOption && t.setOption('fontFamily', FONT_FAMILY);
-        }
-        var fit = findFit();
-        if (fit) {
-          fit.fit();
-        } else if (typeof t.fit === 'function') {
-          t.fit();
-        }
-        document.documentElement.style.background = '#000';
-        document.body && (document.body.style.background = '#000');
-        return true;
-      } catch (e) {
-        return false;
-      }
-    }
-    function loop(){
-      if (tune() || tries++ > 30) return;
-      setTimeout(loop, 250);
-    }
-    if (document.readyState === 'complete') loop();
-    else window.addEventListener('load', loop);
-    window.addEventListener('resize', function(){ setTimeout(tune, 100); });
-  })();
-  true;
-`;
 
 const styles = StyleSheet.create({
   navRow: {

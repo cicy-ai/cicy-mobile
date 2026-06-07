@@ -25,7 +25,8 @@
     "removeConfirmTitle": "移除该团队？",
     "removeConfirmBody": "“{{title}}” 将从此设备移除。可重新扫码恢复。",
     "editTitleTitle": "重命名团队",
-    "titlePlaceholder": "比如：工作 / 个人"
+    "titlePlaceholder": "比如：工作 / 个人",
+    "defaultTitle": "我的团队"
   },
   "chat": {
     "messagePlaceholder": "输入消息…",
@@ -34,7 +35,13 @@
     "voiceError": "{{error}}",
     "statusUnknown": "未知",
     "tabHistory": "历史",
-    "tabCli": "终端"
+    "tabCli": "终端",
+    "loadEarlier": "加载更早",
+    "beginningOfHistory": "· 已到历史开头 ·",
+    "noTurnsTitle": "暂无历史记录",
+    "noTurnsBody": "这个 agent 还没有产生历史记录，或正在直连 anthropic.com。\n\n切换到 CLI 标签查看实时终端。",
+    "systemLabel": "系统",
+    "thinkingLabel": "思考"
   },
   "voice": {
     "holdToTalk": "按住说话",
@@ -44,7 +51,9 @@
     "startError": "启动失败：{{error}}",
     "stopError": "停止失败：{{error}}",
     "noRecording": "没有录到音频",
-    "startRecordError": "无法开始录音：{{error}}"
+    "startRecordError": "无法开始录音：{{error}}",
+    "micDenied": "麦克风权限被拒绝",
+    "recordStartFailed": "无法开始录音：{{error}}"
   },
   "scan": {
     "title": "扫码加入团队",
@@ -59,6 +68,10 @@
     "successHint": "已识别，正在加入…",
     "invalidTitle": "无法识别",
     "invalidBody": "二维码内容无效：{{raw}}",
-    "errorTitle": "登录失败"
+    "errorTitle": "登录失败",
+    "scanQr": "扫码加入",
+    "or": "或",
+    "addManual": "粘贴链接加入",
+    "pastePlaceholder": "https://… ?flag=addTeam&token=…"
   }
 }

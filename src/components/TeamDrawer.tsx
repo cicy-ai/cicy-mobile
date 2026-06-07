@@ -7,6 +7,7 @@ import {
   Dimensions,
   Easing,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -40,18 +41,22 @@ export function TeamDrawer({ open, onClose }: Props) {
   const scrimOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    // react-native-web has no native animation driver — useNativeDriver:true
+    // there silently no-ops the transform, leaving the drawer parked off-screen
+    // (the "drawer won't open" bug). Use the JS driver on web.
+    const useNativeDriver = Platform.OS !== 'web';
     Animated.parallel([
       Animated.timing(tx, {
         toValue: open ? 0 : -DRAWER_W,
         duration: open ? 240 : 180,
         easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
+        useNativeDriver,
       }),
       Animated.timing(scrimOpacity, {
         toValue: open ? 0.5 : 0,
         duration: open ? 240 : 180,
         easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
+        useNativeDriver,
       }),
     ]).start();
   }, [open, tx, scrimOpacity]);

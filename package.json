@@ -57,6 +57,7 @@
     "@types/react": "~19.2.10",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~55.0.1",
+    "puppeteer": "^25.1.0",
     "typescript": "~5.9.2"
   },
   "private": true

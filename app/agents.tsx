@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActivityIndicator, AppState, type AppStateStatus, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 
@@ -14,6 +14,14 @@ import { TeamTitleModal } from '@/src/components/TeamTitleModal';
 import { Text } from '@/src/components/Text';
 import { api } from '@/src/api/http';
 import type { Agent } from '@/src/api/types';
+import {
+  ctxColor,
+  fmtCost,
+  metricsFromCurrentReply,
+  modelColor,
+  modelShort,
+  type AgentLiveMetrics,
+} from '@/src/lib/agentMetrics';
 import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, useTheme } from '@/src/theme';
 
@@ -24,6 +32,38 @@ import { radius, spacing, useTheme } from '@/src/theme';
 const HOST_PANE = 'w-10001';
 // Background-aware refresh cadence. 5s feels live without hammering the API.
 const POLL_INTERVAL_MS = 5000;
+
+// Live per-agent metrics (model / context / cost) from /api/agents/current-reply,
+// polled at 3s — same pipe as cicy-code's TeamPanel. sig-compare keeps unchanged
+// agents referentially stable so their rows don't re-render every tick.
+function useTeamLiveMetrics(ids: string[]): Record<string, AgentLiveMetrics> {
+  const [metrics, setMetrics] = useState<Record<string, AgentLiveMetrics>>({});
+  const key = ids.join(',');
+  useEffect(() => {
+    if (!key) return;
+    let cancelled = false;
+    const list = key.split(',').filter(Boolean);
+    const poll = async () => {
+      await Promise.all(
+        list.map(async (wid) => {
+          const res: any = await api.getCurrentReply(wid).catch(() => null);
+          if (cancelled || !res) return;
+          setMetrics((prev) => {
+            const next = metricsFromCurrentReply(res, prev[wid]);
+            return prev[wid]?.sig === next.sig ? prev : { ...prev, [wid]: next };
+          });
+        }),
+      );
+    };
+    poll();
+    const t = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [key]);
+  return metrics;
+}
 
 export default function Agents() {
   const { t } = useTranslation();
@@ -38,6 +78,10 @@ export default function Agents() {
   const [error, setError] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [titleModalOpen, setTitleModalOpen] = useState(false);
+
+  const agentId = useCallback((a: Agent) => String(a.name || a.id || a.pane_id || ''), []);
+  const agentIds = useMemo(() => agents.map(agentId).filter(Boolean), [agents, agentId]);
+  const liveMetrics = useTeamLiveMetrics(agentIds);
 
   const load = useCallback(async () => {
     if (!currentTeam) {
@@ -293,17 +337,6 @@ export default function Agents() {
           paddingBottom: spacing['2xl'],
           gap: spacing.sm,
         }}
-        ListHeaderComponent={
-          agents.length > 0 ? (
-            <Text
-              variant="caption"
-              tone="faint"
-              style={{ marginLeft: spacing.sm, marginBottom: spacing.xs, textTransform: 'uppercase', letterSpacing: 0.5 }}
-            >
-              {t('agents.connectedCount', { count: agents.length })}
-            </Text>
-          ) : null
-        }
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.textMuted} />
         }
@@ -315,7 +348,7 @@ export default function Agents() {
             </Text>
           </View>
         }
-        renderItem={({ item }) => <AgentRow agent={item} />}
+        renderItem={({ item }) => <AgentRow agent={item} metrics={liveMetrics[agentId(item)]} />}
       />
       {drawerEl}
       {titleModalEl}
@@ -323,7 +356,7 @@ export default function Agents() {
   );
 }
 
-function AgentRow({ agent }: { agent: Agent }) {
+function AgentRow({ agent, metrics }: { agent: Agent; metrics?: AgentLiveMetrics }) {
   const theme = useTheme();
   const routeId = agent.name || agent.id || agent.pane_id;
 
@@ -340,13 +373,33 @@ function AgentRow({ agent }: { agent: Agent }) {
       ]}
     >
       <AgentAvatar agentType={agent.agent_type} title={agent.title || agent.name || String(routeId)} size={40} />
-      <View style={{ flex: 1, gap: 2 }}>
+      <View style={{ flex: 1, gap: 3 }}>
         <Text variant="bodyMedium" numberOfLines={1}>
           {agent.title || agent.name || String(routeId)}
         </Text>
-        <Text variant="caption" tone="muted" numberOfLines={1}>
-          {workerId}
-        </Text>
+        {/* id · model · context% · cost — mirrors cicy-code TeamPanel's metrics line. */}
+        <View style={rowStyles.metaRow}>
+          <Text variant="caption" tone="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
+            {workerId}
+          </Text>
+          {metrics?.model ? (
+            <View style={[rowStyles.modelChip, { borderColor: modelColor(metrics.model) }]}>
+              <Text variant="caption" numberOfLines={1} style={{ color: modelColor(metrics.model), fontSize: 10 }}>
+                {modelShort(metrics.model)}
+              </Text>
+            </View>
+          ) : null}
+          {metrics && metrics.ctx > 0 ? (
+            <Text variant="caption" style={{ color: ctxColor(metrics.ctx), fontSize: 11 }}>
+              {metrics.ctx}%
+            </Text>
+          ) : null}
+          {metrics && metrics.cost > 0 ? (
+            <Text variant="caption" tone="faint" style={{ fontSize: 11 }}>
+              {fmtCost(metrics.cost)}
+            </Text>
+          ) : null}
+        </View>
       </View>
       <Ionicons name="chevron-forward" size={18} color={theme.textFaint} />
     </PressableScale>
@@ -398,5 +451,14 @@ const rowStyles = StyleSheet.create({
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
     gap: spacing.md,
+  },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'nowrap' },
+  modelChip: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    maxWidth: 130,
+    flexShrink: 0,
   },
 });

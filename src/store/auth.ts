@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 
+import i18n from '@/src/i18n';
 import { storage } from './storage';
 
 const TEAMS_KEY = 'cicy_teams_v1';
@@ -54,16 +55,12 @@ function makeTeamId() {
   return `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// Build a sensible default title from a server URL: prefer the host, strip the
-// scheme. The user can rename later via the title-edit modal.
-function defaultTitleFor(serverUrl: string): string {
-  try {
-    const u = new URL(serverUrl);
-    return u.hostname || serverUrl;
-  } catch {
-    // Not a parseable URL; show as-is, trimmed.
-    return serverUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '') || 'Team';
-  }
+// Default title for a team added without one — localized "My Team". The
+// configured i18n singleton is imported via '@/src/i18n' (initialized at app
+// root before any addTeam can run). The user can rename later via the
+// title-edit modal.
+function defaultTeamTitle(): string {
+  return i18n.t('teams.defaultTitle', { defaultValue: 'My Team' });
 }
 
 function normalizeServerUrl(s: string): string {
@@ -126,7 +123,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (legacyToken && legacyServer) {
         const team: Team = {
           id: makeTeamId(),
-          title: defaultTitleFor(legacyServer),
+          title: defaultTeamTitle(),
           serverUrl: normalizeServerUrl(legacyServer),
           token: legacyToken,
           addedAt: Date.now(),
@@ -157,7 +154,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     const team: Team = {
       id: makeTeamId(),
-      title: (title?.trim() || defaultTitleFor(url)),
+      title: (title?.trim() || defaultTeamTitle()),
       serverUrl: url,
       token,
       addedAt: Date.now(),
