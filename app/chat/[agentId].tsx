@@ -21,6 +21,7 @@ import { Text } from '@/src/components/Text';
 import { VoiceBar } from '@/src/components/VoiceBar';
 import { api } from '@/src/api/http';
 import { isTelegram, showBackButton } from '@/src/lib/telegram';
+import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 
@@ -31,6 +32,10 @@ const IS_WEB = Platform.OS === 'web';
 export default function Chat() {
   const { t } = useTranslation();
   const theme = useTheme();
+  // Deep-link entry — this screen is the first content, drop the boot splash.
+  useEffect(() => {
+    dismissBootSplash();
+  }, []);
   const { agentId: rawAgentId } = useLocalSearchParams<{ agentId: string }>();
   const agentId = String(rawAgentId);
   const { serverUrl, token } = useAuthStore();

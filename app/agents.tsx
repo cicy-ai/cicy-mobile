@@ -6,6 +6,8 @@ import { ActivityIndicator, AppState, type AppStateStatus, FlatList, RefreshCont
 
 import { Button } from '@/src/components/Button';
 import { AgentAvatar } from '@/src/components/AgentAvatar';
+import { AgentStatusDot } from '@/src/components/AgentStatusDot';
+import { CtxRing } from '@/src/components/CtxRing';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
 import { TeamDrawer } from '@/src/components/TeamDrawer';
@@ -13,8 +15,8 @@ import { TeamTitleModal } from '@/src/components/TeamTitleModal';
 import { Text } from '@/src/components/Text';
 import { api } from '@/src/api/http';
 import type { Agent } from '@/src/api/types';
+import { dismissBootSplash } from '@/src/lib/bootSplash';
 import {
-  ctxColor,
   fmtCost,
   metricsFromCurrentReply,
   modelColor,
@@ -77,6 +79,7 @@ export default function Agents() {
   const [error, setError] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [titleModalOpen, setTitleModalOpen] = useState(false);
+  const [gatewayByName, setGatewayByName] = useState<Record<string, boolean>>({});
 
   const agentId = useCallback((a: Agent) => String(a.name || a.id || a.pane_id || ''), []);
   const agentIds = useMemo(() => agents.map(agentId).filter(Boolean), [agents, agentId]);
@@ -110,15 +113,20 @@ export default function Agents() {
           workspace: p.workspace,
         }));
 
-      // Build a lookup so we can attach workspace to each worker. /api/poll
-      // doesn't include it, but /api/panes does — keyed by the worker name
-      // ("w-10036") which is the prefix of pane_id ("w-10036:main.0").
+      // Build lookups from /api/panes (which /api/poll lacks), keyed by the
+      // worker name ("w-10036") = prefix of pane_id ("w-10036:main.0"):
+      // workspace per worker, and the gateway flag (use_custom_gateway —
+      // solid dot = local AI gateway, hollow = official login direct).
       const workspaceByName = new Map<string, string>();
+      const gwByName: Record<string, boolean> = {};
       for (const p of panes) {
-        if (typeof p.pane_id !== 'string' || !p.workspace) continue;
+        if (typeof p.pane_id !== 'string') continue;
         const key = p.pane_id.split(':')[0];
-        if (key) workspaceByName.set(key, p.workspace);
+        if (!key) continue;
+        if (p.workspace) workspaceByName.set(key, p.workspace);
+        gwByName[key] = !!p.use_custom_gateway;
       }
+      setGatewayByName(gwByName);
 
       const workers = (poll.agents ?? [])
         .filter((a) => a.pane_id === HOST_PANE)
@@ -139,6 +147,9 @@ export default function Agents() {
       setLoading(true);
       await load();
       if (!cancelled) setLoading(false);
+      // First data is in (or errored) — hand off from the boot splash straight
+      // to real content, no spinner relay.
+      dismissBootSplash();
     })();
     return () => {
       cancelled = true;
@@ -343,7 +354,9 @@ export default function Agents() {
             </Text>
           </View>
         }
-        renderItem={({ item }) => <AgentRow agent={item} metrics={liveMetrics[agentId(item)]} />}
+        renderItem={({ item }) => (
+          <AgentRow agent={item} metrics={liveMetrics[agentId(item)]} gateway={gatewayByName[agentId(item)]} />
+        )}
       />
       {drawerEl}
       {titleModalEl}
@@ -351,7 +364,7 @@ export default function Agents() {
   );
 }
 
-function AgentRow({ agent, metrics }: { agent: Agent; metrics?: AgentLiveMetrics }) {
+function AgentRow({ agent, metrics, gateway }: { agent: Agent; metrics?: AgentLiveMetrics; gateway?: boolean }) {
   const theme = useTheme();
   const routeId = agent.name || agent.id || agent.pane_id;
 
@@ -369,11 +382,26 @@ function AgentRow({ agent, metrics }: { agent: Agent; metrics?: AgentLiveMetrics
     >
       <AgentAvatar agentType={agent.agent_type} title={agent.title || agent.name || String(routeId)} size={40} />
       <View style={{ flex: 1, gap: 3 }}>
-        <Text variant="bodyMedium" numberOfLines={1}>
-          {agent.title || agent.name || String(routeId)}
-        </Text>
-        {/* id · model · context% · cost — mirrors cicy-code TeamPanel's metrics line. */}
+        <View style={rowStyles.titleRow}>
+          <Text variant="bodyMedium" numberOfLines={1} style={{ flexShrink: 1 }}>
+            {agent.title || agent.name || String(routeId)}
+          </Text>
+          {/* 网关标识(同 cicy-code team-panel-worker-gateway):
+              实心蓝点 = 本地 AI Gateway,空心环 = 官方登录直连。 */}
+          {gateway != null ? (
+            <View
+              style={[
+                rowStyles.gatewayDot,
+                gateway
+                  ? { backgroundColor: 'rgba(56,189,248,0.6)' }
+                  : { borderWidth: 1, borderColor: 'rgba(128,128,128,0.6)' },
+              ]}
+            />
+          ) : null}
+        </View>
+        {/* status · id · model · ctx ring · cost — mirrors cicy-code TeamPanel's metrics line. */}
         <View style={rowStyles.metaRow}>
+          <AgentStatusDot working={!!metrics?.working} known={!!metrics} />
           <Text variant="caption" tone="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
             {workerId}
           </Text>
@@ -384,11 +412,7 @@ function AgentRow({ agent, metrics }: { agent: Agent; metrics?: AgentLiveMetrics
               </Text>
             </View>
           ) : null}
-          {metrics && metrics.ctx > 0 ? (
-            <Text variant="caption" style={{ color: ctxColor(metrics.ctx), fontSize: 11 }}>
-              {metrics.ctx}%
-            </Text>
-          ) : null}
+          {metrics && metrics.ctx > 0 ? <CtxRing pct={metrics.ctx} /> : null}
           {metrics && metrics.cost > 0 ? (
             <Text variant="caption" tone="faint" style={{ fontSize: 11 }}>
               {fmtCost(metrics.cost)}
@@ -447,6 +471,8 @@ const rowStyles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     gap: spacing.md,
   },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  gatewayDot: { width: 6, height: 6, borderRadius: 3, flexShrink: 0 },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'nowrap' },
   modelChip: {
     paddingHorizontal: 5,

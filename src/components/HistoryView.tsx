@@ -582,11 +582,23 @@ export function HistoryView({ agentId, pending }: Props) {
   // (below) = the "reply 先到上一条 再乱跳" duplicate/jump. The live turn owns the
   // full ordered render until the turn completes and migrates into committed.
   const displayItems = useMemo(() => {
+    // Display layer drops system noise entirely (用户指令:agent 显示层完全过滤
+    // system message):role==='system' turns and harness-only user turns (a q
+    // that is nothing but system-reminder/recap blocks) never render. Their
+    // assistant recap responses are dropped separately via recapResponses.
+    const visible = items.filter((t) => {
+      if (t?.role === 'system') return false;
+      if (t?.role === 'user') {
+        const q = String((t as any)?.q ?? (t as any)?.text ?? '');
+        if (q.trim() && !splitLeadingHarnessBlocks(q).remaining.trim()) return false;
+      }
+      return true;
+    });
     const liveActive = !!liveTurn && Number(liveTurn.history_id ?? 0) > committedMaxId;
-    if (!liveActive) return items;
+    if (!liveActive) return visible;
     let lastUserId = 0;
-    for (const t of items) if (t?.role === 'user') lastUserId = Math.max(lastUserId, Number(t?.history_id ?? 0));
-    return items.filter((t) => !(t?.role === 'assistant' && Number(t?.history_id ?? 0) > lastUserId));
+    for (const t of visible) if (t?.role === 'user') lastUserId = Math.max(lastUserId, Number(t?.history_id ?? 0));
+    return visible.filter((t) => !(t?.role === 'assistant' && Number(t?.history_id ?? 0) > lastUserId));
   }, [items, liveTurn, committedMaxId]);
 
   // Recap-on-return is system noise: a harness-only user turn + the assistant
@@ -830,41 +842,17 @@ export function HistoryView({ agentId, pending }: Props) {
   );
 }
 
-// Folded harness/system notice — a tiny centered "system" pill (tap to expand),
-// matching web's SystemNoticeCard. Repeated reminders read as subtle separators
-// instead of cluttering the conversation.
-function SystemNoticeCard({ text }: { text: string }) {
-  const theme = useTheme();
-  const [open, setOpen] = useState(false);
-  if (!text.trim()) return null;
-  return (
-    <View style={{ alignItems: 'center', alignSelf: 'stretch' }}>
-      <PressableScale onPress={() => setOpen((o) => !o)} hitSlop={6} style={styles.sysPill}>
-        <Text variant="caption" tone="faint" style={{ textTransform: 'uppercase', letterSpacing: 0.5 }}>
-          {open ? '▾' : '▸'} {i18n.t('chat.systemLabel')}
-        </Text>
-      </PressableScale>
-      {open ? (
-        <View style={[styles.sysBody, { borderColor: theme.border, backgroundColor: theme.surfaceMuted }]}>
-          <Text variant="caption" tone="muted" selectable>
-            {text}
-          </Text>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-// User question bubble = web's CollapsibleQ: peel leading harness blocks
-// (system-reminder / recap / continuation / command echoes) into a folded
-// SystemNoticeCard, render only the real question as the bubble.
+// User question bubble = web's CollapsibleQ, minus the system fold: leading
+// harness blocks (system-reminder / recap / continuation / command echoes) are
+// DROPPED — only the real question renders.
 function QuestionBubble({ text }: { text: string }) {
   const theme = useTheme();
-  const { blocks, remaining } = useMemo(() => splitLeadingHarnessBlocks(text), [text]);
-  if (!remaining && !blocks.length) return null;
+  // Harness blocks (system-reminder / recap / continuation) are dropped — the
+  // display layer never shows system content. Only the real question renders.
+  const { remaining } = useMemo(() => splitLeadingHarnessBlocks(text), [text]);
+  if (!remaining) return null;
   return (
     <View style={{ gap: spacing.sm }}>
-      {blocks.length ? <SystemNoticeCard text={blocks.join('\n\n')} /> : null}
       {remaining ? (
         <View style={styles.qRow}>
           <View style={[styles.qBubble, { backgroundColor: theme.accent }]}>
@@ -878,8 +866,8 @@ function QuestionBubble({ text }: { text: string }) {
 
 function Turn({ turn, isLast }: { turn: HistoryTurn; isLast: boolean }) {
   const theme = useTheme();
-  // Harness-injected system/developer notice → folded card (matches web).
-  if (turn.role === 'system') return <SystemNoticeCard text={turn.text || ''} />;
+  // System/developer notices never render — display layer filters them fully.
+  if (turn.role === 'system') return null;
   const status = (turn.status ?? '').toLowerCase();
   const streaming = isLast && (status === 'streaming' || status === 'pending' || status === 'tool_use');
 
@@ -1273,15 +1261,6 @@ const styles = StyleSheet.create({
   },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing['2xl'] },
   qRow: { flexDirection: 'row', justifyContent: 'flex-end' },
-  sysPill: { paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: 999, opacity: 0.8 },
-  sysBody: {
-    alignSelf: 'stretch',
-    marginTop: 4,
-    borderRadius: radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
   qBubble: {
     maxWidth: '82%',
     paddingHorizontal: spacing.lg,

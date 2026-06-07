@@ -10,6 +10,7 @@ import 'react-native-reanimated';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { useColorScheme } from 'react-native';
+import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { darkTheme, lightTheme } from '@/src/theme/tokens';
 import { useAuthStore } from '@/src/store/auth';
 import { initWebApp } from '@/src/lib/telegram';
@@ -53,11 +54,12 @@ export default function RootLayout() {
     hydrate();
   }, [hydrate]);
 
-  // Web: tear down the static boot splash (+html.tsx) once React is mounted.
+  // Web: the boot splash is dismissed by the first screen once it has real
+  // content (one continuous loading instead of spinner relays) — this is only
+  // the safety net so it can never stick forever.
   useEffect(() => {
-    if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.getElementById('boot-splash')?.remove();
-    }
+    const t = setTimeout(dismissBootSplash, 8000);
+    return () => clearTimeout(t);
   }, []);
 
   // If we're inside Telegram, signal ready + request full height. No-op in a

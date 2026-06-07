@@ -8,6 +8,7 @@ import { Button } from '@/src/components/Button';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
 import { Text } from '@/src/components/Text';
+import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { parsePayload } from '@/src/lib/parsePayload';
 import { canScanQr, scanQr } from '@/src/lib/telegram';
 import { useAuthStore } from '@/src/store/auth';
@@ -23,6 +24,11 @@ export default function ScanWeb() {
   const teams = useAuthStore((s) => s.teams);
   const canGoBack = teams.length > 0;
   const addTeam = useAuthStore((s) => s.addTeam);
+
+  // This screen IS the first content when no team exists — drop the splash.
+  useEffect(() => {
+    dismissBootSplash();
+  }, []);
 
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
