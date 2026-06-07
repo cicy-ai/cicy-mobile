@@ -180,7 +180,7 @@ export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
       setPhase('transcribing');
       try {
         const { text } = await transcribeAudio(uri, { language: getDeviceLocale().whisperLang });
-        const trimmed = normalizeChineseVariant(text).trim();
+        const trimmed = (await normalizeChineseVariant(text)).trim();
         if (trimmed) onTranscript(trimmed);
       } catch (e: any) {
         onError?.(String(e?.message ?? e));

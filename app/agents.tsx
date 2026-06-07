@@ -8,7 +8,6 @@ import { Button } from '@/src/components/Button';
 import { AgentAvatar } from '@/src/components/AgentAvatar';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
-import { TeamAvatar } from '@/src/components/TeamAvatar';
 import { TeamDrawer } from '@/src/components/TeamDrawer';
 import { TeamTitleModal } from '@/src/components/TeamTitleModal';
 import { Text } from '@/src/components/Text';
@@ -205,18 +204,14 @@ export default function Agents() {
         style={styles.iconBtn}
         hitSlop={6}
       >
-        {currentTeam ? (
-          <TeamAvatar id={currentTeam.id} title={currentTeam.title} size={36} bordered />
-        ) : (
-          <View
-            style={[
-              styles.iconBtnFallback,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}
-          >
-            <Ionicons name="menu" size={22} color={theme.text} />
-          </View>
-        )}
+        <View
+          style={[
+            styles.iconBtnFallback,
+            { backgroundColor: theme.surface, borderColor: theme.border },
+          ]}
+        >
+          <Ionicons name="menu" size={22} color={theme.text} />
+        </View>
       </PressableScale>
 
       <View style={styles.titleWrap}>

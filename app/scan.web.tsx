@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { StyleSheet, TextInput, View } from 'react-native';
 
@@ -27,7 +27,14 @@ export default function ScanWeb() {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const hasScanner = canScanQr();
+  // The Telegram SDK loads async (see +html.tsx) and may land after first
+  // render — re-check briefly so the in-Telegram scan button still appears.
+  const [hasScanner, setHasScanner] = useState(canScanQr);
+  useEffect(() => {
+    if (hasScanner) return;
+    const timers = [400, 1200, 3000].map((ms) => setTimeout(() => setHasScanner((v) => v || canScanQr()), ms));
+    return () => timers.forEach(clearTimeout);
+  }, [hasScanner]);
 
   // Shared join: parse a payload (scanned or pasted) → add the team → go.
   async function join(raw: string) {

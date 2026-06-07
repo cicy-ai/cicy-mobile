@@ -1,8 +1,7 @@
 import { router } from 'expo-router';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Alert,
   Animated,
   Dimensions,
   Easing,
@@ -15,6 +14,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ConfirmModal } from './ConfirmModal';
 import { PressableScale } from './PressableScale';
 import { TeamAvatar } from './TeamAvatar';
 import { Text } from './Text';
@@ -66,26 +66,20 @@ export function TeamDrawer({ open, onClose }: Props) {
     onClose();
   }
 
-  function onLongPressTeam(team: Team) {
-    Alert.alert(
-      t('teams.removeConfirmTitle'),
-      t('teams.removeConfirmBody', { title: team.title }),
-      [
-        { text: t('common.cancel'), style: 'cancel' },
-        {
-          text: t('teams.remove'),
-          style: 'destructive',
-          onPress: async () => {
-            await removeTeam(team.id);
-            const remaining = useAuthStore.getState().teams;
-            onClose();
-            if (remaining.length === 0) {
-              setTimeout(() => router.replace('/scan'), 50);
-            }
-          },
-        },
-      ],
-    );
+  // Long-press a team → in-app confirm overlay (RN-web's Alert.alert with
+  // buttons is a no-op, so a real modal is the only cross-platform way).
+  const [confirmTeam, setConfirmTeam] = useState<Team | null>(null);
+
+  async function onConfirmRemove() {
+    const team = confirmTeam;
+    setConfirmTeam(null);
+    if (!team) return;
+    await removeTeam(team.id);
+    const remaining = useAuthStore.getState().teams;
+    onClose();
+    if (remaining.length === 0) {
+      setTimeout(() => router.replace('/scan'), 50);
+    }
   }
 
   return (
@@ -122,7 +116,7 @@ export function TeamDrawer({ open, onClose }: Props) {
                 <PressableScale
                   key={team.id}
                   onPress={() => onPickTeam(team)}
-                  onLongPress={() => onLongPressTeam(team)}
+                  onLongPress={() => setConfirmTeam(team)}
                   haptic
                   scaleTo={0.97}
                   style={styles.teamRow}
@@ -141,6 +135,17 @@ export function TeamDrawer({ open, onClose }: Props) {
             })}
           </ScrollView>
         </Animated.View>
+
+        <ConfirmModal
+          open={!!confirmTeam}
+          title={t('teams.removeConfirmTitle')}
+          body={confirmTeam ? t('teams.removeConfirmBody', { title: confirmTeam.title }) : undefined}
+          confirmText={t('teams.remove')}
+          cancelText={t('common.cancel')}
+          destructive
+          onConfirm={() => void onConfirmRemove()}
+          onCancel={() => setConfirmTeam(null)}
+        />
       </View>
     </Modal>
   );

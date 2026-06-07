@@ -1,7 +1,15 @@
 import { getLocales } from 'expo-localization';
-import { Converter } from 'opencc-js';
 
-const toSimplified = Converter({ from: 'hk', to: 'cn' });
+// opencc-js ships multi-megabyte conversion dictionaries — load it lazily on
+// first use (STT transcripts only) instead of paying for it in the startup
+// bundle. The promise is cached so the dictionaries parse once.
+let toSimplifiedP: Promise<(text: string) => string> | null = null;
+function loadToSimplified() {
+  if (!toSimplifiedP) {
+    toSimplifiedP = import('opencc-js').then((m) => m.Converter({ from: 'hk', to: 'cn' }));
+  }
+  return toSimplifiedP;
+}
 
 type ChineseVariant = 'simplified' | 'traditional' | null;
 
@@ -51,13 +59,14 @@ export function getDeviceLocale(): DeviceLocale {
 }
 
 // Normalize a STT transcript to the device's Chinese variant. For non-Chinese
-// or traditional-locale devices it returns the text unchanged.
-export function normalizeChineseVariant(text: string): string {
+// or traditional-locale devices it returns the text unchanged. Async because
+// the opencc-js dictionaries are lazy-loaded on first use.
+export async function normalizeChineseVariant(text: string): Promise<string> {
   if (!text) return text;
   const { chineseVariant } = getDeviceLocale();
   if (chineseVariant === 'simplified') {
     try {
-      return toSimplified(text);
+      return (await loadToSimplified())(text);
     } catch {
       return text;
     }

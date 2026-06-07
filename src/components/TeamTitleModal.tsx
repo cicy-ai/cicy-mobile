@@ -14,6 +14,7 @@ import {
 import { useRef } from 'react';
 
 import { Button } from './Button';
+import { ConfirmModal } from './ConfirmModal';
 import { TeamAvatar } from './TeamAvatar';
 import { Text } from './Text';
 import { useAuthStore, type Team } from '@/src/store/auth';
@@ -58,19 +59,16 @@ export function TeamTitleModal({ open, team, onClose }: Props) {
     onClose();
   }
 
-  function onRemove() {
+  // Remove goes through an explicit confirm overlay — never delete on a
+  // single tap (and RN-web's Alert.alert with buttons is a no-op anyway).
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  async function onConfirmRemove() {
+    setConfirmOpen(false);
     onClose();
-    // Defer the confirm dialog so the modal can close cleanly first;
-    // stacking two transparent overlays in the same frame causes a flash.
-    setTimeout(async () => {
-      await removeTeam(team.id);
-      const remaining = useAuthStore.getState().teams;
-      if (remaining.length === 0) {
-        // Routing has to happen from the screen, not here — but the agents
-        // screen handles `teams.length === 0` already by re-rendering its
-        // empty state, so we're done.
-      }
-    }, 100);
+    await removeTeam(team.id);
+    // The agents screen reacts to `teams.length === 0` by rendering its empty
+    // state, so no routing is needed here.
   }
 
   const previewTeam = { ...team, title: draft || team.title };
@@ -130,12 +128,23 @@ export function TeamTitleModal({ open, team, onClose }: Props) {
           />
 
           <View style={styles.btnRow}>
-            <Button title={t('teams.remove')} variant="ghost" onPress={onRemove} />
+            <Button title={t('teams.remove')} variant="ghost" onPress={() => setConfirmOpen(true)} />
             <View style={{ flex: 1 }} />
             <Button title={t('common.cancel')} variant="ghost" onPress={onClose} />
             <Button title={t('common.ok')} onPress={onSave} />
           </View>
         </Animated.View>
+
+        <ConfirmModal
+          open={confirmOpen}
+          title={t('teams.removeConfirmTitle')}
+          body={t('teams.removeConfirmBody', { title: team.title })}
+          confirmText={t('teams.remove')}
+          cancelText={t('common.cancel')}
+          destructive
+          onConfirm={() => void onConfirmRemove()}
+          onCancel={() => setConfirmOpen(false)}
+        />
       </KeyboardAvoidingView>
     </Modal>
   );

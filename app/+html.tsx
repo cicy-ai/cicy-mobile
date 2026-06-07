@@ -20,9 +20,12 @@ export default function Root({ children }: PropsWithChildren) {
         />
 
         {/* Telegram Mini App SDK — injects window.Telegram.WebApp when opened
-            inside Telegram. Harmless in a plain browser (initData is empty
-            there, so we fall back to the normal scan/paste add-team flow). */}
-        <script src="https://telegram.org/js/telegram-web-app.js" />
+            inside Telegram. Harmless in a plain browser. MUST be async: a
+            plain head script render-blocks, and telegram.org is unreachable
+            from mainland-China browsers — a sync (or defer, which stalls the
+            in-order deferred queue) load would freeze first paint until the
+            connection times out. Consumers read window.Telegram lazily. */}
+        <script async src="https://telegram.org/js/telegram-web-app.js" />
 
         {/* PWA manifest + theme color (light/dark aware for the browser chrome). */}
         <link rel="manifest" href="/manifest.json" />
@@ -45,10 +48,38 @@ export default function Root({ children }: PropsWithChildren) {
 
         <script dangerouslySetInnerHTML={{ __html: SW_REGISTER }} />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        {/* Boot splash — pure HTML/CSS so it paints the instant the document
+            parses, long before the multi-megabyte JS bundle finishes. The app
+            removes #boot-splash from _layout.tsx once React mounts. */}
+        <div id="boot-splash">
+          <div className="boot-spinner" />
+        </div>
+        <style dangerouslySetInnerHTML={{ __html: SPLASH_CSS }} />
+      </body>
     </html>
   );
 }
+
+const SPLASH_CSS = `
+#boot-splash {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+  background-color: #FAF9F5;
+}
+@media (prefers-color-scheme: dark) {
+  #boot-splash { background-color: #1A1915; }
+}
+.boot-spinner {
+  width: 28px; height: 28px;
+  border: 3px solid rgba(128,128,128,0.25);
+  border-top-color: #E8651A;
+  border-radius: 50%;
+  animation: boot-spin 0.8s linear infinite;
+}
+@keyframes boot-spin { to { transform: rotate(360deg); } }
+`;
 
 const BACKGROUND_CSS = `
 html, body { background-color: #FAF9F5; }

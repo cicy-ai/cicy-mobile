@@ -65,5 +65,5 @@ export async function transcribeAudio(fileUri: string, opts?: { language?: strin
   }
   const json = (await res.json()) as STTResult;
   if (!json?.text) throw new Error('empty transcript');
-  return { text: normalizeChineseVariant(json.text) };
+  return { text: await normalizeChineseVariant(json.text) };
 }

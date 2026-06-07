@@ -27,6 +27,23 @@ self.addEventListener('fetch', (event) => {
   // (the agent API calls to remote team servers) passes straight through.
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
 
+  // Content-hashed bundles (/_expo/static/entry-<hash>.js) never change under
+  // the same URL — serve cache-first so repeat opens skip the megabyte
+  // download entirely. A new deploy gets a new hash via the fresh HTML shell.
+  if (new URL(req.url).pathname.startsWith('/_expo/static/')) {
+    event.respondWith(
+      (async () => {
+        const cached = await caches.match(req);
+        if (cached) return cached;
+        const fresh = await fetch(req);
+        const cache = await caches.open(CACHE);
+        cache.put(req, fresh.clone());
+        return fresh;
+      })(),
+    );
+    return;
+  }
+
   event.respondWith(
     (async () => {
       try {

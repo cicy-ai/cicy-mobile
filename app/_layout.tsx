@@ -53,6 +53,13 @@ export default function RootLayout() {
     hydrate();
   }, [hydrate]);
 
+  // Web: tear down the static boot splash (+html.tsx) once React is mounted.
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      document.getElementById('boot-splash')?.remove();
+    }
+  }, []);
+
   // If we're inside Telegram, signal ready + request full height. No-op in a
   // plain browser / native app.
   useEffect(() => {
