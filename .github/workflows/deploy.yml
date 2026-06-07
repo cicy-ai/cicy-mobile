@@ -1,0 +1,41 @@
+# Tag-driven release: push a v* tag → build the web export → deploy the
+# assets-only Worker (telegram-bot.cicy-ai.com + workers.dev).
+#
+#   git tag v1.0.1 && git push origin v1.0.1
+#
+# Secrets (repo settings): CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
+name: deploy
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build web export
+        run: npx expo export -p web
+
+      - name: Deploy to Cloudflare Workers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler@4 deploy
+
+      - name: Verify live bundle matches build
+        run: |
+          LOCAL=$(ls dist/_expo/static/js/web/ | grep '^entry')
+          LIVE=$(curl -s https://telegram-bot.cicy-ai.com/ | grep -o 'entry-[a-f0-9]*\.js' | head -1)
+          echo "local=$LOCAL live=$LIVE"
+          test "$LOCAL" = "$LIVE"
