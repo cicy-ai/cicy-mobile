@@ -77,6 +77,15 @@ A `v*` tag triggers two jobs:
    - latest: <https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.apk>
    - versioned: `https://r2.deepfetch.de5.net/cicy-mobile/cicy-<version>.apk`
 
+### iOS (manual)
+
+iOS is **not** on the tag path — private-repo macOS minutes bill at 10×. Trigger
+the `release` workflow manually (Actions → Run workflow → `ios_version`); it builds
+an **unsigned IPA** and pushes it to R2 (install via Sideloadly / AltStore, which
+re-sign with your Apple ID — free account = 7-day cert):
+- latest: <https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.ipa>
+- versioned: `https://r2.deepfetch.de5.net/cicy-mobile/cicy-<version>.ipa`
+
 The version comes from the tag: `v1.0.1` → `app.json` `expo.version = 1.0.1`,
 and `android.versionCode` = the workflow run number (monotonic), via
 `scripts/sync-version.mjs`.

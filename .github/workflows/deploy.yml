@@ -17,10 +17,20 @@ name: release
 on:
   push:
     tags: ['v*']
+  # iOS is manual-only for now: macOS minutes bill at 10x on a private repo and
+  # the unsigned-IPA build is still being validated, so it shouldn't run on every
+  # release tag yet. Trigger it from the Actions tab with a version string.
+  workflow_dispatch:
+    inputs:
+      ios_version:
+        description: iOS build version (e.g. 1.0.3)
+        required: true
+        default: 0.0.0-dev
 
 jobs:
   # ── Telegram Mini App / PWA → Cloudflare ─────────────────────────────────────
   web:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +58,7 @@ jobs:
 
   # ── Android APK → GitHub Release ─────────────────────────────────────────────
   android:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release + upload the APK
@@ -102,3 +113,56 @@ jobs:
             --file "cicy-${VER}.apk" --remote --content-type "$CT"
           echo "Public APK: https://r2.deepfetch.de5.net/cicy-mobile/cicy-${VER}.apk"
           echo "Latest:     https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.apk"
+
+  # ── iOS unsigned IPA → GitHub Release + public R2 ────────────────────────────
+  # Unsigned on purpose: Sideloadly / AltStore re-sign with the user's Apple ID
+  # on install (free account = 7-day cert). Must build on macOS. NOTE: private-
+  # repo macOS minutes bill at 10x — each run is expensive.
+  ios:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    env:
+      VER: ${{ github.event.inputs.ios_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install deps
+        run: npm ci
+      - name: Set version
+        run: node scripts/sync-version.mjs "$VER" "${{ github.run_number }}"
+      - name: Prebuild native iOS project
+        run: npx expo prebuild -p ios --no-install
+      - name: Install CocoaPods
+        run: cd ios && pod install
+      - name: Build unsigned .app
+        run: |
+          WS=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(xcodebuild -workspace "$WS" -list 2>/dev/null \
+            | awk '/Schemes:/{f=1;next} f && NF {gsub(/^[[:space:]]+/,""); print; exit}')
+          echo "workspace=$WS scheme=$SCHEME"
+          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Release \
+            -sdk iphoneos -derivedDataPath ios/build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            clean build
+      - name: Package unsigned IPA
+        run: |
+          APP=$(ls -d ios/build/Build/Products/Release-iphoneos/*.app | head -1)
+          echo "app=$APP"
+          rm -rf Payload && mkdir -p Payload && cp -R "$APP" Payload/
+          zip -qry "cicy-${VER}.ipa" Payload
+          ls -lh cicy-*.ipa
+      - name: Upload IPA to public R2 CDN
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          CT=application/octet-stream
+          npx wrangler@4 r2 object put "cicy-assets-poc/cicy-mobile/cicy-${VER}.ipa" \
+            --file "cicy-${VER}.ipa" --remote --content-type "$CT"
+          npx wrangler@4 r2 object put "cicy-assets-poc/cicy-mobile/cicy-latest.ipa" \
+            --file "cicy-${VER}.ipa" --remote --content-type "$CT"
+          echo "Public IPA: https://r2.deepfetch.de5.net/cicy-mobile/cicy-${VER}.ipa"
+          echo "Latest:     https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.ipa"

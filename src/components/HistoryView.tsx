@@ -175,7 +175,13 @@ export function HistoryView({ agentId, pending }: Props) {
 
   const domNode = useCallback((): any => {
     const sv: any = scrollRef.current;
-    return sv && typeof sv.getScrollableNode === 'function' ? sv.getScrollableNode() : null;
+    const n = sv && typeof sv.getScrollableNode === 'function' ? sv.getScrollableNode() : null;
+    // Only return a node we can actually set scrollTop on — i.e. a web DOM
+    // element. On native, getScrollableNode() returns a numeric reactTag, and
+    // assigning `.scrollTop` on a number throws "cannot create property
+    // scrollTop on number" (app crash). Returning null makes every scroll
+    // helper no-op on native, exactly as the anchor logic intends.
+    return n && typeof n === 'object' && typeof n.scrollTop === 'number' ? n : null;
   }, []);
   const applyAnchorSpacerHeight = useCallback((h: number) => {
     const n = Math.max(0, Math.round(h));
