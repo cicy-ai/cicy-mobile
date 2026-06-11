@@ -26,11 +26,13 @@ import {
 import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, useTheme } from '@/src/theme';
 
-// We only show the master "w-10001" and its direct workers. Backend returns
-// every agent regardless of which host it belongs to, so we filter client-side.
-// Hardcoded for now — extend currentTeam with a host field once we support
-// multi-host teams.
-const HOST_PANE = 'w-10001';
+// We only show the team's master/dispatcher pane and its direct workers. The
+// backend returns every agent regardless of host, so we filter client-side.
+// cicy-code stamps each worker's master into its pane_id (all of a team's
+// workers share it), so the master is derived from /api/poll per load rather
+// than hardcoded — teams differ. Falls back to this default when a team has no
+// workers yet to derive from.
+const DEFAULT_MASTER = 'w-1001';
 // Background-aware refresh cadence. 5s feels live without hammering the API.
 const POLL_INTERVAL_MS = 5000;
 
@@ -94,21 +96,29 @@ export default function Agents() {
     setError(null);
     try {
       // poll() returns workers (and statuses); panes() lets us pull the
-      // master row for HOST_PANE because /api/poll omits role=master rows.
+      // master row because /api/poll omits role=master rows.
       const [poll, panes] = await Promise.all([api.poll(), api.getPanes()]);
+
+      // Derive the master/dispatcher this team centres on: every worker row from
+      // /api/poll carries its master in `pane_id` (e.g. "w-1001"). Fall back to
+      // DEFAULT_MASTER when there are no workers to derive from.
+      const workerRows = poll.agents ?? [];
+      const hostPane =
+        workerRows.find((a) => typeof a.pane_id === 'string' && a.pane_id)?.pane_id ||
+        DEFAULT_MASTER;
 
       const masters: Agent[] = panes
         .filter(
           (p) =>
             p.role === 'master' &&
             typeof p.pane_id === 'string' &&
-            p.pane_id.startsWith(`${HOST_PANE}:`),
+            p.pane_id.startsWith(`${hostPane}:`),
         )
         .map((p) => ({
-          name: HOST_PANE,
-          pane_id: HOST_PANE,
+          name: hostPane,
+          pane_id: hostPane,
           agent_type: p.agent_type,
-          title: p.title || HOST_PANE,
+          title: p.title || hostPane,
           status: 'active',
           workspace: p.workspace,
         }));
@@ -128,8 +138,8 @@ export default function Agents() {
       }
       setGatewayByName(gwByName);
 
-      const workers = (poll.agents ?? [])
-        .filter((a) => a.pane_id === HOST_PANE)
+      const workers = workerRows
+        .filter((a) => a.pane_id === hostPane)
         .map((a) => ({
           ...a,
           workspace: a.name ? workspaceByName.get(a.name) : undefined,
@@ -338,6 +348,7 @@ export default function Agents() {
         data={agents}
         keyExtractor={(a) => String(a.name ?? a.id ?? a.pane_id ?? '')}
         contentContainerStyle={{
+          flexGrow: 1,
           paddingHorizontal: spacing.lg,
           paddingTop: spacing.sm,
           paddingBottom: spacing['2xl'],

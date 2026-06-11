@@ -1,50 +1,105 @@
-# Welcome to your Expo app 👋
+# CiCy Mobile
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+The mobile client for the **CiCy** agent platform — browse your agents, open an
+agent and chat with it, and scan a QR code to join a team. One
+[Expo](https://expo.dev) codebase ships three ways:
 
-## Get started
+- **iOS / Android** native apps
+- a **web / PWA** static export
+- a **Telegram Mini App** (the same web export, hosted on Cloudflare)
 
-1. Install dependencies
+## Architecture
 
-   ```bash
-   npm install
-   ```
+The app is a **pure client — it has no backend of its own.** Each team's
+`cicy-code` server *is* the backend, reached directly at the HTTPS address
+carried in the add-team QR (the server's `CICY_PUBLIC_URL`). The server answers
+CORS itself, so the page calls it cross-origin; nothing is proxied and no
+backend address or token is ever hardcoded in the client.
 
-2. Start the app
+- **Platform splits** live in `*.web.tsx` siblings so native is never touched —
+  e.g. `TerminalView.tsx` (native WebView) vs `TerminalView.web.tsx` (iframe),
+  `app/scan.tsx` (camera) vs `app/scan.web.tsx` (paste form). Animations have
+  web variants too (`*.web.tsx`) that use CSS keyframes instead of reanimated,
+  to keep the web bundle light.
+- **History / chat** (`src/components/HistoryView.tsx`) is a two-part model:
+  a committed window (`current.json`) plus an in-flight live tail
+  (`reply.json`). Opening an agent paints instantly from a two-tier cache
+  (`src/lib/historyCache.ts` — in-memory + persistent) and refreshes in the
+  background, so there's no spinner on every open.
+- Note: React Native components do **not** use `data-id` (that's a web-only
+  convention).
 
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Develop
 
 ```bash
-npm run reset-project
+npm install
+npx expo start            # dev server (press w / a / i)
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+### Web / PWA
 
-## Learn more
+```bash
+npx expo export -p web      # static export → dist/
+npx expo serve --port 8088  # serve dist/ (handles cleanUrls: /agents → agents.html)
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+### Native
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+`android/` and `ios/` are generated (git-ignored) — regenerate with prebuild:
 
-## Join the community
+```bash
+npx expo prebuild -p android         # or -p ios
+npx expo run:android                 # build + run on device/emulator
+npx expo run:ios
+```
 
-Join our community of developers creating universal apps.
+iOS installs go through Xcode. See `scripts/push-to-mac.sh` for syncing to a Mac
+build host. Never commit Xcode/Gradle-managed files.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+## Release
+
+Releases are **tag-driven** via GitHub Actions
+([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)):
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+A `v*` tag triggers two jobs:
+
+1. **web** — `expo export -p web` → deploys the assets-only Cloudflare Worker
+   (`telegram-bot.cicy-ai.com` + `*.workers.dev`), i.e. the **Telegram Mini App
+   / PWA**, then verifies the live bundle matches the build.
+2. **android** — `expo prebuild` → `gradlew assembleRelease` → attaches the
+   APK to a **GitHub Release** for the tag.
+
+The version comes from the tag: `v1.0.1` → `app.json` `expo.version = 1.0.1`,
+and `android.versionCode` = the workflow run number (monotonic), via
+`scripts/sync-version.mjs`.
+
+### Required secrets
+
+Repo → Settings → Secrets and variables → Actions:
+
+| Secret | Used by |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | web deploy |
+| `CLOUDFLARE_ACCOUNT_ID` | web deploy |
+
+### Android signing
+
+The CI APK is signed with the **debug keystore** that `expo prebuild`
+generates — installable for sideload / Telegram distribution, but every build
+gets a different signature (can't upgrade-in-place, not Play-Store-ready). For a
+stable/upgradable signature, add a release keystore and a config plugin that
+wires a `release` `signingConfig`, then feed the keystore via a secret in the
+`android` job.
+
+## Telegram Mini App
+
+The web build is the `@cicy_ai_bot` menu-button **"CiCy"** target
+(`https://telegram-bot.cicy-ai.com`). Inside Telegram the QR scanner uses the
+native `showScanQrPopup`; plain browsers fall back to pasting the add-team link.
+The Telegram SDK is loaded so it never blocks first paint or the `load` event
+(see `app/+html.tsx`).

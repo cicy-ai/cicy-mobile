@@ -1,41 +1,88 @@
-# Tag-driven release: push a v* tag → build the web export → deploy the
-# assets-only Worker (telegram-bot.cicy-ai.com + workers.dev).
+# Tag-driven release. Push a v* tag and this:
+#   1. builds the web export and deploys the assets-only Worker
+#      (telegram-bot.cicy-ai.com + workers.dev)  — the Telegram Mini App / PWA;
+#   2. builds a release Android APK and attaches it to a GitHub Release.
 #
 #   git tag v1.0.1 && git push origin v1.0.1
 #
-# Secrets (repo settings): CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
-name: deploy
+# Version: app.json `expo.version` is set from the tag (v1.0.1 → 1.0.1) and
+# android `versionCode` from the run number, so every release is monotonic.
+#
+# Secrets (repo → Settings → Secrets):
+#   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID   (web deploy)
+# The Android APK is debug-signed (installable for sideload / Telegram). For an
+# upgradable / Play Store signature see README → Release.
+name: release
 
 on:
   push:
     tags: ['v*']
 
 jobs:
-  deploy:
+  # ── Telegram Mini App / PWA → Cloudflare ─────────────────────────────────────
+  web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
       - name: Install deps
         run: npm ci
-
+      - name: Set version from tag
+        run: node scripts/sync-version.mjs "${GITHUB_REF_NAME#v}" "${{ github.run_number }}"
       - name: Build web export
         run: npx expo export -p web
-
       - name: Deploy to Cloudflare Workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler@4 deploy
-
       - name: Verify live bundle matches build
         run: |
           LOCAL=$(ls dist/_expo/static/js/web/ | grep '^entry')
           LIVE=$(curl -s https://telegram-bot.cicy-ai.com/ | grep -o 'entry-[a-f0-9]*\.js' | head -1)
           echo "local=$LOCAL live=$LIVE"
           test "$LOCAL" = "$LIVE"
+
+  # ── Android APK → GitHub Release ─────────────────────────────────────────────
+  android:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release + upload the APK
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - name: Install deps
+        run: npm ci
+      - name: Set version from tag
+        run: node scripts/sync-version.mjs "${GITHUB_REF_NAME#v}" "${{ github.run_number }}"
+      - name: Prebuild native android project
+        run: npx expo prebuild -p android --no-install
+      # The prebuilt template signs the release APK with the throwaway debug
+      # keystore — installable for sideload / Telegram distribution. For an
+      # upgradable / Play Store signature, add a release keystore + signingConfig
+      # (see README → Release).
+      - name: Build release APK
+        run: cd android && ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
+      - name: Stage APK
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          cp android/app/build/outputs/apk/release/app-release.apk "cicy-${VER}.apk"
+          ls -lh cicy-*.apk
+      - name: Publish GitHub Release with APK
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: cicy-*.apk

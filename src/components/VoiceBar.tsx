@@ -1,14 +1,7 @@
-import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, StyleSheet, View } from 'react-native';
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSequence,
-  withTiming,
-} from 'react-native-reanimated';
+import { Pressable, StyleSheet } from 'react-native';
 
+import { RecordingDot } from './RecordingDot';
 import { Text } from './Text';
 import { useVoiceRecorder } from '@/src/hooks/useVoiceRecorder';
 import { radius, spacing, useTheme } from '@/src/theme';
@@ -29,22 +22,6 @@ export function VoiceBar({ onTranscript, onError, disabled, language }: Props) {
 
   const isRecording = phase === 'recording';
   const isBusy = phase === 'transcribing';
-
-  // Subtle pulse on the bar while recording — calms the experience vs a hard
-  // red flash.
-  const pulse = useSharedValue(0);
-  useEffect(() => {
-    if (isRecording) {
-      pulse.value = withRepeat(
-        withSequence(withTiming(1, { duration: 700 }), withTiming(0, { duration: 700 })),
-        -1,
-        true,
-      );
-    } else {
-      pulse.value = withTiming(0, { duration: 200 });
-    }
-  }, [isRecording, pulse]);
-  const dotStyle = useAnimatedStyle(() => ({ opacity: 0.35 + pulse.value * 0.65 }));
 
   const bgColor = isRecording ? theme.accent : theme.surface;
   const fgColor = isRecording ? theme.accentText : theme.text;
@@ -68,9 +45,7 @@ export function VoiceBar({ onTranscript, onError, disabled, language }: Props) {
         },
       ]}
     >
-      {isRecording ? (
-        <Animated.View style={[styles.dot, { backgroundColor: theme.accentText }, dotStyle]} />
-      ) : null}
+      {isRecording ? <RecordingDot color={theme.accentText} size={8} /> : null}
       <Text variant="bodyMedium" style={{ color: fgColor }}>
         {label}
       </Text>
@@ -97,5 +72,4 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingHorizontal: spacing.xl,
   },
-  dot: { width: 8, height: 8, borderRadius: 4 },
 });

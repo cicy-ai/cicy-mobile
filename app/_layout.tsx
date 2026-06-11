@@ -6,7 +6,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
 import { useEffect, useMemo } from 'react';
 import { Platform, View } from 'react-native';
-import 'react-native-reanimated';
+import '@/src/lib/reanimatedInit';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { useColorScheme } from 'react-native';

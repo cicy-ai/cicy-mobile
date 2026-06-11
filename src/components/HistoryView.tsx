@@ -6,6 +6,7 @@ import { api } from '@/src/api/http';
 import i18n from '@/src/i18n';
 import type { HistoryStep, HistoryTurn } from '@/src/api/types';
 import { buildTurnsFromRawItems, normalizeHistoryTurns, splitLeadingHarnessBlocks } from '@/src/lib/historyParse';
+import { historyCache } from '@/src/lib/historyCache';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 import { PressableScale } from './PressableScale';
 import { Text } from './Text';
@@ -198,7 +199,10 @@ export function HistoryView({ agentId, pending }: Props) {
   );
   useEffect(() => () => clearScheduledScrolls(), [clearScheduledScrolls]);
 
-  // ── Part 1: committed window (fresh; positional ids drift so never cache). ───
+  // ── Part 1: committed window. Always refetched fresh (positional ids drift),
+  // but write-through to historyCache so the NEXT open paints instantly from the
+  // last-seen frame instead of a spinner. The cache is never trusted as truth —
+  // this refetch overwrites it every open.
   const loadWindow = useCallback(async () => {
     const ids = await api.getHistoryIds(agentId);
     const cid = String(ids.conversation_id ?? '');
@@ -218,6 +222,15 @@ export function HistoryView({ agentId, pending }: Props) {
     minLoadedIdRef.current = turns.length ? Number(turns[0].history_id ?? 0) : 0;
     setItems(turns);
     setHasMore(!!hist.has_more);
+    if (turns.length) {
+      historyCache.put(agentId, {
+        conversationId: cid,
+        maxId,
+        minId: minLoadedIdRef.current,
+        hasMore: !!hist.has_more,
+        turns,
+      });
+    }
   }, [agentId]);
 
   // A newer turn started → append ONLY the new committed tail (maxLoaded, newMax];
@@ -504,14 +517,31 @@ export function HistoryView({ agentId, pending }: Props) {
     useCallback(() => {
       let mounted = true;
       aliveRef.current = true;
-      setLoading(true);
+      // Instant paint from cache (memory→persistent, sync) so reopening an agent
+      // shows the last-seen conversation immediately; loadWindow() below still
+      // refetches fresh and reconciles. Cache miss → fall back to the spinner.
+      const cached = historyCache.get(agentId);
+      if (cached && cached.turns.length) {
+        convRef.current = cached.conversationId;
+        setConversationId(cached.conversationId);
+        maxLoadedIdRef.current = cached.maxId;
+        minLoadedIdRef.current = cached.minId;
+        setItems(cached.turns);
+        setHasMore(cached.hasMore);
+        setLoading(false);
+      } else {
+        setItems([]);
+        setLoading(true);
+      }
       setLiveTurn(null);
       lastSigRef.current = '';
       liveTurnIdRef.current = '';
       liveTargetRef.current = null;
       revealRef.current = { key: '', shown: 0, frac: 0 };
       if (typeRafRef.current != null) { cancelAnimationFrame(typeRafRef.current); typeRafRef.current = null; }
-      committedReadyRef.current = false;
+      // On a cache hit the committed window is already painted, so the poll loop
+      // may attach the live tail immediately; on a miss it waits for loadWindow.
+      committedReadyRef.current = !!(cached && cached.turns.length);
       firstReplyDoneRef.current = false;
       didInitialScrollRef.current = false;
       shouldStickBottomRef.current = true;
@@ -758,7 +788,10 @@ export function HistoryView({ agentId, pending }: Props) {
       </View>
     );
   }
-  if (error) {
+  // Only take over the screen with an error when there's nothing to show. If a
+  // cached/loaded conversation is on screen, a failed background refresh must not
+  // blank it.
+  if (error && displayItems.length === 0 && !liveVisible) {
     return (
       <View style={styles.center}>
         <Text variant="callout" tone="danger" style={{ textAlign: 'center' }}>
