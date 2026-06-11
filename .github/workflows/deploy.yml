@@ -86,3 +86,19 @@ jobs:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
           files: cicy-*.apk
+      # Public download — the repo is private, so the GitHub Release isn't
+      # reachable without auth. Mirror the APK to the public R2 CDN
+      # (r2.deepfetch.de5.net) under a versioned key + a stable `latest` alias.
+      - name: Upload APK to public R2 CDN
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          CT=application/vnd.android.package-archive
+          npx wrangler@4 r2 object put "cicy-assets-poc/cicy-mobile/cicy-${VER}.apk" \
+            --file "cicy-${VER}.apk" --remote --content-type "$CT"
+          npx wrangler@4 r2 object put "cicy-assets-poc/cicy-mobile/cicy-latest.apk" \
+            --file "cicy-${VER}.apk" --remote --content-type "$CT"
+          echo "Public APK: https://r2.deepfetch.de5.net/cicy-mobile/cicy-${VER}.apk"
+          echo "Latest:     https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.apk"

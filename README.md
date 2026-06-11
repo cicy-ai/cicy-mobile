@@ -72,7 +72,10 @@ A `v*` tag triggers two jobs:
    (`telegram-bot.cicy-ai.com` + `*.workers.dev`), i.e. the **Telegram Mini App
    / PWA**, then verifies the live bundle matches the build.
 2. **android** — `expo prebuild` → `gradlew assembleRelease` → attaches the
-   APK to a **GitHub Release** for the tag.
+   APK to a **GitHub Release** for the tag, and (since this repo is private)
+   mirrors it to the **public R2 CDN** for download without GitHub auth:
+   - latest: <https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.apk>
+   - versioned: `https://r2.deepfetch.de5.net/cicy-mobile/cicy-<version>.apk`
 
 The version comes from the tag: `v1.0.1` → `app.json` `expo.version = 1.0.1`,
 and `android.versionCode` = the workflow run number (monotonic), via
