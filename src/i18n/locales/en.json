@@ -55,6 +55,29 @@
     "micDenied": "Microphone permission denied",
     "recordStartFailed": "Could not start recording: {{error}}"
   },
+  "meeting": {
+    "title": "Live meeting",
+    "emptyHint": "Tap Start below and speak — text appears live.\nThe transcript streams in; send it to the agent when done.",
+    "listening": "Recording",
+    "paused": "Paused",
+    "idle": "Not started",
+    "start": "Start",
+    "pause": "Pause",
+    "resume": "Resume",
+    "stop": "Stop",
+    "copy": "Copy",
+    "clear": "Clear",
+    "send": "Send to agent",
+    "foregroundHint": "Keep this screen in the foreground and the screen on — backgrounding or locking pauses recognition."
+  },
+  "attach": {
+    "takePhoto": "Take photo",
+    "pickImage": "Choose from library",
+    "pickFile": "Choose file",
+    "cancel": "Cancel",
+    "agentNote": "[Attachments] uploaded to your working directory:",
+    "uploadFailed": "{{count}} attachment(s) failed to upload — tap send to retry"
+  },
   "scan": {
     "title": "Add team",
     "subtitle": "Scan the QR code from the cicy-code web app to add this device to a team.",

@@ -72,6 +72,13 @@
           "microphonePermission": "Allow $(PRODUCT_NAME) to use your microphone for voice input.",
           "speechRecognitionPermission": "Allow $(PRODUCT_NAME) to recognize your speech."
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to access your photos to attach images to your agent.",
+          "cameraPermission": "Allow $(PRODUCT_NAME) to use the camera to attach photos to your agent."
+        }
       ]
     ],
     "experiments": {

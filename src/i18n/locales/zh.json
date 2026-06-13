@@ -55,6 +55,29 @@
     "micDenied": "麦克风权限被拒绝",
     "recordStartFailed": "无法开始录音：{{error}}"
   },
+  "meeting": {
+    "title": "实时会议",
+    "emptyHint": "点击下方「开始」，边说边出字。\n转写实时显示，结束后可一键发给 agent。",
+    "listening": "录音中",
+    "paused": "已暂停",
+    "idle": "未开始",
+    "start": "开始",
+    "pause": "暂停",
+    "resume": "继续",
+    "stop": "停止",
+    "copy": "复制",
+    "clear": "清空",
+    "send": "发送到 agent",
+    "foregroundHint": "请保持本页在前台、屏幕常亮，后台/锁屏会暂停识别。"
+  },
+  "attach": {
+    "takePhoto": "拍照",
+    "pickImage": "从相册选择",
+    "pickFile": "选择文件",
+    "cancel": "取消",
+    "agentNote": "[附件] 已上传到你的工作目录，请查看：",
+    "uploadFailed": "{{count}} 个附件上传失败，可重试"
+  },
   "scan": {
     "title": "扫码加入团队",
     "subtitle": "用手机扫描 cicy-code 网页生成的二维码，把这台设备加入到你的工作区。",

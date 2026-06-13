@@ -4,22 +4,28 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   StyleSheet,
   TextInput,
   View,
 } from 'react-native';
 
 import { AgentAvatar } from '@/src/components/AgentAvatar';
+import { AttachButton } from '@/src/components/AttachButton';
 import { HistoryView } from '@/src/components/HistoryView';
+import { MeetingPanel } from '@/src/components/MeetingPanel';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
 import { TerminalView } from '@/src/components/TerminalView';
 import { Text } from '@/src/components/Text';
 import { VoiceBar } from '@/src/components/VoiceBar';
 import { api } from '@/src/api/http';
+import { uploadAttachment } from '@/src/api/upload';
+import type { PendingAttachment } from '@/src/lib/attachments';
 import { normalizeAgentType } from '@/src/lib/agentType';
 import { isTelegram, showBackButton } from '@/src/lib/telegram';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
@@ -52,6 +58,8 @@ export default function Chat() {
   const [sending, setSending] = useState(false);
   const [pending, setPending] = useState<{ text: string; nonce: number } | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [meetingOpen, setMeetingOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [mode, setMode] = useState<'voice' | 'text'>(IS_WEB ? 'text' : 'voice');
   // Track keyboard visibility for the small bottom-padding bump while typing.
@@ -128,10 +136,55 @@ export default function Chat() {
 
   const send = async () => {
     const text = input.trim();
-    if (!text) return;
+    const atts = attachments;
+    if (!text && atts.length === 0) return;
+    if (sending) return;
     setInput('');
-    await submit(text);
+    setAttachments([]);
+    setSending(true);
+    setVoiceError(null);
+
+    try {
+      let body = text;
+      if (atts.length) {
+        // Upload each attachment into the agent's workspace, then reference the
+        // returned (cwd-relative) paths so the CLI agent can read them.
+        const uploaded: string[] = [];
+        const failed: PendingAttachment[] = [];
+        for (const a of atts) {
+          try {
+            const r = await uploadAttachment(agentId, a.uri, a.name, a.mime);
+            uploaded.push(r.path);
+          } catch {
+            failed.push(a);
+          }
+        }
+        if (failed.length) {
+          setAttachments((cur) => [...failed, ...cur]); // keep for retry
+          setVoiceError(t('attach.uploadFailed', { count: failed.length }));
+        }
+        if (uploaded.length) {
+          const list = uploaded.map((p) => `- ${p}`).join('\n');
+          body = `${text ? `${text}\n\n` : ''}${t('attach.agentNote')}\n${list}`;
+        } else if (!text) {
+          setSending(false);
+          return; // nothing uploaded and no text — abort
+        }
+      }
+
+      setTab('history');
+      setPending({ text: body, nonce: Date.now() });
+      await api.sendToAgent(agentId, body, true);
+    } catch (e: any) {
+      setPending(null);
+      setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
+    } finally {
+      setSending(false);
+    }
   };
+
+  const removeAttachment = (key: string) =>
+    setAttachments((cur) => cur.filter((a) => a.key !== key));
 
   // cicy-type agents run without an attached terminal (no ttyd), so the CLI tab
   // has nothing to show — hide it and stay history-only. Every other agent shows
@@ -251,7 +304,39 @@ export default function Chat() {
             },
           ]}
         >
+          {attachments.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.chipsRow}
+            >
+              {attachments.map((a) => (
+                <View key={a.key} style={[styles.chip, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                  {a.kind === 'image' ? (
+                    <Image source={{ uri: a.uri }} style={styles.chipThumb} />
+                  ) : (
+                    <Ionicons name="document-outline" size={18} color={theme.textMuted} />
+                  )}
+                  <Text variant="caption" numberOfLines={1} style={styles.chipName}>
+                    {a.name}
+                  </Text>
+                  <PressableScale onPress={() => removeAttachment(a.key)} hitSlop={6} scaleTo={0.9}>
+                    <Ionicons name="close-circle" size={16} color={theme.textMuted} />
+                  </PressableScale>
+                </View>
+              ))}
+            </ScrollView>
+          )}
+
           <View style={styles.composerRow}>
+            {!IS_WEB && (
+              <AttachButton
+                onPick={(atts) => setAttachments((cur) => [...cur, ...atts])}
+                onError={(m) => setVoiceError(m)}
+                disabled={sending}
+              />
+            )}
             {mode === 'voice' ? (
               <VoiceBar
                 onTranscript={(t) => submit(t)}
@@ -276,27 +361,45 @@ export default function Chat() {
                 />
                 <PressableScale
                   onPress={send}
-                  disabled={sending || !input.trim()}
-                  haptic={!sending && !!input.trim()}
+                  disabled={sending || (!input.trim() && attachments.length === 0)}
+                  haptic={!sending && (!!input.trim() || attachments.length > 0)}
                   style={[
                     styles.send,
                     {
-                      backgroundColor: input.trim() ? theme.accent : theme.surfaceMuted,
+                      backgroundColor:
+                        input.trim() || attachments.length > 0 ? theme.accent : theme.surfaceMuted,
                       opacity: sending ? 0.6 : 1,
                     },
                   ]}
                 >
                   {sending ? (
-                    <ActivityIndicator size="small" color={input.trim() ? theme.accentText : theme.textFaint} />
+                    <ActivityIndicator
+                      size="small"
+                      color={input.trim() || attachments.length > 0 ? theme.accentText : theme.textFaint}
+                    />
                   ) : (
                     <Ionicons
                       name="arrow-up"
                       size={18}
-                      color={input.trim() ? theme.accentText : theme.textFaint}
+                      color={input.trim() || attachments.length > 0 ? theme.accentText : theme.textFaint}
                     />
                   )}
                 </PressableScale>
               </View>
+            )}
+
+            {/* Real-time meeting transcription — continuous on-device dictation
+                that streams the transcript and sends it to the agent. */}
+            {!IS_WEB && (
+              <PressableScale
+                onPress={() => setMeetingOpen(true)}
+                haptic
+                scaleTo={0.94}
+                disabled={sending}
+                style={[styles.modeToggle, { backgroundColor: theme.surface, borderColor: theme.border }]}
+              >
+                <MaterialCommunityIcons name="account-voice" size={22} color={theme.text} />
+              </PressableScale>
             )}
 
             {/* Mode toggle on the right — keypad in voice mode, mic in text mode.
@@ -321,6 +424,13 @@ export default function Chat() {
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      <MeetingPanel
+        open={meetingOpen}
+        onClose={() => setMeetingOpen(false)}
+        onSend={(text) => submit(text)}
+        onError={(m) => setVoiceError(m)}
+      />
     </Screen>
   );
 }
@@ -394,6 +504,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
+  },
+  chipsRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingBottom: spacing.sm,
+    paddingHorizontal: 2,
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    maxWidth: 180,
+    paddingLeft: 6,
+    paddingRight: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  chipThumb: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+  },
+  chipName: {
+    flexShrink: 1,
   },
   modeToggle: {
     width: 44,
