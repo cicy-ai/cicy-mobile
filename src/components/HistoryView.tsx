@@ -5,7 +5,7 @@ import { ActivityIndicator, AppState, type AppStateStatus, Linking, Platform, Sc
 import { api } from '@/src/api/http';
 import i18n from '@/src/i18n';
 import type { HistoryStep, HistoryTurn } from '@/src/api/types';
-import { buildTurnsFromRawItems, normalizeHistoryTurns, splitLeadingHarnessBlocks } from '@/src/lib/historyParse';
+import { buildTurnsFromRawItems, normalizeHistoryTurns, splitLeadingHarnessBlocks, stripHarnessNoise } from '@/src/lib/historyParse';
 import { historyCache } from '@/src/lib/historyCache';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 import { PressableScale } from './PressableScale';
@@ -626,7 +626,9 @@ export function HistoryView({ agentId, pending }: Props) {
       if (t?.role === 'system') return false;
       if (t?.role === 'user') {
         const q = String((t as any)?.q ?? (t as any)?.text ?? '');
-        if (q.trim() && !splitLeadingHarnessBlocks(q).remaining.trim()) return false;
+        // Drop the turn when nothing real remains after removing ALL system noise
+        // (leading + embedded + trailing), not just leading blocks.
+        if (q.trim() && !stripHarnessNoise(q)) return false;
       }
       return true;
     });
@@ -646,8 +648,8 @@ export function HistoryView({ agentId, pending }: Props) {
     for (const t of displayItems) {
       const q = String((t as any)?.text || (t as any)?.q || '');
       if (t?.role === 'user' && q.trim()) {
-        const { blocks, remaining } = splitLeadingHarnessBlocks(q);
-        pendingRecap = !remaining && blocks.length > 0;
+        const { blocks } = splitLeadingHarnessBlocks(q);
+        pendingRecap = !stripHarnessNoise(q) && blocks.length > 0;
         continue;
       }
       const hasContent =
@@ -669,7 +671,7 @@ export function HistoryView({ agentId, pending }: Props) {
   const computeLastUserKey = useCallback((): string => {
     for (let i = displayItems.length - 1; i >= 0; i -= 1) {
       const t = displayItems[i];
-      if (t?.role === 'user' && !!splitLeadingHarnessBlocks(String(t.q ?? t.text ?? '')).remaining.trim()) {
+      if (t?.role === 'user' && !!stripHarnessNoise(String(t.q ?? t.text ?? ''))) {
         return String(t.history_id ?? `u-${i}`);
       }
     }
@@ -898,9 +900,10 @@ export function HistoryView({ agentId, pending }: Props) {
 // DROPPED — only the real question renders.
 function QuestionBubble({ text }: { text: string }) {
   const theme = useTheme();
-  // Harness blocks (system-reminder / recap / continuation) are dropped — the
-  // display layer never shows system content. Only the real question renders.
-  const { remaining } = useMemo(() => splitLeadingHarnessBlocks(text), [text]);
+  // Harness/system blocks (system-reminder / task-notification / recap /
+  // continuation) are stripped wherever they appear — leading, embedded, or
+  // trailing — so the display layer never shows system content.
+  const remaining = useMemo(() => stripHarnessNoise(text), [text]);
   if (!remaining) return null;
   return (
     <View style={{ gap: spacing.sm }}>

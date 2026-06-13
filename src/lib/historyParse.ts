@@ -31,6 +31,21 @@ const RECAP_BUNDLED_RE = /^\s*The user (?:stepped away and is coming back|is bac
 const RECAP_PREFIX_RE = /^\s*The user (?:stepped away and is coming back|is back)\.\s*Recap[\s\S]*?(?:\n\s*\n|$)/;
 const CONTINUATION_PREFIX_RE = /^\s*This session is being continued from a previous conversation[\s\S]*$/;
 
+// Same harness tags as HARNESS_BLOCK_RE but matched ANYWHERE (global), so a
+// system-reminder / task-notification that sits mid-message or trailing — not
+// just leading — is also removed. The display layer must show ZERO system noise.
+const HARNESS_BLOCK_GLOBAL_RE = /<(system-reminder|task-notification|local-command-caveat|local-command-stdout|command-name|command-message|command-args)>[\s\S]*?<\/\1>/g;
+
+// Thorough system-noise stripper for the DISPLAY layer: peel the leading harness
+// wrappers + prefix patterns (AGENTS.md / environment_context / recap /
+// continuation), then delete any remaining harness tag-blocks wherever they sit.
+// Returns the real human text only ("" when the message was pure system noise).
+export function stripHarnessNoise(text: string): string {
+  let s = splitLeadingHarnessBlocks(text).remaining;
+  s = s.replace(HARNESS_BLOCK_GLOBAL_RE, '');
+  return s.trim();
+}
+
 // Peel harness-injected wrappers off the START of a user message, leaving the
 // real question. Returns the folded blocks + the remaining real text.
 export function splitLeadingHarnessBlocks(text: string): { blocks: string[]; remaining: string } {
