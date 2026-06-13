@@ -8,6 +8,19 @@ agent and chat with it, and scan a QR code to join a team. One
 - a **web / PWA** static export
 - a **Telegram Mini App** (the same web export, hosted on Cloudflare)
 
+## Screenshots
+
+| iOS | Android |
+| :---: | :---: |
+| <img src="assets/screenshots/ios.jpg" width="280" alt="CiCy on iOS"> | <img src="assets/screenshots/android.jpg" width="280" alt="CiCy on Android"> |
+
+## Download
+
+- **Repo**: <https://github.com/cicy-ai/cicy-mobile>
+- **Android APK**: <https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.apk> — `adb install`, or open the link on the phone.
+- **iOS IPA** (unsigned): <https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.ipa> — re-sign with your own Apple ID via **Sideloadly / AltStore**, or use the [`cicy-mobile-install`](https://github.com/cicy-ai/cicy-skills/tree/main/skills/cicy-mobile-install) skill.
+- **Web / Telegram Mini App**: <https://telegram-bot.cicy-ai.com>
+
 ## Architecture
 
 The app is a **pure client — it has no backend of its own.** Each team's
@@ -72,15 +85,16 @@ A `v*` tag triggers two jobs:
    (`telegram-bot.cicy-ai.com` + `*.workers.dev`), i.e. the **Telegram Mini App
    / PWA**, then verifies the live bundle matches the build.
 2. **android** — `expo prebuild` → `gradlew assembleRelease` → attaches the
-   APK to a **GitHub Release** for the tag, and (since this repo is private)
-   mirrors it to the **public R2 CDN** for download without GitHub auth:
+   APK to a **GitHub Release** for the tag, and mirrors it to the
+   **public R2 CDN** (global download, no GitHub auth, works from anywhere):
    - latest: <https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.apk>
    - versioned: `https://r2.deepfetch.de5.net/cicy-mobile/cicy-<version>.apk`
 
 ### iOS (manual)
 
-iOS is **not** on the tag path — private-repo macOS minutes bill at 10×. Trigger
-the `release` workflow manually (Actions → Run workflow → `ios_version`); it builds
+iOS is **not** on the tag path — the unsigned-IPA build is triggered manually
+(macOS runners are slow/expensive). Run the `release` workflow from the Actions
+tab (Run workflow → `ios_version`); it builds
 an **unsigned IPA** and pushes it to R2 (install via Sideloadly / AltStore, which
 re-sign with your Apple ID — free account = 7-day cert):
 - latest: <https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.ipa>
