@@ -386,6 +386,11 @@ function AgentRow({ agent, metrics, gateway }: { agent: Agent; metrics?: AgentLi
   return (
     <PressableScale
       onPress={() => router.push({ pathname: '/chat/[agentId]', params: { agentId: String(routeId) } })}
+      // In a scrolling list, a touch-down fires onPressIn → the card scales down,
+      // then the scroll gesture cancels it → it springs back = a "弹一下" pop while
+      // dragging. Delaying press-in lets a scroll (finger moves immediately) abort
+      // before any scale fires; a real tap (held still) still scales after the delay.
+      unstable_pressDelay={120}
       style={[
         rowStyles.card,
         { backgroundColor: theme.surface, borderColor: theme.border },

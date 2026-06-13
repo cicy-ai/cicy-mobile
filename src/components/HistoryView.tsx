@@ -693,7 +693,19 @@ export function HistoryView({ agentId, pending }: Props) {
   // q pinned to the top as its reply grows below it; else follows the bottom if stuck.
   const onContentSizeChange = useCallback(() => {
     const node = domNode();
-    if (!node) return;
+    if (!node) {
+      // Native (iOS/Android): no DOM, so the web scrollTop helpers all no-op and
+      // the list would otherwise open pinned to the TOP. The top-anchor mechanism
+      // is web-only; on native we just want chat behaviour — land at the newest
+      // turn on open, then keep following the bottom while the user is parked
+      // there (onScroll maintains shouldStickBottomRef). Imperative scrollToEnd
+      // is the native equivalent of web's scheduleBottom.
+      if (!didInitialScrollRef.current || shouldStickBottomRef.current) {
+        scrollRef.current?.scrollToEnd({ animated: didInitialScrollRef.current });
+        didInitialScrollRef.current = true;
+      }
+      return;
+    }
     if (activeSpacerTurnKeyRef.current) {
       // IDEMPOTENT hold: only re-pin if q actually drifted (>6px). An unconditional
       // pin every token snapped the view = "滚动跟随生硬". A stable q → no-op → smooth.

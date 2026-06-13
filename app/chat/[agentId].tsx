@@ -20,6 +20,7 @@ import { TerminalView } from '@/src/components/TerminalView';
 import { Text } from '@/src/components/Text';
 import { VoiceBar } from '@/src/components/VoiceBar';
 import { api } from '@/src/api/http';
+import { normalizeAgentType } from '@/src/lib/agentType';
 import { isTelegram, showBackButton } from '@/src/lib/telegram';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { useAuthStore } from '@/src/store/auth';
@@ -132,10 +133,12 @@ export default function Chat() {
     await submit(text);
   };
 
-  // Every agent can take pushed messages and serve history now, so always show
-  // both tabs. We used to hide history (and default to the terminal) for
-  // non-gateway claude-code-direct agents.
-  const showTabs = true;
+  // cicy-type agents run without an attached terminal (no ttyd), so the CLI tab
+  // has nothing to show — hide it and stay history-only. Every other agent shows
+  // both the history + terminal tabs.
+  const hasTerminal = normalizeAgentType(agentMeta.agentType) !== 'cicy-claude';
+  const showTabs = hasTerminal;
+  const activeTab = hasTerminal ? tab : 'history';
   const displayTitle = agentMeta.title || agentId;
 
   return (
@@ -209,7 +212,7 @@ export default function Chat() {
       ) : null}
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
-        {tab === 'cli' ? (
+        {activeTab === 'cli' ? (
           <View style={{ flex: 1, backgroundColor: '#000' }}>
             {ttydUrl ? (
               <TerminalView url={ttydUrl} onLoadEnd={() => setLoaded(true)} />
