@@ -10,9 +10,8 @@ agent and chat with it, and scan a QR code to join a team. One
 
 ## Screenshots
 
-| iOS | Android |
-| :---: | :---: |
-| <img src="assets/screenshots/ios.jpg" width="280" alt="CiCy on iOS"> | <img src="assets/screenshots/android.jpg" width="280" alt="CiCy on Android"> |
+<img src="assets/screenshots/android.jpg" width="300" alt="CiCy mobile">
+
 
 ## Download
 
