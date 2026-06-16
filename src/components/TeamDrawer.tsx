@@ -1,3 +1,4 @@
+import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -32,6 +33,9 @@ export function TeamDrawer({ open, onClose }: Props) {
   const { t } = useTranslation();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const appVersion = Constants.expoConfig?.version ?? '';
+  const buildNo =
+    Constants.expoConfig?.android?.versionCode ?? Constants.expoConfig?.ios?.buildNumber ?? null;
   const teams = useAuthStore((s) => s.teams);
   const currentTeamId = useAuthStore((s) => s.currentTeamId);
   const switchTeam = useAuthStore((s) => s.switchTeam);
@@ -134,6 +138,14 @@ export function TeamDrawer({ open, onClose }: Props) {
               );
             })}
           </ScrollView>
+
+          {appVersion ? (
+            <View style={[styles.footer, { borderTopColor: theme.border }]}>
+              <Text variant="caption" tone="faint">
+                {`v${appVersion}${buildNo ? ` (${buildNo})` : ''}`}
+              </Text>
+            </View>
+          ) : null}
         </Animated.View>
 
         <ConfirmModal
@@ -167,6 +179,12 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.lg,
   },
   list: { paddingVertical: spacing.xs, gap: spacing.xs },
+  footer: {
+    paddingHorizontal: spacing.sm,
+    paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+  },
   teamRow: {
     flexDirection: 'row',
     alignItems: 'center',
