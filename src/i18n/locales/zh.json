@@ -68,7 +68,14 @@
     "copy": "复制",
     "clear": "清空",
     "send": "发送到 agent",
-    "foregroundHint": "请保持本页在前台、屏幕常亮，后台/锁屏会暂停识别。"
+    "foregroundHint": "请保持本页在前台、屏幕常亮，后台/锁屏会暂停识别。",
+    "assistantPrime": "我在开实时会议，接下来会持续把我的语音记录发给你。请作为会议助手安静记录要点，不用逐句回复；等我明确请你总结或回答时再说。",
+    "live": {
+      "listening": "正在听…",
+      "autosendTo": "停顿自动发送给「{{name}}」",
+      "sent": "已发 {{count}} 段",
+      "end": "结束"
+    }
   },
   "attach": {
     "takePhoto": "拍照",

@@ -11,31 +11,42 @@ import { getDeviceLocale } from '@/src/lib/locale';
 
 const IS_WEB = Platform.OS === 'web';
 const KEEP_AWAKE_TAG = 'cicy-meeting';
+const DEFAULT_SILENCE_MS = 1800;
 
 export type MeetingPhase = 'idle' | 'recording' | 'paused';
 
 type Options = {
   language?: string;
   onError?: (msg: string) => void;
+  // When set, finalized speech is auto-flushed to this callback after a short
+  // silence (one "turn"), ChatGPT-style. The buffer holds only finalized text
+  // not yet sent.
+  onAutoSend?: (text: string) => void;
+  autoSend?: boolean;
+  silenceMs?: number;
 };
 
-// Long-form, real-time, on-device transcription for the "meeting" mode.
+// Long-form, real-time, on-device transcription for the "meeting assistant"
+// mode. Runs the native recognizer continuously with interim results and
+// auto-restarts whenever the OS ends a session (iOS resets periodically;
+// Android ends on silence), accumulating finalized segments into `committed`
+// and the live partial into `interim`.
 //
-// Unlike useVoiceRecorder (push-to-talk, one-shot), this runs the native
-// recognizer continuously with interim results and *auto-restarts* it whenever
-// the OS ends a session (iOS resets periodically; Android ends on silence).
-// We accumulate finalized segments into `committed` and keep the live partial
-// in `interim`. On-device recognition keeps it offline + free; we fall back to
-// network recognition only if the locale has no on-device model.
+// With autoSend on, each finalized turn is flushed to onAutoSend after
+// `silenceMs` of no new speech — so the user just talks and the agent receives
+// turn-by-turn (it records / acts as a meeting assistant on the backend).
 //
-// Assumes the app stays foreground + screen-on (we hold a keep-awake lock):
-// native speech recognition does not run reliably in the background.
-export function useMeetingTranscriber({ language, onError }: Options = {}) {
+// Assumes foreground + screen-on (we hold a keep-awake lock): native speech
+// recognition does not run reliably in the background.
+export function useMeetingTranscriber({
+  language, onError, onAutoSend, autoSend = false, silenceMs = DEFAULT_SILENCE_MS,
+}: Options = {}) {
   const [phase, setPhase] = useState<MeetingPhase>('idle');
   const [committed, setCommitted] = useState('');
   const [interim, setInterim] = useState('');
   const [level, setLevel] = useState(0); // 0..1, for the waveform
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [sentCount, setSentCount] = useState(0);
 
   // Refs the event handlers read without re-subscribing.
   const wantRecordingRef = useRef(false); // true between start() and stop()
@@ -47,6 +58,16 @@ export function useMeetingTranscriber({ language, onError }: Options = {}) {
   const accumBeforePauseRef = useRef(0); // elapsed frozen across pauses
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Auto-send buffering.
+  const unsentRef = useRef(''); // finalized text not yet auto-sent
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoSendRef = useRef(autoSend);
+  const onAutoSendRef = useRef(onAutoSend);
+  const silenceMsRef = useRef(silenceMs);
+  useEffect(() => { autoSendRef.current = autoSend; }, [autoSend]);
+  useEffect(() => { onAutoSendRef.current = onAutoSend; }, [onAutoSend]);
+  useEffect(() => { silenceMsRef.current = silenceMs; }, [silenceMs]);
+
   const lang = language || getDeviceLocale().nativeSpeechLang || 'en-US';
 
   // Decide on-device availability once.
@@ -56,8 +77,6 @@ export function useMeetingTranscriber({ language, onError }: Options = {}) {
       ExpoSpeechRecognitionModule.getSupportedLocales({})
         .then((res: any) => {
           const installed: string[] = res?.installedLocales ?? [];
-          // If we can't tell, optimistically keep on-device; the recognizer
-          // falls back internally and `error` will surface real problems.
           if (installed.length) {
             const base = lang.split('-')[0].toLowerCase();
             onDeviceRef.current = installed.some(
@@ -70,9 +89,9 @@ export function useMeetingTranscriber({ language, onError }: Options = {}) {
       /* keep default */
     }
     return () => {
-      // Safety net on unmount.
       try { ExpoSpeechRecognitionModule.abort(); } catch {}
       stopTick();
+      clearSilence();
       deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -86,6 +105,27 @@ export function useMeetingTranscriber({ language, onError }: Options = {}) {
   }
   function stopTick() {
     if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+  }
+
+  function clearSilence() {
+    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+  }
+
+  // Flush the finalized-but-unsent buffer as one turn.
+  function flushAutoSend() {
+    clearSilence();
+    const text = unsentRef.current.trim();
+    if (!text) return;
+    unsentRef.current = '';
+    onAutoSendRef.current?.(text);
+    setSentCount((n) => n + 1);
+  }
+
+  // Reset the silence countdown — called on every result while recording.
+  function bumpSilence() {
+    if (!autoSendRef.current) return;
+    clearSilence();
+    silenceTimerRef.current = setTimeout(flushAutoSend, silenceMsRef.current);
   }
 
   const beginSession = useCallback(async () => {
@@ -105,22 +145,24 @@ export function useMeetingTranscriber({ language, onError }: Options = {}) {
     if (!r) return;
     if (e.isFinal) {
       const seg = r.transcript.trim();
-      if (seg) setCommitted((prev) => (prev ? `${prev} ${seg}` : seg));
+      if (seg) {
+        setCommitted((prev) => (prev ? `${prev} ${seg}` : seg));
+        unsentRef.current = unsentRef.current ? `${unsentRef.current} ${seg}` : seg;
+      }
       setInterim('');
+      bumpSilence();
     } else {
       setInterim(r.transcript);
+      bumpSilence(); // still speaking → keep the turn open
     }
   });
 
   useSpeechRecognitionEvent('volumechange', (e) => {
-    // value: -2 (silence) .. 10 (loud). Map to 0..1.
     const v = Math.max(0, Math.min(1, (e.value + 2) / 12));
     setLevel(v);
   });
 
   useSpeechRecognitionEvent('end', () => {
-    // The OS ended this session. If the user is still recording, restart to
-    // keep the long-form transcription going.
     if (wantRecordingRef.current && phaseRef.current === 'recording') {
       beginSession().catch((err) => {
         onError?.(String(err?.message ?? err));
@@ -130,12 +172,10 @@ export function useMeetingTranscriber({ language, onError }: Options = {}) {
   });
 
   useSpeechRecognitionEvent('error', (e) => {
-    // Silence between sentences is normal in a meeting — let `end` restart us.
-    if (e.error === 'no-speech') return;
+    if (e.error === 'no-speech') return; // normal between sentences
     onError?.(e.message || e.error);
   });
 
-  // Mirror `phase` into a ref so the `end` handler sees the latest value.
   const phaseRef = useRef<MeetingPhase>('idle');
   useEffect(() => { phaseRef.current = phase; }, [phase]);
 
@@ -153,9 +193,11 @@ export function useMeetingTranscriber({ language, onError }: Options = {}) {
     }
     wantRecordingRef.current = true;
     accumBeforePauseRef.current = 0;
+    unsentRef.current = '';
     setCommitted('');
     setInterim('');
     setElapsedMs(0);
+    setSentCount(0);
     try {
       await beginSession();
       startedAtRef.current = Date.now();
@@ -177,6 +219,7 @@ export function useMeetingTranscriber({ language, onError }: Options = {}) {
     stopTick();
     setLevel(0);
     try { await ExpoSpeechRecognitionModule.stop(); } catch {}
+    flushAutoSend(); // send whatever turn is buffered before pausing
     setPhase('paused');
   }, [phase]);
 
@@ -196,6 +239,7 @@ export function useMeetingTranscriber({ language, onError }: Options = {}) {
   function hardStop() {
     wantRecordingRef.current = false;
     stopTick();
+    clearSilence();
     setLevel(0);
     deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
     setPhase('idle');
@@ -208,22 +252,30 @@ export function useMeetingTranscriber({ language, onError }: Options = {}) {
       accumBeforePauseRef.current += Date.now() - startedAtRef.current;
     }
     try { await ExpoSpeechRecognitionModule.stop(); } catch {}
-    // Fold any lingering interim into committed so nothing is lost.
+    // Fold any lingering interim into committed + unsent so nothing is lost,
+    // then flush the final turn.
     setInterim((cur) => {
-      if (cur.trim()) setCommitted((prev) => (prev ? `${prev} ${cur.trim()}` : cur.trim()));
+      const tail = cur.trim();
+      if (tail) {
+        setCommitted((prev) => (prev ? `${prev} ${tail}` : tail));
+        unsentRef.current = unsentRef.current ? `${unsentRef.current} ${tail}` : tail;
+      }
       return '';
     });
+    flushAutoSend();
     hardStop();
   }, [phase]);
 
   const clear = useCallback(() => {
     setCommitted('');
     setInterim('');
+    unsentRef.current = '';
     accumBeforePauseRef.current = 0;
     setElapsedMs(0);
+    setSentCount(0);
   }, []);
 
-  // Full transcript including the live tail (for "send to agent").
+  // Full transcript including the live tail (for a manual "send everything").
   const transcript = (committed + (interim ? ` ${interim}` : '')).trim();
 
   return {
@@ -233,6 +285,7 @@ export function useMeetingTranscriber({ language, onError }: Options = {}) {
     transcript,
     level,
     elapsedMs,
+    sentCount,
     start,
     pause,
     resume,

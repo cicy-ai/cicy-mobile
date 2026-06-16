@@ -1,6 +1,6 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -17,7 +17,7 @@ import {
 import { AgentAvatar } from '@/src/components/AgentAvatar';
 import { AttachButton } from '@/src/components/AttachButton';
 import { HistoryView } from '@/src/components/HistoryView';
-import { MeetingPanel } from '@/src/components/MeetingPanel';
+import { LiveRecordBar } from '@/src/components/LiveRecordBar';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
 import { TerminalView } from '@/src/components/TerminalView';
@@ -59,7 +59,10 @@ export default function Chat() {
   const [pending, setPending] = useState<{ text: string; nonce: number } | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
-  const [meetingOpen, setMeetingOpen] = useState(false);
+  const [recording, setRecording] = useState(false);
+  // True until the first turn of a live session is sent — that first turn is
+  // prefixed with a "you are a meeting assistant" instruction for the agent.
+  const meetingPrimedRef = useRef(false);
   const [loaded, setLoaded] = useState(false);
   const [mode, setMode] = useState<'voice' | 'text'>(IS_WEB ? 'text' : 'voice');
   // Track keyboard visibility for the small bottom-padding bump while typing.
@@ -186,6 +189,23 @@ export default function Chat() {
   const removeAttachment = (key: string) =>
     setAttachments((cur) => cur.filter((a) => a.key !== key));
 
+  // Each finalized live-recording turn → send to the agent. The first turn of a
+  // session is prefixed so the agent knows to act as a quiet meeting recorder.
+  const handleLiveTurn = (text: string) => {
+    if (!meetingPrimedRef.current) {
+      meetingPrimedRef.current = true;
+      submit(`${t('meeting.assistantPrime')}\n\n${text}`);
+    } else {
+      submit(text);
+    }
+  };
+
+  const startRecording = () => {
+    meetingPrimedRef.current = false;
+    Keyboard.dismiss();
+    setRecording(true);
+  };
+
   // cicy-type agents run without an attached terminal (no ttyd), so the CLI tab
   // has nothing to show — hide it and stay history-only. Every other agent shows
   // both the history + terminal tabs.
@@ -304,6 +324,15 @@ export default function Chat() {
             },
           ]}
         >
+          {recording ? (
+            <LiveRecordBar
+              agentTitle={displayTitle}
+              onTurn={handleLiveTurn}
+              onClose={() => setRecording(false)}
+              onError={(m) => setVoiceError(m)}
+            />
+          ) : (
+          <>
           {attachments.length > 0 && (
             <ScrollView
               horizontal
@@ -388,11 +417,11 @@ export default function Chat() {
               </View>
             )}
 
-            {/* Real-time meeting transcription — continuous on-device dictation
-                that streams the transcript and sends it to the agent. */}
+            {/* Live recording — continuous on-device dictation that auto-sends
+                each turn to the agent (the in-conversation meeting assistant). */}
             {!IS_WEB && (
               <PressableScale
-                onPress={() => setMeetingOpen(true)}
+                onPress={startRecording}
                 haptic
                 scaleTo={0.94}
                 disabled={sending}
@@ -422,15 +451,10 @@ export default function Chat() {
               </PressableScale>
             )}
           </View>
+          </>
+          )}
         </View>
       </KeyboardAvoidingView>
-
-      <MeetingPanel
-        open={meetingOpen}
-        onClose={() => setMeetingOpen(false)}
-        onSend={(text) => submit(text)}
-        onError={(m) => setVoiceError(m)}
-      />
     </Screen>
   );
 }

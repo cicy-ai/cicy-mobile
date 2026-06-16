@@ -68,7 +68,14 @@
     "copy": "Copy",
     "clear": "Clear",
     "send": "Send to agent",
-    "foregroundHint": "Keep this screen in the foreground and the screen on — backgrounding or locking pauses recognition."
+    "foregroundHint": "Keep this screen in the foreground and the screen on — backgrounding or locking pauses recognition.",
+    "assistantPrime": "I'm in a live meeting and will keep sending you my speech as it happens. Act as a meeting assistant: quietly capture the key points, don't reply line by line — only summarize or answer when I explicitly ask.",
+    "live": {
+      "listening": "Listening…",
+      "autosendTo": "Auto-sends to \"{{name}}\" on pause",
+      "sent": "{{count}} sent",
+      "end": "End"
+    }
   },
   "attach": {
     "takePhoto": "Take photo",
