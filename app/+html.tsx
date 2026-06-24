@@ -19,13 +19,15 @@ export default function Root({ children }: PropsWithChildren) {
           content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
         />
 
-        {/* Telegram Mini App SDK — injects window.Telegram.WebApp when opened
-            inside Telegram. Harmless in a plain browser. MUST be async: a
-            plain head script render-blocks, and telegram.org is unreachable
-            from mainland-China browsers — a sync (or defer, which stalls the
-            in-order deferred queue) load would freeze first paint until the
-            connection times out. Consumers read window.Telegram lazily. */}
-        <script async src="https://telegram.org/js/telegram-web-app.js" />
+        {/* Telegram Mini App SDK — loaded ONLY when actually running inside
+            Telegram (tgWebApp* in the launch hash / TelegramWebviewProxy).
+            telegram.org is unreachable from mainland-China browsers, and even
+            an async <script> holds the window `load` event hostage until the
+            connection times out — which kept embedding hosts (e.g. cicy-code's
+            artifact iframe overlay, which waits for `load`) spinning forever.
+            Inside Telegram the script resolves via TG's own webview network. */}
+        <script dangerouslySetInnerHTML={{ __html: CHUNK_HEAL }} />
+        <script dangerouslySetInnerHTML={{ __html: TG_SDK_LOADER }} />
 
         {/* PWA manifest + theme color (light/dark aware for the browser chrome). */}
         <link rel="manifest" href="/manifest.json" />
@@ -89,6 +91,75 @@ html, body { background-color: #FAF9F5; }
 /* RN-web renders TextInput as <input>/<textarea>, which the browser gives a
    focus outline. The app draws its own focused border, so kill the default. */
 input, textarea, [contenteditable] { outline: none !important; }
+`;
+
+// Self-heal after a deploy: a session loaded before the deploy may lazy-load a
+// route chunk whose URL no longer exists (the SPA fallback answers with HTML)
+// or whose module ids no longer match ("Requiring unknown module"). Detect
+// those signatures, wipe caches, and reload ONCE (sessionStorage guard; the
+// flag is cleared after a healthy boot in bootSplash.ts).
+const CHUNK_HEAL = `
+(function () {
+  function bad(msg) {
+    return /Requiring unknown module|Unexpected token '<'|ChunkLoadError|dynamically imported module|Importing a module script failed|AsyncRequireError|Loading module .* failed/.test(msg || '');
+  }
+  function heal() {
+    try {
+      if (sessionStorage.getItem('cicy-chunk-heal')) return;
+      sessionStorage.setItem('cicy-chunk-heal', '1');
+      var reload = function () { location.reload(); };
+      if (window.caches && caches.keys) {
+        caches.keys().then(function (ks) {
+          return Promise.all(ks.map(function (k) { return caches.delete(k); }));
+        }).then(reload, reload);
+        setTimeout(reload, 1500);
+      } else {
+        reload();
+      }
+    } catch (e) {
+      location.reload();
+    }
+  }
+  window.addEventListener('error', function (e) { if (bad(e && e.message)) heal(); }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    var m = e && e.reason && (e.reason.message || String(e.reason));
+    if (bad(m)) heal();
+  });
+})();
+`;
+
+const TG_SDK_LOADER = `
+(function () {
+  // Load the Telegram Mini App SDK so window.Telegram.WebApp exists (needed for
+  // the in-Telegram QR scanner, theme, etc). Two constraints:
+  //   1. It MUST load inside every Telegram client — the previous gate
+  //      (tgWebApp in hash/search || TelegramWebviewProxy) missed some clients,
+  //      so the scanner silently disappeared.
+  //   2. It must NEVER hold the window 'load' event hostage: telegram.org is
+  //      unreachable from mainland China and even an async <script> in <head>
+  //      keeps embedding hosts (e.g. cicy-code's artifact iframe, which waits
+  //      for 'load') spinning until the connection times out.
+  // So: if we can already tell we're inside Telegram, inject immediately (fast
+  // path for the scanner). Otherwise inject only AFTER 'load' has fired — the
+  // SDK still arrives (initWebApp/canScanQr poll for it), but it can no longer
+  // block first paint or the embedder's load event.
+  function inject() {
+    try {
+      if (window.Telegram && window.Telegram.WebApp) return;
+      var s = document.createElement('script');
+      s.src = 'https://telegram.org/js/telegram-web-app.js';
+      s.async = true;
+      document.head.appendChild(s);
+    } catch (e) {}
+  }
+  try {
+    var inTg = /tgWebApp/i.test(location.hash) || /tgWebApp/i.test(location.search) ||
+      typeof window.TelegramWebviewProxy !== 'undefined';
+    if (inTg) { inject(); return; }
+    if (document.readyState === 'complete') setTimeout(inject, 0);
+    else window.addEventListener('load', function () { setTimeout(inject, 0); });
+  } catch (e) {}
+})();
 `;
 
 const SW_REGISTER = `

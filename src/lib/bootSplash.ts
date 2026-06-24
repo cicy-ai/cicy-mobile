@@ -10,6 +10,10 @@ let dismissed = false;
 export function dismissBootSplash() {
   if (dismissed || Platform.OS !== 'web' || typeof document === 'undefined') return;
   dismissed = true;
+  // Healthy boot — re-arm the one-shot chunk-heal reload guard (+html.tsx).
+  try {
+    sessionStorage.removeItem('cicy-chunk-heal');
+  } catch {}
   const el = document.getElementById('boot-splash');
   if (!el) return;
   el.style.transition = 'opacity 160ms ease-out';

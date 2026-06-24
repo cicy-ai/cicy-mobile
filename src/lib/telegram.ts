@@ -40,14 +40,25 @@ export function isTelegram(): boolean {
 
 // Call once at startup: tell Telegram the app is ready and request full height.
 export function initWebApp(): void {
-  const tg = getWebApp();
-  if (!tg) return;
-  try {
-    tg.ready();
-  } catch {}
-  try {
-    tg.expand();
-  } catch {}
+  // The TG SDK is injected dynamically and only inside Telegram (+html.tsx —
+  // telegram.org would hang the window load event elsewhere), so it may land
+  // AFTER React mounts. Retry briefly until window.Telegram.WebApp appears;
+  // outside Telegram the loader never runs and this gives up quietly.
+  let tries = 0;
+  const attempt = () => {
+    const tg = getWebApp();
+    if (!tg) {
+      if (tries++ < 50) setTimeout(attempt, 100);
+      return;
+    }
+    try {
+      tg.ready();
+    } catch {}
+    try {
+      tg.expand();
+    } catch {}
+  };
+  attempt();
 }
 
 // The signed launch payload to POST to the backend for verification + token

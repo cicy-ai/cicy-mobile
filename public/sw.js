@@ -3,7 +3,7 @@
 // network-first so the single-page app shell always reflects the latest deploy;
 // the agent data itself is fetched live from each team's server and must never
 // be served stale.
-const CACHE = 'cicy-shell-v1';
+const CACHE = 'cicy-shell-v2';
 
 self.addEventListener('install', (event) => {
   // Activate this worker immediately on first install.
@@ -36,8 +36,15 @@ self.addEventListener('fetch', (event) => {
         const cached = await caches.match(req);
         if (cached) return cached;
         const fresh = await fetch(req);
-        const cache = await caches.open(CACHE);
-        cache.put(req, fresh.clone());
+        // After a deploy, OLD hashed chunk URLs fall through to the SPA shell
+        // (200 + text/html). Never cache that under a .js URL — it would
+        // permanently poison this cache. The chunk-heal guard in the HTML
+        // shell reloads the page to pick up the new build instead.
+        const ct = fresh.headers.get('content-type') || '';
+        if (fresh.ok && !/text\/html/i.test(ct)) {
+          const cache = await caches.open(CACHE);
+          cache.put(req, fresh.clone());
+        }
         return fresh;
       })(),
     );
