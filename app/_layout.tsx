@@ -1,6 +1,6 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import * as NavigationBar from 'expo-navigation-bar';
-import { Stack } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
@@ -11,6 +11,8 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { useColorScheme } from 'react-native';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
+import { getInitialShare, subscribeShare } from '@/src/lib/shareIntent';
+import { useShareStore } from '@/src/store/share';
 import { darkTheme, lightTheme } from '@/src/theme/tokens';
 import { useAuthStore } from '@/src/store/auth';
 import { initWebApp } from '@/src/lib/telegram';
@@ -66,6 +68,26 @@ export default function RootLayout() {
   // plain browser / native app.
   useEffect(() => {
     initWebApp();
+  }, []);
+
+  // Android share sheet → park the shared text, then land on the agent list so
+  // the user picks who receives it (chat prefills the composer, never
+  // auto-sends). Cold start: the initial share is picked up here and the index
+  // route routes normally. Warm share: navigate to /agents explicitly.
+  useEffect(() => {
+    const onShare = (text: string, warm: boolean) => {
+      useShareStore.getState().setShare(text);
+      if (warm) {
+        try {
+          router.push('/agents');
+        } catch {
+          /* navigator not ready — the pending share is picked up on land */
+        }
+      }
+    };
+    const initial = getInitialShare();
+    if (initial) onShare(initial, false);
+    return subscribeShare((t) => onShare(t, true));
   }, []);
 
   // Once auth has hydrated we know which initial screen expo-router will pick,

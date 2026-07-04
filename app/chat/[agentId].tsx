@@ -30,6 +30,7 @@ import { normalizeAgentType } from '@/src/lib/agentType';
 import { isTelegram, showBackButton } from '@/src/lib/telegram';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { useAuthStore } from '@/src/store/auth';
+import { useShareStore } from '@/src/store/share';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 
 // Voice input relies on native speech-recognition / audio recording, neither of
@@ -55,6 +56,12 @@ export default function Chat() {
   }, [inTg]);
 
   const [input, setInput] = useState('');
+  // Content shared in from outside (share sheet / PWA share target): prefill
+  // the composer once — the user reviews and hits send themselves.
+  useEffect(() => {
+    const shared = useShareStore.getState().consume();
+    if (shared) setInput((prev) => (prev.trim() ? prev + '\n' + shared : shared));
+  }, [agentId]);
   const [sending, setSending] = useState(false);
   const [pending, setPending] = useState<{ text: string; nonce: number } | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);

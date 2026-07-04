@@ -24,6 +24,7 @@ import {
   type AgentLiveMetrics,
 } from '@/src/lib/agentMetrics';
 import { useAuthStore } from '@/src/store/auth';
+import { useShareStore } from '@/src/store/share';
 import { radius, spacing, useTheme } from '@/src/theme';
 
 // We only show the team's master/dispatcher pane and its direct workers. The
@@ -82,6 +83,9 @@ export default function Agents() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [titleModalOpen, setTitleModalOpen] = useState(false);
   const [gatewayByName, setGatewayByName] = useState<Record<string, boolean>>({});
+  // Shared-in content waiting for an agent to be picked (share sheet / PWA
+  // share target). Shown as a banner; tapping ✕ discards it.
+  const shareText = useShareStore((st) => st.text);
 
   const agentId = useCallback((a: Agent) => String(a.name || a.id || a.pane_id || ''), []);
   const agentIds = useMemo(() => agents.map(agentId).filter(Boolean), [agents, agentId]);
@@ -214,6 +218,26 @@ export default function Agents() {
     setRefreshing(false);
   }, [load]);
 
+  // Banner shown while shared-in content waits for an agent pick. Lives with
+  // the header so every state (loading/error/empty/list) shows it.
+  const renderShareBanner = () =>
+    shareText ? (
+      <View style={[styles.shareBanner, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        <Ionicons name="share-outline" size={16} color={theme.accent} />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text variant="caption" tone="muted">
+            {t('share.pickAgent')}
+          </Text>
+          <Text variant="caption" tone="faint" numberOfLines={1}>
+            {shareText}
+          </Text>
+        </View>
+        <PressableScale onPress={() => useShareStore.getState().clear()} hitSlop={8}>
+          <Ionicons name="close" size={16} color={theme.textFaint} />
+        </PressableScale>
+      </View>
+    ) : null;
+
   // Single header used across every state — keeps menu/title/scan placement
   // consistent so loading/error/empty/list don't shift around.
   const renderHeader = () => (
@@ -289,6 +313,7 @@ export default function Agents() {
     return (
       <Screen>
         {renderHeader()}
+      {renderShareBanner()}
         <View style={styles.center}>
           <View style={[styles.bigIcon, { backgroundColor: theme.surface, borderColor: theme.border }]}>
             <Ionicons name="qr-code-outline" size={56} color={theme.textMuted} />
@@ -311,6 +336,7 @@ export default function Agents() {
     return (
       <Screen>
         {renderHeader()}
+      {renderShareBanner()}
         <View style={styles.center}>
           <ActivityIndicator color={theme.textMuted} />
         </View>
@@ -324,6 +350,7 @@ export default function Agents() {
     return (
       <Screen>
         {renderHeader()}
+      {renderShareBanner()}
         <View style={[styles.center, { paddingHorizontal: spacing.xl }]}>
           <Ionicons name="cloud-offline-outline" size={48} color={theme.textMuted} />
           <Text variant="title" style={{ marginTop: spacing.md }}>
@@ -344,6 +371,7 @@ export default function Agents() {
   return (
     <Screen>
       {renderHeader()}
+      {renderShareBanner()}
       <FlatList
         data={agents}
         keyExtractor={(a) => String(a.name ?? a.id ?? a.pane_id ?? '')}
@@ -449,6 +477,17 @@ const styles = StyleSheet.create({
     borderRadius: 48,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  shareBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
     borderWidth: StyleSheet.hairlineWidth,
   },
   headerRow: {

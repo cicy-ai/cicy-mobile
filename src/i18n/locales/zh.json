@@ -103,5 +103,8 @@
     "or": "或",
     "addManual": "粘贴链接加入",
     "pastePlaceholder": "https://… ?flag=addTeam&token=…"
+  },
+  "share": {
+    "pickAgent": "分享内容 — 选择要发送到的 agent"
   }
 }

@@ -103,5 +103,8 @@
     "or": "or",
     "addManual": "Add",
     "pastePlaceholder": "https://… ?flag=addTeam&token=…"
+  },
+  "share": {
+    "pickAgent": "Shared content — pick an agent to send it to"
   }
 }
