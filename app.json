@@ -27,20 +27,7 @@
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ],
-      "package": "com.cicy.ai.mobile.adr",
-      "intentFilters": [
-        {
-          "action": "SEND",
-          "category": [
-            "DEFAULT"
-          ],
-          "data": [
-            {
-              "mimeType": "text/plain"
-            }
-          ]
-        }
-      ]
+      "package": "com.cicy.ai.mobile.adr"
     },
     "web": {
       "output": "static",
