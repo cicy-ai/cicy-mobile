@@ -31,13 +31,19 @@ export function getInitialShare(): string | null {
 export function subscribeShare(cb: (text: string) => void): () => void {
   const mod = nativeModule();
   if (!mod) return () => {};
+  const onEvent = (e: { text?: string }) => {
+    const t = String(e?.text ?? '').trim();
+    if (t) cb(t);
+  };
   try {
+    // SDK 52+: the native module object IS an event emitter.
+    if (typeof mod.addListener === 'function') {
+      const sub = mod.addListener('onShareIntent', onEvent);
+      return () => sub.remove();
+    }
     const { EventEmitter } = require('expo-modules-core');
     const emitter = new EventEmitter(mod);
-    const sub = emitter.addListener('onShareIntent', (e: { text?: string }) => {
-      const t = String(e?.text ?? '').trim();
-      if (t) cb(t);
-    });
+    const sub = emitter.addListener('onShareIntent', onEvent);
     return () => sub.remove();
   } catch {
     return () => {};

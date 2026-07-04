@@ -1,9 +1,6 @@
 {
   "platforms": ["android"],
   "android": {
-    "modules": ["expo.modules.cicyshareintent.CicyShareIntentModule"],
-    "reactActivityLifecycleListeners": [
-      "expo.modules.cicyshareintent.CicyShareIntentActivityLifecycleListener"
-    ]
+    "modules": ["expo.modules.cicyshareintent.CicyShareIntentModule"]
   }
 }
