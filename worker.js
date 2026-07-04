@@ -7,8 +7,14 @@
 // the chunk-heal guard (+html.tsx) can reload into the new build.
 export default {
   async fetch(request, env) {
-    const res = await env.ASSETS.fetch(request);
     const { pathname } = new URL(request.url);
+    // Short install link for phones: https://telegram-bot.cicy-ai.com/apk →
+    // the latest Android build on the public R2 CDN (browser download →
+    // system installer; replaces the USB/adb loop).
+    if (pathname === '/apk') {
+      return Response.redirect('https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.apk', 302);
+    }
+    const res = await env.ASSETS.fetch(request);
     if (pathname.startsWith('/_expo/') && /text\/html/i.test(res.headers.get('content-type') || '')) {
       return new Response('asset from an old deploy — gone', { status: 404 });
     }
