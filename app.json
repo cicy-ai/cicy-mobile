@@ -84,6 +84,13 @@
     "experiments": {
       "typedRoutes": false,
       "reactCompiler": true
+    },
+    "runtimeVersion": "1",
+    "updates": {
+      "url": "https://telegram-bot.cicy-ai.com/updates/manifest",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
     }
   }
 }

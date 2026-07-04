@@ -1,0 +1,33 @@
+# JS-only hot update (expo-updates OTA, self-hosted on the public R2 CDN).
+# No gradle, no APK — ~3 minutes from tag to phones.
+#
+#   git tag u$(date +%Y%m%d%H%M) && git push origin u<That tag>
+#
+# Devices on the matching runtimeVersion pick it up on next app launch
+# (checkAutomatically: ON_LOAD; applied the launch after download).
+# Native changes NEVER ship this way — bump runtimeVersion + release a v* APK.
+name: ota
+
+on:
+  push:
+    tags: ['u*']
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install deps
+        run: npm ci
+      - name: Export update bundle
+        run: npx expo export -p android
+      - name: Publish OTA to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
+        run: node scripts/publish-ota.mjs "${GITHUB_REF_NAME}"

@@ -126,6 +126,15 @@ jobs:
             --data-binary @version.json >/dev/null
           echo "Public APK: https://r2.deepfetch.de5.net/cicy-mobile/cicy-${VER}.apk"
           echo "Latest:     https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.apk"
+      # Publish the SAME JS as an OTA update so devices already on this
+      # runtime converge without reinstalling the APK.
+      - name: Publish matching OTA update
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
+        run: |
+          npx expo export -p android
+          node scripts/publish-ota.mjs "${GITHUB_REF_NAME#v}"
 
   # ── iOS unsigned IPA → GitHub Release + public R2 ────────────────────────────
   # Unsigned on purpose: Sideloadly / AltStore re-sign with the user's Apple ID
