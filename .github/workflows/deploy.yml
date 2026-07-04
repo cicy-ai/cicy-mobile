@@ -117,6 +117,13 @@ jobs:
               -H "Content-Type: ${CT}" \
               --data-binary @"cicy-${VER}.apk" >/dev/null
           done
+          # Version manifest LAST (after the APK is up) so the in-app update
+          # check can never point at an APK that isn't there yet.
+          printf '{"version":"%s","apk":"https://r2.deepfetch.de5.net/cicy-mobile/cicy-%s.apk"}' "$VER" "$VER" > version.json
+          curl -fsS -X PUT "${base}/cicy-mobile/version.json" \
+            -H "Authorization: Bearer ${R2_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @version.json >/dev/null
           echo "Public APK: https://r2.deepfetch.de5.net/cicy-mobile/cicy-${VER}.apk"
           echo "Latest:     https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.apk"
 

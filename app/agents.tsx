@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ActivityIndicator, AppState, type AppStateStatus, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, type AppStateStatus, FlatList, Linking, RefreshControl, StyleSheet, View } from 'react-native';
 
 import { Button } from '@/src/components/Button';
 import { AgentAvatar } from '@/src/components/AgentAvatar';
@@ -14,6 +14,7 @@ import { TeamDrawer } from '@/src/components/TeamDrawer';
 import { TeamTitleModal } from '@/src/components/TeamTitleModal';
 import { Text } from '@/src/components/Text';
 import { api } from '@/src/api/http';
+import { checkApkUpdate, type ApkUpdate } from '@/src/lib/appUpdate';
 import type { Agent } from '@/src/api/types';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import {
@@ -82,6 +83,13 @@ export default function Agents() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [titleModalOpen, setTitleModalOpen] = useState(false);
   const [gatewayByName, setGatewayByName] = useState<Record<string, boolean>>({});
+  // Sideload self-update: newer APK on the CDN → banner (Android only).
+  const [apkUpdate, setApkUpdate] = useState<ApkUpdate | null>(null);
+  useEffect(() => {
+    let alive = true;
+    checkApkUpdate().then((u) => { if (alive && u) setApkUpdate(u); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   const agentId = useCallback((a: Agent) => String(a.name || a.id || a.pane_id || ''), []);
   const agentIds = useMemo(() => agents.map(agentId).filter(Boolean), [agents, agentId]);
@@ -214,6 +222,31 @@ export default function Agents() {
     setRefreshing(false);
   }, [load]);
 
+  // Update banner: tap → browser downloads the APK from our CDN → system
+  // installer. One tap replaces the whole USB/adb loop.
+  const renderUpdateBanner = () =>
+    apkUpdate ? (
+      <PressableScale
+        onPress={() => { Linking.openURL(apkUpdate.apk).catch(() => {}); }}
+        haptic
+        scaleTo={0.98}
+        style={[styles.updateBanner, { backgroundColor: theme.surface, borderColor: theme.accent }]}
+      >
+        <Ionicons name="arrow-down-circle" size={18} color={theme.accent} />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text variant="caption" style={{ color: theme.accent }}>
+            {t('update.available', { version: apkUpdate.version })}
+          </Text>
+          <Text variant="caption" tone="faint" numberOfLines={1}>
+            {t('update.tapToInstall')}
+          </Text>
+        </View>
+        <PressableScale onPress={() => setApkUpdate(null)} hitSlop={8}>
+          <Ionicons name="close" size={16} color={theme.textFaint} />
+        </PressableScale>
+      </PressableScale>
+    ) : null;
+
   // Single header used across every state — keeps menu/title/scan placement
   // consistent so loading/error/empty/list don't shift around.
   const renderHeader = () => (
@@ -289,6 +322,7 @@ export default function Agents() {
     return (
       <Screen>
         {renderHeader()}
+      {renderUpdateBanner()}
         <View style={styles.center}>
           <View style={[styles.bigIcon, { backgroundColor: theme.surface, borderColor: theme.border }]}>
             <Ionicons name="qr-code-outline" size={56} color={theme.textMuted} />
@@ -311,6 +345,7 @@ export default function Agents() {
     return (
       <Screen>
         {renderHeader()}
+      {renderUpdateBanner()}
         <View style={styles.center}>
           <ActivityIndicator color={theme.textMuted} />
         </View>
@@ -324,6 +359,7 @@ export default function Agents() {
     return (
       <Screen>
         {renderHeader()}
+      {renderUpdateBanner()}
         <View style={[styles.center, { paddingHorizontal: spacing.xl }]}>
           <Ionicons name="cloud-offline-outline" size={48} color={theme.textMuted} />
           <Text variant="title" style={{ marginTop: spacing.md }}>
@@ -344,6 +380,7 @@ export default function Agents() {
   return (
     <Screen>
       {renderHeader()}
+      {renderUpdateBanner()}
       <FlatList
         data={agents}
         keyExtractor={(a) => String(a.name ?? a.id ?? a.pane_id ?? '')}
@@ -442,6 +479,17 @@ function AgentRow({ agent, metrics, gateway }: { agent: Agent; metrics?: AgentLi
 }
 
 const styles = StyleSheet.create({
+  updateBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   bigIcon: {
     width: 96,

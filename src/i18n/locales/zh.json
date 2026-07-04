@@ -107,5 +107,9 @@
     "or": "或",
     "addManual": "粘贴链接加入",
     "pastePlaceholder": "https://… ?flag=addTeam&token=…"
+  },
+  "update": {
+    "available": "发现新版本 v{{version}}",
+    "tapToInstall": "点击下载安装,无需数据线"
   }
 }
