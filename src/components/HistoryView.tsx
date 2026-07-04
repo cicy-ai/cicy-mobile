@@ -157,6 +157,7 @@ export function HistoryView({ agentId, pending }: Props) {
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollGenRef = useRef(0); // bump to invalidate a stale poll loop's reschedule
   const aliveRef = useRef(false);
+  const focusedRef = useRef(false); // screen focused (useFocusEffect) — gates AppState resume
   const reconcilingRef = useRef(false);
   const requestSeqRef = useRef(0);
   const lastNonceRef = useRef(0); // last processed `pending.nonce`
@@ -241,19 +242,39 @@ export function HistoryView({ agentId, pending }: Props) {
 
   // A newer turn started → append ONLY the new committed tail (maxLoaded, newMax];
   // never re-pull below it (preserves older loaded pages). Port of reconcileTail.
+  //
+  // Pages BACKWARD from the newest window until the fetched span reaches the
+  // already-loaded boundary: a single multi-tool turn can span far more than one
+  // WINDOW of ids, and a one-page fetch would leave a GAP that loadMore can never
+  // fill (it pages below the OLD min, not into the gap) — the turn then renders
+  // with its earlier steps missing until a full reload.
   const reconcileTail = useCallback(async () => {
     try {
       const ids = await api.getHistoryIds(agentId);
       const cid = String(ids.conversation_id ?? '');
       const newMax = Number(ids.id ?? 0);
       if (cid && convRef.current && cid !== convRef.current) return; // rotation → softRebind
-      if (newMax > maxLoadedIdRef.current) {
-        const hist = await api.getCurrentHistory(agentId, { limit: WINDOW, conversationId: cid });
-        const tail = buildTurnsFromRawItems(hist.items ?? []);
-        if (tail.length) {
-          setItems((prev) => normalizeHistoryTurns([...prev, ...tail]));
-          maxLoadedIdRef.current = newMax;
-        }
+      if (newMax <= maxLoadedIdRef.current) return;
+      const collected: HistoryTurn[] = [];
+      let before: number | undefined;
+      // 8 pages ≈ 128 ids per reconcile — runaway guard; anything bigger heals
+      // on the next poll round since maxLoadedIdRef only advances on success.
+      for (let page = 0; page < 8; page += 1) {
+        const hist = await api.getCurrentHistory(agentId, {
+          limit: WINDOW,
+          conversationId: cid,
+          ...(before ? { before } : {}),
+        });
+        const turns = buildTurnsFromRawItems(hist.items ?? []);
+        if (!turns.length) break;
+        collected.unshift(...turns);
+        const pageMin = Number(turns[0].history_id ?? 0);
+        if (!hist.has_more || pageMin <= maxLoadedIdRef.current + 1) break;
+        before = pageMin;
+      }
+      if (collected.length) {
+        setItems((prev) => normalizeHistoryTurns([...prev, ...collected]));
+        maxLoadedIdRef.current = newMax;
       }
     } catch {}
   }, [agentId]);
@@ -523,6 +544,7 @@ export function HistoryView({ agentId, pending }: Props) {
     useCallback(() => {
       let mounted = true;
       aliveRef.current = true;
+      focusedRef.current = true;
       // Instant paint from cache (memory→persistent, sync) so reopening an agent
       // shows the last-seen conversation immediately; loadWindow() below still
       // refetches fresh and reconciles. Cache miss → fall back to the spinner.
@@ -572,6 +594,7 @@ export function HistoryView({ agentId, pending }: Props) {
       return () => {
         mounted = false;
         aliveRef.current = false;
+        focusedRef.current = false;
         if (pollTimer.current) clearTimeout(pollTimer.current);
         pollTimer.current = null;
         clearScheduledScrolls();
@@ -579,11 +602,14 @@ export function HistoryView({ agentId, pending }: Props) {
     }, [agentId, loadWindow, pollReply, applyAnchorSpacerHeight, clearScheduledScrolls]),
   );
 
-  // Pause polling in the background; resume on return.
+  // Pause polling in the background; resume on return — but ONLY when this
+  // screen is still the focused one. Without the focus gate, a blurred screen
+  // left mounted under the nav stack would restart its poll loop on every
+  // app foreground and keep polling forever behind the visible screen.
   useEffect(() => {
     const onChange = (s: AppStateStatus) => {
       if (s === 'active') {
-        if (!aliveRef.current) {
+        if (focusedRef.current && !aliveRef.current) {
           aliveRef.current = true;
           pollReply();
         }
@@ -617,6 +643,10 @@ export function HistoryView({ agentId, pending }: Props) {
   // turn — else round-0's tools render BOTH committed (above) and in the live turn
   // (below) = the "reply 先到上一条 再乱跳" duplicate/jump. The live turn owns the
   // full ordered render until the turn completes and migrates into committed.
+  // Boolean, not the liveTurn object: the typewriter replaces liveTurn ~60×/s
+  // while it types, and an object dep would recompute displayItems (new array
+  // identity) — and re-fire everything downstream of it — every frame.
+  const liveVisible = !!liveTurn && Number(liveTurn.history_id ?? 0) > committedMaxId;
   const displayItems = useMemo(() => {
     // Display layer drops system noise entirely (用户指令:agent 显示层完全过滤
     // system message):role==='system' turns and harness-only user turns (a q
@@ -632,20 +662,23 @@ export function HistoryView({ agentId, pending }: Props) {
       }
       return true;
     });
-    const liveActive = !!liveTurn && Number(liveTurn.history_id ?? 0) > committedMaxId;
-    if (!liveActive) return visible;
+    if (!liveVisible) return visible;
     let lastUserId = 0;
     for (const t of visible) if (t?.role === 'user') lastUserId = Math.max(lastUserId, Number(t?.history_id ?? 0));
     return visible.filter((t) => !(t?.role === 'assistant' && Number(t?.history_id ?? 0) > lastUserId));
-  }, [items, liveTurn, committedMaxId]);
+  }, [items, liveVisible]);
 
   // Recap-on-return is system noise: a harness-only user turn + the assistant
-  // recap it triggers. QuestionBubble already folds the instruction; this drops
-  // its assistant response too. Port of web's recapResponses.
+  // recap it triggers. The harness q itself is dropped by displayItems, so this
+  // must scan the UNFILTERED items — scanning displayItems can never see the
+  // harness q, pendingRecap never sets, and the recap answer leaks through as an
+  // orphan assistant turn with no question above it. The drop Set holds object
+  // identities from `items`, which displayItems shares (it's a filter of items).
   const recapResponses = useMemo(() => {
     const drop = new Set<HistoryTurn>();
     let pendingRecap = false;
-    for (const t of displayItems) {
+    for (const t of items) {
+      if (t?.role === 'system') continue; // may sit between the harness q and its recap
       const q = String((t as any)?.text || (t as any)?.q || '');
       if (t?.role === 'user' && q.trim()) {
         const { blocks } = splitLeadingHarnessBlocks(q);
@@ -661,9 +694,18 @@ export function HistoryView({ agentId, pending }: Props) {
       }
     }
     return drop;
-  }, [displayItems]);
+  }, [items]);
 
-  const liveVisible = !!liveTurn && Number(liveTurn.history_id ?? 0) > committedMaxId;
+  // Coarse live signature for the anchor effect: changes on poll-level transitions
+  // (new turn / status flip / a step appended), NOT on every typewriter frame.
+  // Depending on the liveTurn OBJECT re-ran the anchor effect ~60×/s during the
+  // char-by-char reveal — a rAF + getBoundingClientRect layout read per frame.
+  // The per-token pin hold lives in onContentSizeChange, which doesn't need this.
+  const liveSig = liveTurn
+    ? `${liveTurn.history_id ?? ''}:${liveTurn.status ?? ''}:${(liveTurn.steps ?? []).length}`
+    : '';
+  const liveVisibleRef = useRef(false);
+  liveVisibleRef.current = liveVisible;
 
   // ── Anchor: pin a new q to the viewport top, reply streams below (port of web's
   // CurrentHistoryView §"new q to top", incl. the smooth-scroll + hand-off + the
@@ -703,7 +745,11 @@ export function HistoryView({ agentId, pending }: Props) {
       // there (onScroll maintains shouldStickBottomRef). Imperative scrollToEnd
       // is the native equivalent of web's scheduleBottom.
       if (!didInitialScrollRef.current || shouldStickBottomRef.current) {
-        scrollRef.current?.scrollToEnd({ animated: didInitialScrollRef.current });
+        // While the live tail is typing, content grows every frame — an ANIMATED
+        // scrollToEnd would be restarted 60×/s and stutter. Jump-follow instead;
+        // keep the animation for discrete changes (a new committed turn landing).
+        const animated = didInitialScrollRef.current && !liveVisibleRef.current;
+        scrollRef.current?.scrollToEnd({ animated });
         didInitialScrollRef.current = true;
       }
       return;
@@ -779,7 +825,7 @@ export function HistoryView({ agentId, pending }: Props) {
           return;
         }
         const lastCommitted = displayItems[displayItems.length - 1];
-        const replyInFlight = !!liveTurn || isActiveAssistantStatus(String(lastCommitted?.status ?? ''));
+        const replyInFlight = !!liveSig || isActiveAssistantStatus(String(lastCommitted?.status ?? ''));
         if (replyInFlight) {
           replySeenActiveRef.current = true;
           // Keep q at the top as the reply grows below it. IDEMPOTENT: only correct if
@@ -799,7 +845,7 @@ export function HistoryView({ agentId, pending }: Props) {
     });
     return () => cancelAnimationFrame(frame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, displayItems, liveTurn, liveVisible]);
+  }, [loading, displayItems, liveSig, liveVisible]);
 
   if (loading) {
     return (
