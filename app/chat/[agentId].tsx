@@ -22,6 +22,7 @@ import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
 import { TerminalView } from '@/src/components/TerminalView';
 import { Text } from '@/src/components/Text';
+import { TypingDots } from '@/src/components/TypingDots';
 import { VoiceBar } from '@/src/components/VoiceBar';
 import { api } from '@/src/api/http';
 import { uploadAttachment } from '@/src/api/upload';
@@ -56,6 +57,12 @@ export default function Chat() {
 
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  // Reply in flight (port of DispatcherChat's busy machine): locked on send,
+  // unlocked ONLY by the hysteresis poll below on a confirmed terminal state.
+  // While busy the send button becomes a STOP button, and new messages queue.
+  const [busy, setBusy] = useState(false);
+  const [queue, setQueue] = useState<{ id: number; text: string }[]>([]);
+  const queueSeqRef = useRef(1);
   const [pending, setPending] = useState<{ text: string; nonce: number } | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -74,6 +81,63 @@ export default function Chat() {
     const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardShown(false));
     return () => { showSub.remove(); hideSub.remove(); };
   }, []);
+
+  // Reset cross-agent state when switching chats.
+  useEffect(() => {
+    setBusy(false);
+    setQueue([]);
+  }, [agentId]);
+
+  // Entering a chat whose reply is ALREADY streaming → show the stop button.
+  useEffect(() => {
+    let alive = true;
+    api.getCurrentReply(agentId).then((r: any) => {
+      if (!alive) return;
+      const answerId = Number(r?.history_id || 0);
+      const st = String(r?.status || '').trim().toLowerCase();
+      if (answerId > 0 && !r?.complete && st !== 'failed' && st !== 'error') setBusy(true);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [agentId]);
+
+  // busy 的唯一解锁权(比 DispatcherChat 更严的基线版):第一拍先记「基线」——
+  // 上一轮已完结回复的 answerId/cid。之后**只认新回合的终态**(answerId > 基线,
+  // 或会话已轮换)才解锁;上一轮残留的 complete 永远不算(stdin 路径新 turn 注册
+  // 要 1~3s,web 的 800ms 宽限在这里不够,实测会把第二条消息从队列漏成直发)。
+  // 死锁兜底:15s 内从没见过新回合(/clear 空会话、发送被吞),解锁。
+  useEffect(() => {
+    if (!busy) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const since = Date.now();
+    let baseline: { answerId: number; cid: string } | null = null;
+    let sawNewInFlight = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const r: any = await api.getCurrentReply(agentId);
+        if (cancelled) return;
+        const answerId = Number(r?.history_id || 0);
+        const cid = String(r?.conversation_id || '');
+        const complete = !!r?.complete;
+        const st = String(r?.status || '').trim().toLowerCase();
+        const failed = st === 'failed' || st === 'fail' || st === 'error';
+        const terminal = complete || failed;
+        if (!baseline) {
+          // First read. A terminal reply here is the PREVIOUS turn's leftovers →
+          // it becomes the baseline. An in-flight one is already the new turn.
+          baseline = terminal ? { answerId, cid } : { answerId: answerId - 1, cid };
+        }
+        const isNewTurn = cid !== baseline.cid || answerId > baseline.answerId;
+        if (answerId > 0 && isNewTurn && !terminal) sawNewInFlight = true;
+        if (answerId > 0 && isNewTurn && terminal && Date.now() - since > 800) { setBusy(false); return; }
+        if (!sawNewInFlight && Date.now() - since > 15000) { setBusy(false); return; }
+      } catch {}
+      timer = setTimeout(tick, 1000);
+    };
+    tick();
+    return () => { cancelled = true; if (timer != null) clearTimeout(timer); };
+  }, [busy, agentId]);
 
   // Tab + agent metadata. Both come from /api/panes — fetch once on entry.
   const [tab, setTab] = useState<'history' | 'cli'>('history');
@@ -126,11 +190,21 @@ export default function Chat() {
     setSending(true);
     setVoiceError(null);
     setTab('history'); // make the instant feedback visible
-    setPending({ text: trimmed, nonce: Date.now() }); // optimistic: show q now
     try {
+      if (busy) {
+        // Queue — no optimistic bubble for queued items (they render in the
+        // queue strip until flushed).
+        const id = queueSeqRef.current;
+        queueSeqRef.current += 1;
+        setQueue((prev) => [...prev, { id, text: trimmed }]);
+        return;
+      }
+      setBusy(true);
+      setPending({ text: trimmed, nonce: Date.now() }); // optimistic: show q now
       await api.sendToAgent(agentId, trimmed, true);
     } catch (e: any) {
       setPending(null); // failed → drop the optimistic q
+      setBusy(false);
       setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
     } finally {
       setSending(false);
@@ -176,13 +250,60 @@ export default function Chat() {
       }
 
       setTab('history');
+      // Reply in flight → queue (Claude-Code style): don't hit the backend,
+      // stack above the composer, auto-flush when idle.
+      if (busy) {
+        const id = queueSeqRef.current;
+        queueSeqRef.current += 1;
+        setQueue((prev) => [...prev, { id, text: body }]);
+        setSending(false);
+        return;
+      }
+      setBusy(true); // lock immediately — don't wait for the poll to notice
       setPending({ text: body, nonce: Date.now() });
       await api.sendToAgent(agentId, body, true);
     } catch (e: any) {
       setPending(null);
+      setBusy(false);
+      setInput((cur) => cur || text); // restore what the user typed
       setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
     } finally {
       setSending(false);
+    }
+  };
+
+  // Idle flush: when the reply completes and the queue is non-empty, merge the
+  // queued messages into ONE send (order preserved).
+  useEffect(() => {
+    if (busy || sending || queue.length === 0) return;
+    const batch = queue;
+    setQueue([]);
+    const body = batch.map((b) => b.text).join('\n');
+    setBusy(true);
+    setPending({ text: body, nonce: Date.now() });
+    api.sendToAgent(agentId, body, true).catch((e: any) => {
+      setPending(null);
+      setBusy(false);
+      setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
+      // put the batch back so nothing is lost
+      setQueue((prev) => [...batch, ...prev]);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, sending, queue.length]);
+
+  // Stop the current generation: cicy (headless) → gateway cancel; terminal
+  // agents (claude/codex) → Escape into the pane. Mirrors DispatcherChat.
+  const stopGeneration = async () => {
+    if (!busy) return;
+    try {
+      if (normalizeAgentType(agentMeta.agentType) === 'cicy-claude') {
+        await api.cancelCicyReply(agentId);
+      } else {
+        await api.sendKeys(agentId, 'Escape');
+      }
+      setBusy(false); // reflect at once; the entry check re-locks if still tearing down
+    } catch (e: any) {
+      setVoiceError(t('chat.stopFailed', { error: String(e?.message ?? e) }));
     }
   };
 
@@ -297,7 +418,7 @@ export default function Chat() {
           </View>
         ) : (
           <View style={{ flex: 1, backgroundColor: theme.bg }}>
-            <HistoryView agentId={agentId} pending={pending} />
+            <HistoryView agentId={agentId} pending={pending} onReplyInFlight={() => setBusy(true)} />
           </View>
         )}
 
@@ -333,6 +454,45 @@ export default function Chat() {
             />
           ) : (
           <>
+          {/* Queued messages (busy period) — auto-flushed once the reply ends. */}
+          {queue.length > 0 && (
+            <View style={styles.queueBox}>
+              <Text variant="caption" tone="faint">
+                {t('chat.queuedHeader', { n: queue.length })}
+              </Text>
+              {queue.map((q) => (
+                <View key={q.id} style={[styles.queueItem, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                  <Text variant="caption" tone="muted" numberOfLines={2} style={{ flex: 1 }}>
+                    {q.text}
+                  </Text>
+                  <PressableScale onPress={() => setQueue((prev) => prev.filter((x) => x.id !== q.id))} hitSlop={6}>
+                    <Ionicons name="close" size={14} color={theme.textFaint} />
+                  </PressableScale>
+                </View>
+              ))}
+            </View>
+          )}
+          {/* Reply in flight → one-tap stop (Esc equivalent). The send button
+              stays usable: sending while busy queues instead of interrupting. */}
+          {busy && (
+            <View style={styles.busyRow}>
+              <TypingDots />
+              <Text variant="caption" tone="faint" style={{ flex: 1 }}>
+                {t('chat.replying')}
+              </Text>
+              <PressableScale
+                onPress={() => { void stopGeneration(); }}
+                haptic
+                scaleTo={0.94}
+                style={[styles.stopBtn, { borderColor: theme.border, backgroundColor: theme.surface }]}
+              >
+                <Ionicons name="square" size={10} color={theme.danger} />
+                <Text variant="caption" style={{ color: theme.danger }}>
+                  {t('chat.stop')}
+                </Text>
+              </PressableScale>
+            </View>
+          )}
           {attachments.length > 0 && (
             <ScrollView
               horizontal
@@ -460,6 +620,32 @@ export default function Chat() {
 }
 
 const styles = StyleSheet.create({
+  queueBox: { gap: 6, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
+  queueItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+  },
+  busyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  stopBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 4,
+  },
   navRow: {
     flexDirection: 'row',
     alignItems: 'center',

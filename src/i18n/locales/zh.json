@@ -41,7 +41,11 @@
     "noTurnsTitle": "暂无历史记录",
     "noTurnsBody": "这个 agent 还没有产生历史记录，或正在直连 anthropic.com。\n\n切换到 CLI 标签查看实时终端。",
     "systemLabel": "系统",
-    "thinkingLabel": "思考"
+    "thinkingLabel": "思考",
+    "replying": "正在回复…",
+    "stop": "停止",
+    "stopFailed": "停止失败：{{error}}",
+    "queuedHeader": "{{n}} 条排队中 · 回复完成后自动发送"
   },
   "voice": {
     "holdToTalk": "按住说话",

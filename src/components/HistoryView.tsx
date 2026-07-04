@@ -19,6 +19,10 @@ type Props = {
   // waiting for the poll) and kick the reply poll. `nonce` changes per send so
   // the same text can be sent twice; `null` after a failed send clears it.
   pending?: { text: string; nonce: number } | null;
+  // ENTER-ONLY busy signal to the composer: fired whenever the poll observes an
+  // in-flight reply (turn started here or from any other channel). Clearing
+  // busy is owned solely by the composer's baseline hysteresis poll.
+  onReplyInFlight?: () => void;
 };
 
 // Two-part history (ported from desktop CurrentHistoryView):
@@ -130,7 +134,7 @@ function replyAnswersRealQuestion(question?: string): boolean {
   return !!splitLeadingHarnessBlocks(s).remaining.trim();
 }
 
-export function HistoryView({ agentId, pending }: Props) {
+export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
   const theme = useTheme();
 
   // ── Two-part model (faithful port of cicy-code CurrentHistoryView) ────────────
@@ -161,6 +165,8 @@ export function HistoryView({ agentId, pending }: Props) {
   const reconcilingRef = useRef(false);
   const requestSeqRef = useRef(0);
   const lastNonceRef = useRef(0); // last processed `pending.nonce`
+  const onReplyInFlightRef = useRef<typeof onReplyInFlight>(undefined);
+  onReplyInFlightRef.current = onReplyInFlight;
   const committedReadyRef = useRef(false); // Part 1 loaded → poll may attach tail
   const firstReplyDoneRef = useRef(false); // Part 2's first poll resolved → reveal
 
@@ -453,6 +459,7 @@ export function HistoryView({ agentId, pending }: Props) {
               liveTurnIdRef.current = turnId;
               // Set the typewriter's TARGET (full text); it reveals char-by-char so
               // the answer reads as continuous typing instead of 700ms chunks.
+              if (!complete) onReplyInFlightRef.current?.();
               liveTargetRef.current = {
                 history_id: answerId,
                 conversation_id: cid || convRef.current,
@@ -626,18 +633,49 @@ export function HistoryView({ agentId, pending }: Props) {
   // A new send: nudge the poll so the committed q + its reply surface fast. Like
   // web, there is NO optimistic bubble — the q renders once it lands in committed
   // (the anchor then pins it to the top). (~one poll round-trip, sub-second.)
+  // Optimistic double placeholder (port of web's OPTIMISTIC_Q): the instant a
+  // send happens, paint the q bubble + reserve the answer slot BEFORE the poll
+  // round-trips — the q must never lag the keypress. Cleared when a NEWER
+  // committed user turn lands (the real q) or on a 60s no-show timeout.
+  const [optimistic, setOptimistic] = useState<{ text: string; nonce: number; baselineId: number } | null>(null);
   useEffect(() => {
     if (!pending) return;
     if (pending.nonce === lastNonceRef.current) return;
     lastNonceRef.current = pending.nonce;
+    setOptimistic({ text: pending.text, nonce: pending.nonce, baselineId: maxLoadedIdRef.current });
     kickPoll();
   }, [pending, kickPoll]);
+  // `pending: null` from the send path = the send FAILED → drop the bubble.
+  useEffect(() => {
+    if (pending === null) setOptimistic(null);
+  }, [pending]);
+  useEffect(() => {
+    if (!optimistic) return;
+    const timer = setTimeout(() => {
+      setOptimistic((cur) => (cur && cur.nonce === optimistic.nonce ? null : cur));
+    }, 60000);
+    return () => clearTimeout(timer);
+  }, [optimistic]);
 
   // ── Render data: web's displayItems (no merge, no optimistic) ────────────────
   const committedMaxId = useMemo(
     () => items.reduce((m, t) => Math.max(m, Number(t?.history_id ?? 0)), 0),
     [items],
   );
+  // The real committed q landed → retire the optimistic bubble in place.
+  useEffect(() => {
+    if (!optimistic) return;
+    const landed = items.some(
+      (t) =>
+        t?.role === 'user' &&
+        Number(t?.history_id ?? 0) > optimistic.baselineId &&
+        stripHarnessNoise(String(t.q ?? t.text ?? '')) === optimistic.text.trim(),
+    );
+    const anyNewerUser = items.some(
+      (t) => t?.role === 'user' && Number(t?.history_id ?? 0) > optimistic.baselineId,
+    );
+    if (landed || anyNewerUser) setOptimistic(null);
+  }, [items, optimistic]);
   // While the live turn renders the in-flight assistant response (with its tool
   // steps, in serial order), HIDE the committed assistant turn(s) of that SAME
   // turn — else round-0's tools render BOTH committed (above) and in the live turn
@@ -711,6 +749,8 @@ export function HistoryView({ agentId, pending }: Props) {
   // CurrentHistoryView §"new q to top", incl. the smooth-scroll + hand-off + the
   // "don't shrink spacer before streaming" 回落 guard). ───────────────────────────
   const computeLastUserKey = useCallback((): string => {
+    // The optimistic bubble IS the newest question while it's up — anchor it.
+    if (optimistic) return `opt-${optimistic.nonce}`;
     for (let i = displayItems.length - 1; i >= 0; i -= 1) {
       const t = displayItems[i];
       if (t?.role === 'user' && !!stripHarnessNoise(String(t.q ?? t.text ?? ''))) {
@@ -718,7 +758,7 @@ export function HistoryView({ agentId, pending }: Props) {
       }
     }
     return '';
-  }, [displayItems]);
+  }, [displayItems, optimistic]);
 
   const onScroll = useCallback(
     (e: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
@@ -845,7 +885,7 @@ export function HistoryView({ agentId, pending }: Props) {
     });
     return () => cancelAnimationFrame(frame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, displayItems, liveSig, liveVisible]);
+  }, [loading, displayItems, liveSig, liveVisible, optimistic]);
 
   if (loading) {
     return (
@@ -925,6 +965,19 @@ export function HistoryView({ agentId, pending }: Props) {
           </View>
         );
       })}
+
+      {/* Optimistic q + reserved answer slot — painted the same frame as the
+          send, replaced in place when the real committed q + live tail arrive. */}
+      {optimistic ? (
+        <View key={`opt-${optimistic.nonce}`} {...({ dataSet: { turnKey: `opt-${optimistic.nonce}` } } as any)} style={{ gap: spacing.md }}>
+          <QuestionBubble text={optimistic.text} />
+          {!liveVisible ? (
+            <View>
+              <TypingDots />
+            </View>
+          ) : null}
+        </View>
+      ) : null}
 
       {/* Part 2 — the live tail (answer-only) right after committed, rendered
           SEPARATELY so its per-token growth never re-renders committed. */}

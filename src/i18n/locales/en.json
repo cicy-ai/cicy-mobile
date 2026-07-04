@@ -41,7 +41,11 @@
     "noTurnsTitle": "No recorded turns",
     "noTurnsBody": "This agent hasn't generated any history yet, or it's routing directly to anthropic.com.\n\nSwitch to the CLI tab to see the live terminal.",
     "systemLabel": "system",
-    "thinkingLabel": "Thinking"
+    "thinkingLabel": "Thinking",
+    "replying": "Replying…",
+    "stop": "Stop",
+    "stopFailed": "Could not stop: {{error}}",
+    "queuedHeader": "{{n}} queued · sends when the reply finishes"
   },
   "voice": {
     "holdToTalk": "Hold to talk",

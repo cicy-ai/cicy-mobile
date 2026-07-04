@@ -54,6 +54,20 @@ export const api = {
       body: JSON.stringify({ win_id: winId, text, submit }),
     }),
 
+  // Raw key into the pane (Escape interrupts a running terminal agent).
+  sendKeys: (winId: string, keys: string) =>
+    request<unknown>('/api/tmux/send-keys', {
+      method: 'POST',
+      body: JSON.stringify({ win_id: winId, keys }),
+    }),
+
+  // Cancel the in-flight gateway reply of a cicy (headless) agent.
+  cancelCicyReply: (paneId: string) =>
+    request<unknown>('/api/cicy/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ pane_id: paneId }),
+    }),
+
   // Conversation turns (q + a + steps) for an agent. Same endpoint the desktop
   // ChatHistoryView consumes; pane id format is the short pane name (e.g. w-10018).
   getHistoryView: (paneId: string, opts?: { limit?: number; offset?: number; q?: string }) => {
