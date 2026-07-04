@@ -49,33 +49,12 @@ export type SendToAgentBody = {
 // Conversation turn shape returned by GET /api/agents/history-view/{paneId}.
 // Mirrors what the desktop ChatHistoryView consumes — see
 // api/mgr/agent_inspector.go:2738 for the producer.
-export type HistoryStep =
-  | { type: 'thinking'; text: string }
-  | { type: 'text'; text: string }
-  // `arg`/`result` are the desktop parser's field names (CurrentHistoryView);
-  // `input`/`output` are the legacy history-view shape. The mobile ToolStrip
-  // only reads `name`, so both coexist harmlessly.
-  | { type: 'tool'; tools: { name?: string; arg?: string; result?: string; input?: string; output?: string; index?: number }[] }
-  | { type: string; text?: string; tools?: unknown };
-
-export type HistoryTurn = {
-  q: string;
-  a: string;
-  steps?: HistoryStep[];
-  status?: 'pending' | 'streaming' | 'tool_use' | 'text' | 'done' | string;
-  ts?: number;
-  start_ts?: number;
-  credit?: number;
-  model?: string;
-  history_id?: number;
-  conversation_id?: string;
-  turn_id?: string;
-  // Carried by the two-part parser (historyParse). `role` distinguishes
-  // system-notice / user / assistant turns; `text` is the user-question or
-  // system-notice body. The mobile renderer ignores them (reads q/a/steps).
-  role?: string;
-  text?: string;
-};
+// Single source of truth = the web-mirror types (src/lib/history/types.ts),
+// copied verbatim from cicy-code. Re-exported here so existing importers keep
+// working without churn.
+export type { HistoryTurn } from '@/src/lib/history/types';
+import type { HistoryTurn } from '@/src/lib/history/types';
+export type HistoryStep = NonNullable<import('@/src/lib/history/types').HistoryTurn['steps']>[number];
 
 export type HistoryView = {
   pane_id: string;

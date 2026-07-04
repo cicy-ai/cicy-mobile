@@ -5,7 +5,7 @@ import { ActivityIndicator, AppState, type AppStateStatus, Linking, Platform, Sc
 import { api } from '@/src/api/http';
 import i18n from '@/src/i18n';
 import type { HistoryStep, HistoryTurn } from '@/src/api/types';
-import { buildTurnsFromRawItems, normalizeHistoryTurns, splitLeadingHarnessBlocks, stripHarnessNoise } from '@/src/lib/historyParse';
+import { buildTurnsFromRawItems, normalizeHistoryTurns, replyItemsToSteps, splitLeadingHarnessBlocks, stripHarnessNoise } from '@/src/lib/historyParse';
 import { historyCache } from '@/src/lib/historyCache';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 import { PressableScale } from './PressableScale';
@@ -317,36 +317,6 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
     [agentId],
   );
 
-  // Build the live tail's ordered steps from reply.json `items` (serial SSE order:
-  // thinking → tool_use → … → text). Falls back to thinking/answer. Port of web.
-  const buildLiveSteps = useCallback((liveItems: any[], thinking: string, answer: string): HistoryStep[] => {
-    const steps: HistoryStep[] = [];
-    for (const it of liveItems) {
-      const ty = String(it?.type ?? '').trim();
-      if (ty === 'thinking') {
-        const tx = String(it?.thinking ?? '');
-        if (tx) steps.push({ type: 'thinking', text: tx });
-      } else if (ty === 'text') {
-        const tx = String(it?.text ?? '');
-        if (tx) steps.push({ type: 'text', text: tx });
-      } else if (ty === 'tool_use') {
-        const inp = it?.input;
-        const tool = {
-          name: String(it?.name ?? ''),
-          arg: inp == null ? '' : typeof inp === 'string' ? inp : JSON.stringify(inp),
-          tool_id: String(it?.tool_id ?? ''),
-        };
-        const last = steps[steps.length - 1] as any;
-        if (last && last.type === 'tool') last.tools.push(tool);
-        else steps.push({ type: 'tool', tools: [tool] } as HistoryStep);
-      }
-    }
-    if (!steps.length) {
-      if (thinking) steps.push({ type: 'thinking', text: thinking });
-      if (answer) steps.push({ type: 'text', text: answer });
-    }
-    return steps;
-  }, []);
 
   // ── Typewriter (render-smoothing on top of the single poll source) ────────────
   // The poll updates the FULL target every ~700ms; rendering that directly makes the
@@ -467,7 +437,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
                 q: '',
                 text: '',
                 a: answer,
-                steps: buildLiveSteps(liveItems, thinking, answer),
+                steps: replyItemsToSteps(liveItems, thinking, answer),
                 status: complete ? '' : status,
                 model: String(r.model ?? '') || undefined,
               };
@@ -486,7 +456,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
         pollTimer.current = setTimeout(pollReply, complete ? POLL_IDLE_MS : POLL_ACTIVE_MS);
       }
     }
-  }, [agentId, reconcileTail, softRebind, buildLiveSteps, clearLiveTurn, kickType]);
+  }, [agentId, reconcileTail, softRebind, clearLiveTurn, kickType]);
 
   // Restart the poll immediately (invalidate any in-flight loop) — after a send /
   // resume so the new q + its reply surface without waiting out the idle interval.
