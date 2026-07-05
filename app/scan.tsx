@@ -20,6 +20,7 @@ export default function Scan() {
   const theme = useTheme();
   const [permission, requestPermission] = useCameraPermissions();
   const teams = useAuthStore((s) => s.teams);
+  const session = useAuthStore((s) => s.session);
   const canGoBack = teams.length > 0;
   const addTeam = useAuthStore((s) => s.addTeam);
   const [done, setDone] = useState(false);
@@ -181,18 +182,21 @@ export default function Scan() {
         </View>
       </View>
 
-      {/* cicy-cloud login — the zero-QR path to the built-in default team. */}
-      <PressableScale
-        onPress={() => router.push('/login')}
-        haptic
-        scaleTo={0.97}
-        style={styles.loginEntry}
-      >
-        <Ionicons name="cloud-outline" size={16} color={theme.accent} />
-        <Text variant="callout" style={{ color: theme.accent }}>
-          {t('login.entry')}
-        </Text>
-      </PressableScale>
+      {/* cicy-cloud login — the zero-QR path to the built-in default team.
+          Hidden once a cloud session exists (nothing to log in to). */}
+      {!session && (
+        <PressableScale
+          onPress={() => router.push('/login')}
+          haptic
+          scaleTo={0.97}
+          style={styles.loginEntry}
+        >
+          <Ionicons name="cloud-outline" size={16} color={theme.accent} />
+          <Text variant="callout" style={{ color: theme.accent }}>
+            {t('login.entry')}
+          </Text>
+        </PressableScale>
+      )}
     </Screen>
   );
 }

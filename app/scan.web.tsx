@@ -22,6 +22,7 @@ export default function ScanWeb() {
   const { t } = useTranslation();
   const theme = useTheme();
   const teams = useAuthStore((s) => s.teams);
+  const session = useAuthStore((s) => s.session);
   const canGoBack = teams.length > 0;
   const addTeam = useAuthStore((s) => s.addTeam);
 
@@ -137,14 +138,19 @@ export default function ScanWeb() {
           disabled={busy || !value.trim()}
         />
 
-        {/* cicy-cloud login — the zero-QR path to the built-in default team. */}
-        <View style={{ height: spacing.md }} />
-        <Button
-          title={t('login.entry')}
-          variant="secondary"
-          onPress={() => router.push('/login')}
-          disabled={busy}
-        />
+        {/* cicy-cloud login — the zero-QR path to the built-in default team.
+            Hidden once a cloud session exists (nothing to log in to). */}
+        {!session && (
+          <>
+            <View style={{ height: spacing.md }} />
+            <Button
+              title={t('login.entry')}
+              variant="secondary"
+              onPress={() => router.push('/login')}
+              disabled={busy}
+            />
+          </>
+        )}
       </View>
     </Screen>
   );
