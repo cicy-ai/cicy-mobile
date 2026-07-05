@@ -1,6 +1,6 @@
 # Tag-driven release. Push a v* tag and this:
 #   1. builds the web export and deploys the assets-only Worker
-#      (telegram-bot.cicy-ai.com + workers.dev)  — the Telegram Mini App / PWA;
+#      (m.cicy-ai.com (+ telegram-bot alias, workers.dev))  — the Telegram Mini App / PWA;
 #   2. builds a release Android APK and attaches it to a GitHub Release.
 #
 #   git tag v1.0.1 && git push origin v1.0.1
@@ -52,7 +52,7 @@ jobs:
       - name: Verify live bundle matches build
         run: |
           LOCAL=$(ls dist/_expo/static/js/web/ | grep '^entry')
-          LIVE=$(curl -s https://telegram-bot.cicy-ai.com/ | grep -o 'entry-[a-f0-9]*\.js' | head -1)
+          LIVE=$(curl -s https://m.cicy-ai.com/ | grep -o 'entry-[a-f0-9]*\.js' | head -1)
           echo "local=$LOCAL live=$LIVE"
           test "$LOCAL" = "$LIVE"
 

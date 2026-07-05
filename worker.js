@@ -8,7 +8,7 @@
 export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url);
-    // Short install link for phones: https://telegram-bot.cicy-ai.com/apk →
+    // Short install link for phones: https://m.cicy-ai.com/apk →
     // the latest Android build on the public R2 CDN (browser download →
     // system installer; replaces the USB/adb loop).
     if (pathname === '/apk') {

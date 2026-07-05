@@ -7,9 +7,15 @@
   "name": "cicy-mobile",
   "main": "worker.js",
   "compatibility_date": "2025-06-01",
-  // Custom domain on the cicy-ai.com zone (same CF account). `wrangler deploy`
-  // creates the DNS record + cert automatically.
-  "routes": [{ "pattern": "telegram-bot.cicy-ai.com", "custom_domain": true }],
+  // Custom domains on the cicy-ai.com zone (same CF account). `wrangler deploy`
+  // creates the DNS records + certs automatically. m.cicy-ai.com is the
+  // primary; telegram-bot.cicy-ai.com stays as an alias — every APK/IPA built
+  // before 2026-07-05 has its expo-updates manifest URL pointing there, so
+  // removing it would strand those installs on old JS forever.
+  "routes": [
+    { "pattern": "m.cicy-ai.com", "custom_domain": true },
+    { "pattern": "telegram-bot.cicy-ai.com", "custom_domain": true }
+  ],
   // Keep the workers.dev URL alive too — the old @cicy_openclaw_bot menu button
   // still points at cicy-mobile.w3c-offical.workers.dev (routes disable it by default).
   "workers_dev": true,
