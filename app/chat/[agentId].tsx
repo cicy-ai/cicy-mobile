@@ -1,6 +1,6 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -20,7 +20,6 @@ import { HistoryView } from '@/src/components/HistoryView';
 import { LiveRecordBar } from '@/src/components/LiveRecordBar';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
-import { TerminalView } from '@/src/components/TerminalView';
 import { Text } from '@/src/components/Text';
 import { TypingDots } from '@/src/components/TypingDots';
 import { VoiceBar } from '@/src/components/VoiceBar';
@@ -31,6 +30,7 @@ import { normalizeAgentType } from '@/src/lib/agentType';
 import { isTelegram, showBackButton } from '@/src/lib/telegram';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { useAuthStore } from '@/src/store/auth';
+import { useSettingsStore } from '@/src/store/settings';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 
 // Voice input relies on native speech-recognition / audio recording, neither of
@@ -67,10 +67,12 @@ export default function Chat() {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [recording, setRecording] = useState(false);
+  // Live meeting record is opt-in (settings switch in the team drawer) — the
+  // button stays hidden until the user turns it on.
+  const liveRecordEnabled = useSettingsStore((s) => s.liveRecord);
   // True until the first turn of a live session is sent — that first turn is
   // prefixed with a "you are a meeting assistant" instruction for the agent.
   const meetingPrimedRef = useRef(false);
-  const [loaded, setLoaded] = useState(false);
   const [mode, setMode] = useState<'voice' | 'text'>(IS_WEB ? 'text' : 'voice');
   // Track keyboard visibility for the small bottom-padding bump while typing.
   const [keyboardShown, setKeyboardShown] = useState(false);
@@ -139,8 +141,7 @@ export default function Chat() {
     return () => { cancelled = true; if (timer != null) clearTimeout(timer); };
   }, [busy, agentId]);
 
-  // Tab + agent metadata. Both come from /api/panes — fetch once on entry.
-  const [tab, setTab] = useState<'history' | 'cli'>('history');
+  // Agent metadata — from /api/panes, fetched once on entry.
   const [agentMeta, setAgentMeta] = useState<{
     title?: string;
     agentType?: string;
@@ -179,17 +180,11 @@ export default function Chat() {
     };
   }, [agentId]);
 
-  const ttydUrl = useMemo(() => {
-    if (!serverUrl || !token || !agentId) return null;
-    return `${serverUrl}/ttyd/${encodeURIComponent(agentId)}/?token=${encodeURIComponent(token)}&mode=1`;
-  }, [serverUrl, token, agentId]);
-
   const submit = async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed || sending) return;
     setSending(true);
     setVoiceError(null);
-    setTab('history'); // make the instant feedback visible
     try {
       if (busy) {
         // Queue — no optimistic bubble for queued items (they render in the
@@ -249,7 +244,6 @@ export default function Chat() {
         }
       }
 
-      setTab('history');
       // Reply in flight → queue (Claude-Code style): don't hit the backend,
       // stack above the composer, auto-flush when idle.
       if (busy) {
@@ -327,13 +321,17 @@ export default function Chat() {
     setRecording(true);
   };
 
-  // cicy-type agents run without an attached terminal (no ttyd), so the CLI tab
-  // has nothing to show — hide it and stay history-only. Every other agent shows
-  // both the history + terminal tabs.
+  // cicy-type agents run headless (no ttyd pane) — no terminal to open. Every
+  // other agent gets the terminal button in the header (full-screen webview on
+  // the team server's gotty page).
   const hasTerminal = normalizeAgentType(agentMeta.agentType) !== 'cicy-claude';
-  const showTabs = hasTerminal;
-  const activeTab = hasTerminal ? tab : 'history';
   const displayTitle = agentMeta.title || agentId;
+
+  const openTerminal = () =>
+    router.push({
+      pathname: '/terminal/[agentId]',
+      params: { agentId, title: displayTitle, agentType: agentMeta.agentType ?? '' },
+    });
 
   return (
     <Screen>
@@ -357,70 +355,30 @@ export default function Chat() {
             </View>
           ) : null}
         </View>
+        {hasTerminal && (
+          <PressableScale onPress={openTerminal} haptic scaleTo={0.94} style={styles.termBtn} hitSlop={6}>
+            <Ionicons name="terminal-outline" size={22} color={theme.text} />
+          </PressableScale>
+        )}
       </View>
       )}
 
-      {/* ─── Tabs: only when both views are useful ─── */}
-      {showTabs ? (
-        <View style={[styles.tabBar, { borderBottomColor: theme.border }]}>
-          {(['history', 'cli'] as const).map((tabName) => {
-            const active = tab === tabName;
-            const label = tabName === 'history' ? t('chat.tabHistory') : t('chat.tabCli');
-            const icon = tabName === 'history' ? 'time-outline' : 'terminal-outline';
-            return (
-              <PressableScale
-                key={tabName}
-                onPress={() => setTab(tabName)}
-                haptic={!active}
-                scaleTo={0.97}
-                style={styles.tabItem}
-              >
-                <Ionicons
-                  name={icon as any}
-                  size={16}
-                  color={active ? theme.accent : theme.textMuted}
-                  style={{ marginRight: 6 }}
-                />
-                <Text
-                  variant="caption"
-                  style={{
-                    color: active ? theme.accent : theme.textMuted,
-                    fontWeight: active ? '600' : '400',
-                    textTransform: 'uppercase',
-                    letterSpacing: 0.5,
-                  }}
-                >
-                  {label}
-                </Text>
-                {/* Underline appears under the active tab */}
-                {active && (
-                  <View
-                    style={[styles.tabUnderline, { backgroundColor: theme.accent }]}
-                    pointerEvents="none"
-                  />
-                )}
-              </PressableScale>
-            );
-          })}
-        </View>
-      ) : null}
-
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
-        {activeTab === 'cli' ? (
-          <View style={{ flex: 1, backgroundColor: '#000' }}>
-            {ttydUrl ? (
-              <TerminalView url={ttydUrl} onLoadEnd={() => setLoaded(true)} />
-            ) : (
-              <View style={styles.loading}>
-                <Text tone="muted">{t('chat.missingCreds')}</Text>
-              </View>
-            )}
-          </View>
-        ) : (
-          <View style={{ flex: 1, backgroundColor: theme.bg }}>
-            <HistoryView agentId={agentId} pending={pending} onReplyInFlight={() => setBusy(true)} />
-          </View>
-        )}
+        <View style={{ flex: 1, backgroundColor: theme.bg }}>
+          <HistoryView agentId={agentId} pending={pending} onReplyInFlight={() => setBusy(true)} />
+          {/* Telegram hides our header (native back bar instead) — the terminal
+              entry floats over the top-right corner of the history there. */}
+          {inTg && hasTerminal && (
+            <PressableScale
+              onPress={openTerminal}
+              haptic
+              scaleTo={0.94}
+              style={[styles.tgTermBtn, { backgroundColor: theme.surface, borderColor: theme.border }]}
+            >
+              <Ionicons name="terminal-outline" size={20} color={theme.text} />
+            </PressableScale>
+          )}
+        </View>
 
         {voiceError ? (
           <View style={[styles.errorRow, { backgroundColor: theme.bg, borderTopColor: theme.border }]}>
@@ -578,8 +536,9 @@ export default function Chat() {
             )}
 
             {/* Live recording — continuous on-device dictation that auto-sends
-                each turn to the agent (the in-conversation meeting assistant). */}
-            {!IS_WEB && (
+                each turn to the agent (the in-conversation meeting assistant).
+                Opt-in via the drawer settings switch; hidden by default. */}
+            {!IS_WEB && liveRecordEnabled && (
               <PressableScale
                 onPress={startRecording}
                 haptic
@@ -672,27 +631,21 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   statusDot: { width: 7, height: 7, borderRadius: 4 },
-  tabBar: {
-    flexDirection: 'row',
-    paddingHorizontal: spacing.xl,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    gap: spacing.xl,
-  },
-  tabItem: {
-    flexDirection: 'row',
+  termBtn: {
+    width: 40,
+    height: 40,
     alignItems: 'center',
-    paddingVertical: spacing.md,
+    justifyContent: 'center',
+    borderRadius: 20,
   },
-  tabUnderline: {
+  tgTermBtn: {
     position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: -StyleSheet.hairlineWidth,
-    height: 2,
-    borderRadius: 1,
-  },
-  loading: {
-    ...StyleSheet.absoluteFillObject,
+    top: spacing.sm,
+    right: spacing.md,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },

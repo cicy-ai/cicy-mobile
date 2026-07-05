@@ -11,6 +11,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -21,6 +22,7 @@ import { TeamAvatar } from './TeamAvatar';
 import { Text } from './Text';
 import { runningOtaLabel } from '@/src/lib/otaInfo';
 import { useAuthStore, type Team } from '@/src/store/auth';
+import { useSettingsStore } from '@/src/store/settings';
 import { radius, spacing, useTheme } from '@/src/theme';
 
 type Props = {
@@ -50,6 +52,8 @@ export function TeamDrawer({ open, onClose }: Props) {
   const currentTeamId = useAuthStore((s) => s.currentTeamId);
   const switchTeam = useAuthStore((s) => s.switchTeam);
   const removeTeam = useAuthStore((s) => s.removeTeam);
+  const liveRecord = useSettingsStore((s) => s.liveRecord);
+  const setLiveRecord = useSettingsStore((s) => s.setLiveRecord);
 
   const tx = useRef(new Animated.Value(-DRAWER_W)).current;
   const scrimOpacity = useRef(new Animated.Value(0)).current;
@@ -149,6 +153,22 @@ export function TeamDrawer({ open, onClose }: Props) {
             })}
           </ScrollView>
 
+          {/* App settings — feature switches live here (the drawer is the only
+              global surface the app has). Live record is opt-in, off by default. */}
+          <View style={[styles.settings, { borderTopColor: theme.border }]}>
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text variant="callout">{t('settings.liveRecord')}</Text>
+              <Text variant="caption" tone="faint">
+                {t('settings.liveRecordHint')}
+              </Text>
+            </View>
+            <Switch
+              value={liveRecord}
+              onValueChange={setLiveRecord}
+              trackColor={{ true: theme.accent }}
+            />
+          </View>
+
           {appVersion ? (
             <View style={[styles.footer, { borderTopColor: theme.border }]}>
               <Text variant="caption" tone="faint">
@@ -189,6 +209,14 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.lg,
   },
   list: { paddingVertical: spacing.xs, gap: spacing.xs },
+  settings: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
   footer: {
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.md,

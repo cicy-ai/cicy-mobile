@@ -133,6 +133,8 @@ export default function RootLayout() {
               react-native-screens' automatic bottom safe-area padding, which
               shows up as a cream strip below the composer. */}
           <Stack.Screen name="chat/[agentId]" options={{ headerShown: false }} />
+          {/* Terminal draws its own nav row — same reason as chat. */}
+          <Stack.Screen name="terminal/[agentId]" options={{ headerShown: false }} />
           {/* Scan draws its own nav row — same reason as chat. */}
           <Stack.Screen name="scan" options={{ headerShown: false }} />
         </Stack>

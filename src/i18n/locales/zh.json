@@ -34,12 +34,11 @@
     "sendFailed": "发送失败：{{error}}",
     "voiceError": "{{error}}",
     "statusUnknown": "未知",
-    "tabHistory": "历史",
-    "tabCli": "终端",
+    "terminalTitle": "终端",
     "loadEarlier": "加载更早",
     "beginningOfHistory": "· 已到历史开头 ·",
     "noTurnsTitle": "暂无历史记录",
-    "noTurnsBody": "这个 agent 还没有产生历史记录，或正在直连 anthropic.com。\n\n切换到 CLI 标签查看实时终端。",
+    "noTurnsBody": "这个 agent 还没有产生历史记录，或正在直连 anthropic.com。\n\n点右上角终端按钮可查看实时终端。",
     "systemLabel": "系统",
     "thinkingLabel": "思考",
     "replying": "正在回复…",
@@ -107,6 +106,10 @@
     "or": "或",
     "addManual": "粘贴链接加入",
     "pastePlaceholder": "https://… ?flag=addTeam&token=…"
+  },
+  "settings": {
+    "liveRecord": "会议实录",
+    "liveRecordHint": "在聊天输入栏显示实录按钮"
   },
   "update": {
     "available": "发现新版本 v{{version}}",
