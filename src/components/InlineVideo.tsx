@@ -13,7 +13,6 @@ export function InlineVideo({ uri, headers }: { uri: string; headers?: Record<st
       style={styles.video}
       contentFit="contain"
       nativeControls
-      allowsFullscreen
     />
   );
 }
