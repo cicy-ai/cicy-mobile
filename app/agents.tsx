@@ -138,6 +138,36 @@ export default function Agents() {
     }
     setError(null);
     try {
+      // Cloud teams (default team included): roster comes from /api/panes
+      // ONLY. The tenant's cicy roles are configOnly (no pane_agents binding),
+      // so /api/poll returns nothing for them — per w-10122, /api/poll is for
+      // bound self-hosted/custom teams.
+      if (currentTeam.kind === 'cloud') {
+        const cloudPanes = await api.getPanes();
+        const valid = cloudPanes.filter((p) => typeof p.pane_id === 'string' && p.pane_id);
+        const masterPane = valid.find((p) => p.role === 'master');
+        const masterShort = masterPane ? masterPane.pane_id.split(':')[0] : null;
+        setHostPaneId(masterShort ?? (valid[0] ? valid[0].pane_id.split(':')[0] : null));
+        const gw: Record<string, boolean> = {};
+        for (const p of valid) gw[p.pane_id.split(':')[0]] = !!p.use_custom_gateway;
+        setGatewayByName(gw);
+        const rows: Agent[] = valid.map((p) => {
+          const short = p.pane_id.split(':')[0];
+          return {
+            name: short,
+            pane_id: short,
+            agent_type: p.agent_type,
+            title: p.title || short,
+            status: 'active',
+            workspace: p.workspace,
+          } as Agent;
+        });
+        // master pinned first, everyone else in server order
+        rows.sort((a, b) => (a.name === masterShort ? -1 : 0) - (b.name === masterShort ? -1 : 0));
+        setAgents(rows);
+        return;
+      }
+
       // poll() returns workers (and statuses); panes() lets us pull the
       // master row because /api/poll omits role=master rows.
       const [poll, panes] = await Promise.all([api.poll(), api.getPanes()]);
