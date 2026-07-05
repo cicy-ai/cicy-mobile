@@ -40,12 +40,14 @@ import {
   modelShort,
   type AgentLiveMetrics,
 } from '@/src/lib/agentMetrics';
+import { normalizeAgentType } from '@/src/lib/agentType';
 import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 
-// Same list the cicy-code web create-member dialog offers. Cloud default
-// teams are server-locked to 'cicy' (per w-10122) — the picker collapses.
-const CREATE_TYPES = ['cicy', 'claude', 'codex', 'gemini', 'opencode', 'cursor'] as const;
+// Member types offered on self-hosted teams (per user: cicy/claude/codex/
+// opencode). Cloud default teams are server-locked to 'cicy' (w-10122) —
+// the picker collapses to a notice there.
+const CREATE_TYPES = ['cicy', 'claude', 'codex', 'opencode'] as const;
 
 // We only show the team's master/dispatcher pane and its direct workers. The
 // backend returns every agent regardless of host, so we filter client-side.
@@ -106,8 +108,7 @@ export default function Agents() {
   // Team master pane id (derived per load) — needed as master_pane_id when
   // creating a worker, and to shield the master row from swipe-delete.
   const [hostPaneId, setHostPaneId] = useState<string | null>(null);
-  // ⊕ menu + create-member dialog + swipe-delete confirm state.
-  const [plusOpen, setPlusOpen] = useState(false);
+  // create-member dialog + swipe-delete confirm state.
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState('');
   const [createType, setCreateType] = useState<string>('cicy');
@@ -356,10 +357,14 @@ export default function Agents() {
         )}
       </View>
 
-      {/* ⊕ — create a team member, or add a whole team (scan lives in the
-          drawer's top-right too) */}
+      {/* ⊕ — straight into create-member (adding a TEAM lives in the drawer:
+          scan top-right / cloud login bottom) */}
       <PressableScale
-        onPress={() => setPlusOpen(true)}
+        onPress={() => {
+          setCreateType(cloudLocked ? 'cicy' : 'claude');
+          setCreateError(null);
+          setCreateOpen(true);
+        }}
         haptic
         scaleTo={0.94}
         style={[styles.iconBtnFallback, { backgroundColor: theme.surface, borderColor: theme.border }]}
@@ -411,31 +416,6 @@ export default function Agents() {
       setCreating(false);
     }
   };
-
-  const plusMenuEl = (
-    <Modal visible={plusOpen} transparent animationType="fade" onRequestClose={() => setPlusOpen(false)}>
-      <Pressable style={styles.sheetBackdrop} onPress={() => setPlusOpen(false)}>
-        <View style={[styles.sheet, { backgroundColor: theme.bg, borderColor: theme.border }]}>
-          <PressableScale
-            onPress={() => { setPlusOpen(false); setCreateType(cloudLocked ? 'cicy' : 'claude'); setCreateError(null); setTimeout(() => setCreateOpen(true), 120); }}
-            scaleTo={0.98}
-            style={styles.sheetRow}
-          >
-            <Ionicons name="person-add-outline" size={22} color={theme.text} />
-            <Text variant="body">{t('agents.createMember')}</Text>
-          </PressableScale>
-          <PressableScale
-            onPress={() => { setPlusOpen(false); setTimeout(() => router.push('/scan'), 120); }}
-            scaleTo={0.98}
-            style={styles.sheetRow}
-          >
-            <Ionicons name="scan-outline" size={22} color={theme.text} />
-            <Text variant="body">{t('teams.addTeam')}</Text>
-          </PressableScale>
-        </View>
-      </Pressable>
-    </Modal>
-  );
 
   const createModalEl = (
     <Modal visible={createOpen} transparent animationType="fade" onRequestClose={() => setCreateOpen(false)}>
@@ -622,7 +602,6 @@ export default function Agents() {
       />
       {drawerEl}
       {titleModalEl}
-      {plusMenuEl}
       {createModalEl}
       {deleteConfirmEl}
     </Screen>
@@ -653,10 +632,14 @@ function AgentRow({
   // key and the only stable identifier across renames.
   const workerId = agent.name || String(routeId);
 
-  // Swipe-left actions (native only; RNGH Swipeable is unreliable on web):
-  // restart for everyone, delete for workers (the master is the team).
+  // Swipe-left actions (native only; RNGH Swipeable is unreliable on web).
+  // cicy lite agents run headless — no tmux process to restart, so the web
+  // hides restart for them (TeamPanel gates on normalizeAgentType !== 'cicy');
+  // mirror that. Delete stays for workers (the master is the team).
+  const canRestart = normalizeAgentType(agent.agent_type) !== 'cicy';
   const renderRightActions = () => (
     <View style={rowStyles.swipeActions}>
+      {canRestart && (
       <PressableScale
         onPress={() => { swipeRef.current?.close(); onRestart?.(String(routeId)); }}
         style={[rowStyles.swipeBtn, { backgroundColor: theme.surfaceMuted }]}
@@ -666,6 +649,7 @@ function AgentRow({
         <Ionicons name="refresh" size={20} color={theme.text} />
         <Text variant="caption">{t('agents.restart')}</Text>
       </PressableScale>
+      )}
       {!isMaster && (
         <PressableScale
           onPress={() => {
