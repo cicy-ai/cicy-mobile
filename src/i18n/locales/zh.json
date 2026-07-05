@@ -78,7 +78,11 @@
     "replying": "正在回复…",
     "stop": "停止",
     "stopFailed": "停止失败：{{error}}",
-    "queuedHeader": "{{n}} 条排队中 · 回复完成后自动发送"
+    "queuedHeader": "{{n}} 条排队中 · 回复完成后自动发送",
+    "genFailed": "生成失败,请重试(如是余额问题请前往充值)",
+    "modelSaveFailed": "切换模型失败:{{error}}",
+    "modelPickerTitle": "选择模型 · CiCy Cloud",
+    "modelDefault": "平台默认({{model}})"
   },
   "voice": {
     "holdToTalk": "按住说话",

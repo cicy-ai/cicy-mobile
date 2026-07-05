@@ -36,6 +36,16 @@ import { radius, spacing, useTheme } from '@/src/theme';
 // which we wire up on web — so web defaults to (and stays in) text mode.
 const IS_WEB = Platform.OS === 'web';
 
+// Prettify a model id for the header chip / picker rows (keep it short).
+function modelLabel(model?: string): string {
+  const m = String(model || '').trim();
+  if (!m) return '默认';
+  return m
+    .replace(/^deepseek-/, 'DeepSeek ')
+    .replace(/^claude-/, 'Claude ')
+    .replace(/-/g, ' ');
+}
+
 export default function Chat() {
   const { t } = useTranslation();
   const theme = useTheme();
@@ -413,13 +423,28 @@ export default function Chat() {
           <Text variant="bodyMedium" numberOfLines={1}>
             {displayTitle}
           </Text>
-          {/* worker id — the stable routing key, same as the list row shows */}
+          {/* worker id + current model — id is the stable routing key; the
+              model line only shows when the pane exposes a catalog (cloud). */}
           <View style={styles.headerSubRow}>
             <Text variant="caption" tone="faint" numberOfLines={1}>
               {agentMeta.machineLabel ? `${agentId} · ${agentMeta.machineLabel}` : agentId}
             </Text>
           </View>
         </View>
+        {modelInfo && (
+          <PressableScale
+            onPress={() => setModelSheetOpen(true)}
+            haptic
+            scaleTo={0.94}
+            style={[styles.modelBtn, { borderColor: theme.border, backgroundColor: theme.surface }]}
+            hitSlop={6}
+          >
+            <Ionicons name="hardware-chip-outline" size={13} color={theme.textMuted} />
+            <Text variant="caption" numberOfLines={1} style={{ color: theme.textMuted, maxWidth: 92 }}>
+              {modelLabel(modelInfo.current || modelInfo.effective)}
+            </Text>
+          </PressableScale>
+        )}
         {hasTerminal && (
           <PressableScale onPress={openTerminal} haptic scaleTo={0.94} style={styles.termBtn} hitSlop={6}>
             <Ionicons name="terminal-outline" size={22} color={theme.text} />
@@ -427,6 +452,35 @@ export default function Chat() {
         )}
       </View>
       )}
+
+      {/* Model picker — one CiCy Cloud provider, model dropdown only. */}
+      <Modal visible={modelSheetOpen} transparent animationType="fade" onRequestClose={() => setModelSheetOpen(false)}>
+        <Pressable style={styles.modelBackdrop} onPress={() => setModelSheetOpen(false)}>
+          <View style={[styles.modelSheet, { backgroundColor: theme.bg, borderColor: theme.border }]}>
+            <Text variant="caption" tone="faint" style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.xs }}>
+              {t('chat.modelPickerTitle')}
+            </Text>
+            {(['', ...(modelInfo?.models ?? [])]).map((m) => {
+              const active = (modelInfo?.current ?? '') === m;
+              const label = m ? modelLabel(m) : t('chat.modelDefault', { model: modelLabel(modelInfo?.effective || '') });
+              return (
+                <PressableScale
+                  key={m || '__default'}
+                  onPress={() => void pickModel(m)}
+                  scaleTo={0.98}
+                  disabled={modelSaving}
+                  style={styles.modelRow}
+                >
+                  <Text variant="body" style={{ flex: 1, color: active ? theme.accent : theme.text }}>
+                    {label}
+                  </Text>
+                  {active ? <Ionicons name="checkmark" size={18} color={theme.accent} /> : null}
+                </PressableScale>
+              );
+            })}
+          </View>
+        </Pressable>
+      </Modal>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
         <View style={{ flex: 1, backgroundColor: theme.bg }}>
@@ -701,5 +755,29 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  modelBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+  },
+  modelBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' },
+  modelSheet: {
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing['2xl'],
+  },
+  modelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
   },
 });
