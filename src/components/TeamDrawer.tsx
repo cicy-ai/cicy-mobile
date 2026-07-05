@@ -142,7 +142,7 @@ export function TeamDrawer({ open, onClose }: Props) {
           {appVersion ? (
             <View style={[styles.footer, { borderTopColor: theme.border }]}>
               <Text variant="caption" tone="faint">
-                {`v${appVersion}${buildNo ? ` (${buildNo})` : ''}`}
+                {`v${appVersion}${buildNo ? ` (${buildNo})` : ''} · 热更新✓`}
               </Text>
             </View>
           ) : null}
