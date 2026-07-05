@@ -21,6 +21,6 @@
     "not_found_handling": "single-page-application",
     // Only build-asset paths go through worker.js (404 for deleted hashed
     // chunks instead of the SPA shell); everything else is served directly.
-    "run_worker_first": ["/_expo/*"]
+    "run_worker_first": ["/_expo/*", "/updates/*", "/apk"]
   }
 }
