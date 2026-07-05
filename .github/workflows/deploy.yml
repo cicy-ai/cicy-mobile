@@ -84,7 +84,13 @@ jobs:
       # upgradable / Play Store signature, add a release keystore + signingConfig
       # (see README → Release).
       - name: Build release APK
-        run: cd android && ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
+        # expo-updates pushed the class count past the RN template's default
+        # -XX:MaxMetaspaceSize=512m — the daemon OOMs on mergeExtDexRelease and
+        # then HANGS (idle RMI thread), which looked like a 6h stuck build.
+        # Duplicate keys in gradle.properties: last one wins.
+        run: |
+          printf '\norg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8\n' >> android/gradle.properties
+          cd android && timeout 40m ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
       - name: Stage APK
         run: |
           VER="${GITHUB_REF_NAME#v}"
