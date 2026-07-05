@@ -34,12 +34,21 @@ const runtime = String(appJson.expo.runtimeVersion || '1');
 const meta = JSON.parse(readFileSync('dist/metadata.json', 'utf8'));
 
 async function put(key, buf, contentType) {
-  const res = await fetch(`${BUCKET_BASE(R2_ACCOUNT_ID)}/${encodeURIComponent(key).replace(/%2F/g, '/')}`, {
-    method: 'PUT',
-    headers: { Authorization: `Bearer ${R2_API_TOKEN}`, 'Content-Type': contentType },
-    body: buf,
-  });
-  if (!res.ok) throw new Error(`PUT ${key} → ${res.status} ${await res.text()}`);
+  // CF API throws transient 5xx now and then — one mid-run 502 must not strand
+  // a platform on an old manifest (happened: android updated, ios did not).
+  for (let attempt = 1; ; attempt += 1) {
+    const res = await fetch(`${BUCKET_BASE(R2_ACCOUNT_ID)}/${encodeURIComponent(key).replace(/%2F/g, '/')}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${R2_API_TOKEN}`, 'Content-Type': contentType },
+      body: buf,
+    }).catch((e) => ({ ok: false, status: 0, text: async () => String(e) }));
+    if (res.ok) return;
+    const retriable = res.status === 0 || res.status >= 500 || res.status === 429;
+    if (!retriable || attempt >= 5) throw new Error(`PUT ${key} → ${res.status} ${(await res.text()).slice(0, 200)}`);
+    const delay = attempt * 2000;
+    console.warn(`PUT ${key} → ${res.status}, retry ${attempt}/4 in ${delay}ms`);
+    await new Promise((r) => setTimeout(r, delay));
+  }
 }
 
 // Embed the public expo config like EAS does (extra.expoClient) so
