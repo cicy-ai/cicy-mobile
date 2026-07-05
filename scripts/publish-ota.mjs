@@ -32,11 +32,6 @@ const label = process.argv[2] || 'dev';
 const appJson = JSON.parse(readFileSync('app.json', 'utf8'));
 const runtime = String(appJson.expo.runtimeVersion || '1');
 const meta = JSON.parse(readFileSync('dist/metadata.json', 'utf8'));
-const android = meta.fileMetadata?.android;
-if (!android?.bundle) { console.error('dist/metadata.json has no android bundle — run `npx expo export -p android` first'); process.exit(1); }
-
-const updateId = randomUUID();
-const prefix = `cicy-mobile/updates/${runtime}/${updateId}`;
 
 async function put(key, buf, contentType) {
   const res = await fetch(`${BUCKET_BASE(R2_ACCOUNT_ID)}/${encodeURIComponent(key).replace(/%2F/g, '/')}`, {
@@ -46,17 +41,6 @@ async function put(key, buf, contentType) {
   });
   if (!res.ok) throw new Error(`PUT ${key} → ${res.status} ${await res.text()}`);
 }
-
-function assetEntry(relPath, ext) {
-  const buf = readFileSync(path.join('dist', relPath));
-  const sha = createHash('sha256').update(buf).digest('base64url');
-  const md5 = createHash('md5').update(buf).digest('hex'); // key matches the client's embedded-asset keys → no re-download
-  const contentType = MIME[ext] || 'application/octet-stream';
-  return { buf, entry: { hash: sha, key: md5, contentType, fileExtension: `.${ext}`, url: `${CDN}/${prefix}/${relPath}` }, relPath, contentType };
-}
-
-const launch = assetEntry(android.bundle, 'hbc');
-const assets = (android.assets || []).map((a) => assetEntry(a.path, a.ext));
 
 // Embed the public expo config like EAS does (extra.expoClient) so
 // Constants.expoConfig keeps working inside OTA bundles — without it,
@@ -68,21 +52,53 @@ try {
   console.warn('warn: could not resolve public expo config; extra.expoClient omitted');
 }
 
-const manifest = {
-  id: updateId,
-  createdAt: new Date().toISOString(),
-  runtimeVersion: runtime,
-  launchAsset: launch.entry,
-  assets: assets.map((a) => a.entry),
-  metadata: {},
-  extra: { label, ...(expoClient ? { expoClient } : {}) },
-};
-
-const files = [launch, ...assets];
-for (const f of files) {
-  await put(`${prefix}/${f.relPath}`, f.buf, f.contentType);
-  console.log('uploaded', f.relPath);
+// One manifest PER PLATFORM: bundles are platform-specific (.ios/.android file
+// resolution, different asset sets). Serving the android bundle to iOS —
+// the original single-manifest setup — makes iOS updates fail on apply. The
+// worker routes by the client's `expo-platform` request header.
+const platforms = ['android', 'ios'].filter((p) => meta.fileMetadata?.[p]?.bundle);
+if (platforms.length === 0) {
+  console.error('dist/metadata.json has no platform bundles — run `npx expo export -p android -p ios` first');
+  process.exit(1);
 }
-// manifest LAST — atomic switch
-await put(`cicy-mobile/updates/${runtime}/manifest.json`, Buffer.from(JSON.stringify(manifest)), 'application/json');
-console.log(`OTA published: runtime=${runtime} id=${updateId} label=${label} files=${files.length}`);
+
+for (const platform of platforms) {
+  const fm = meta.fileMetadata[platform];
+  const updateId = randomUUID();
+  const prefix = `cicy-mobile/updates/${runtime}/${updateId}`;
+
+  const assetEntry = (relPath, ext) => {
+    const buf = readFileSync(path.join('dist', relPath));
+    const sha = createHash('sha256').update(buf).digest('base64url');
+    const md5 = createHash('md5').update(buf).digest('hex'); // key matches the client's embedded-asset keys → no re-download
+    const contentType = MIME[ext] || 'application/octet-stream';
+    return { buf, entry: { hash: sha, key: md5, contentType, fileExtension: `.${ext}`, url: `${CDN}/${prefix}/${relPath}` }, relPath, contentType };
+  };
+
+  const launch = assetEntry(fm.bundle, 'hbc');
+  const assets = (fm.assets || []).map((a) => assetEntry(a.path, a.ext));
+
+  const manifest = {
+    id: updateId,
+    createdAt: new Date().toISOString(),
+    runtimeVersion: runtime,
+    launchAsset: launch.entry,
+    assets: assets.map((a) => a.entry),
+    metadata: {},
+    extra: { label, ...(expoClient ? { expoClient } : {}) },
+  };
+
+  const files = [launch, ...assets];
+  for (const f of files) {
+    await put(`${prefix}/${f.relPath}`, f.buf, f.contentType);
+    console.log(`[${platform}] uploaded`, f.relPath);
+  }
+  // manifests LAST — atomic switch per platform
+  const body = Buffer.from(JSON.stringify(manifest));
+  await put(`cicy-mobile/updates/${runtime}/manifest-${platform}.json`, body, 'application/json');
+  if (platform === 'android') {
+    // legacy path: pre-platform-routing clients/worker fall back to this
+    await put(`cicy-mobile/updates/${runtime}/manifest.json`, body, 'application/json');
+  }
+  console.log(`OTA published: platform=${platform} runtime=${runtime} id=${updateId} label=${label} files=${files.length}`);
+}

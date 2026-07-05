@@ -21,10 +21,15 @@ export default {
     if (pathname === '/updates/manifest') {
       const rt = request.headers.get('expo-runtime-version')
         || new URL(request.url).searchParams.get('runtime-version') || '1';
-      const r = await fetch(`https://r2.deepfetch.de5.net/cicy-mobile/updates/${encodeURIComponent(rt)}/manifest.json`, {
-        cf: { cacheTtl: 0 },
-      });
-      if (!r.ok) return new Response('no update published for this runtime', { status: 404 });
+      // Bundles are platform-specific — route on the client's expo-platform
+      // header (ios|android), falling back to the legacy android manifest for
+      // anything that predates per-platform publishing.
+      const plat = (request.headers.get('expo-platform')
+        || new URL(request.url).searchParams.get('platform') || 'android').toLowerCase();
+      const base = `https://r2.deepfetch.de5.net/cicy-mobile/updates/${encodeURIComponent(rt)}`;
+      let r = await fetch(`${base}/manifest-${plat === 'ios' ? 'ios' : 'android'}.json`, { cf: { cacheTtl: 0 } });
+      if (!r.ok && plat !== 'ios') r = await fetch(`${base}/manifest.json`, { cf: { cacheTtl: 0 } });
+      if (!r.ok) return new Response('no update published for this runtime/platform', { status: 404 });
       return new Response(r.body, {
         headers: {
           'expo-protocol-version': '1',

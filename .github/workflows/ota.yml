@@ -34,8 +34,8 @@ jobs:
           git fetch --tags --quiet
           VER=$(git describe --tags --match 'v*' --abbrev=0 | sed 's/^v//')
           node scripts/sync-version.mjs "$VER"
-      - name: Export update bundle
-        run: npx expo export -p android
+      - name: Export update bundles (android + ios)
+        run: npx expo export -p android -p ios
       - name: Publish OTA to R2
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
