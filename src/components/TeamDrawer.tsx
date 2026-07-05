@@ -1,4 +1,3 @@
-import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
@@ -120,23 +119,10 @@ export function TeamDrawer({ open, onClose }: Props) {
         >
           <View style={styles.headerRow}>
             <Text variant="title">{t('teams.drawerTitle')}</Text>
+            <Text variant="caption" tone="muted" style={{ marginTop: 2 }}>
+              {t('teams.drawerSubtitle', { count: teams.length })}
+            </Text>
           </View>
-
-          {/* Primary action up top (Qwen-drawer layout language; our entity is
-              the TEAM — their 空间/会话 maps to 团队/agent here). */}
-          <PressableScale
-            onPress={() => { onClose(); router.push('/scan'); }}
-            haptic
-            scaleTo={0.97}
-            style={[styles.addTeamBtn, { backgroundColor: theme.surfaceMuted }]}
-          >
-            <Ionicons name="qr-code-outline" size={18} color={theme.text} />
-            <Text variant="bodyMedium">{t('scan.title')}</Text>
-          </PressableScale>
-
-          <Text variant="caption" tone="faint" style={styles.sectionLabel}>
-            {t('teams.drawerSubtitle', { count: teams.length })}
-          </Text>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list}>
             {teams.map((team) => {
@@ -149,18 +135,15 @@ export function TeamDrawer({ open, onClose }: Props) {
                   scaleTo={0.97}
                   style={styles.teamRow}
                 >
-                  <TeamAvatar id={team.id} title={team.title} size={46} bordered />
+                  <TeamAvatar id={team.id} title={team.title} size={40} bordered />
                   <View style={{ flex: 1, gap: 2 }}>
-                    <Text variant="callout" numberOfLines={1} style={{ fontSize: 16, fontWeight: '600' }}>
+                    <Text variant="callout" numberOfLines={1}>
                       {team.title}
                     </Text>
                     <Text variant="caption" tone="faint" numberOfLines={1} ellipsizeMode="middle">
                       {team.serverUrl.replace(/^https?:\/\//, '')}
                     </Text>
                   </View>
-                  {team.id === currentTeamId ? (
-                    <Ionicons name="checkmark-circle" size={20} color={theme.accent} />
-                  ) : null}
                 </PressableScale>
               );
             })}
@@ -203,21 +186,7 @@ const styles = StyleSheet.create({
   headerRow: {
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.xs,
-    paddingBottom: spacing.md,
-  },
-  addTeamBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.sm,
-    marginHorizontal: spacing.xs,
-    paddingVertical: spacing.md,
-    borderRadius: radius.lg,
-  },
-  sectionLabel: {
-    paddingHorizontal: spacing.sm,
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.xs,
+    paddingBottom: spacing.lg,
   },
   list: { paddingVertical: spacing.xs, gap: spacing.xs },
   footer: {
