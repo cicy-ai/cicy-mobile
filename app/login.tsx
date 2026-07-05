@@ -135,19 +135,22 @@ export default function Login() {
                 <ActivityIndicator color={theme.textMuted} />
               </View>
             ) : (
-              <View style={[styles.stepsBox, styles.steps, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-                {[t('login.step1'), t('login.step2'), t('login.step3')].map((step, i) => (
-                  <View key={step} style={styles.stepRow}>
-                    <View style={[styles.stepDot, { backgroundColor: theme.surfaceMuted }]}>
-                      <Text variant="caption" tone="muted">{i + 1}</Text>
+              <>
+                <View style={[styles.stepsBox, styles.steps, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                  {[t('login.step1'), t('login.step2'), t('login.step3')].map((step, i) => (
+                    <View key={step} style={styles.stepRow}>
+                      <View style={[styles.stepDot, { backgroundColor: theme.surfaceMuted }]}>
+                        <Text variant="caption" tone="muted">{i + 1}</Text>
+                      </View>
+                      <Text variant="callout" tone="muted" style={{ flex: 1 }}>
+                        {step}
+                      </Text>
                     </View>
-                    <Text variant="callout" tone="muted" style={{ flex: 1 }}>
-                      {step}
-                    </Text>
-                    {i === 2 ? <ActivityIndicator size="small" color={theme.textFaint} /> : null}
-                  </View>
-                ))}
-              </View>
+                  ))}
+                </View>
+                {/* waiting spinner on its own centered line, not inline with text */}
+                <ActivityIndicator color={theme.textMuted} style={styles.waitSpinner} />
+              </>
             )}
 
             {phase === 'waiting' && (
@@ -191,7 +194,9 @@ export default function Login() {
               onSubmitEditing={() => void start()}
               style={[
                 styles.input,
-                typeScale.body,
+                // no lineHeight: on iOS a lineHeight taller than the font pushes
+                // single-line TextInput text below center
+                { fontSize: typeScale.body.fontSize },
                 { color: theme.text, backgroundColor: theme.surface, borderColor: theme.border },
               ]}
             />
@@ -310,9 +315,15 @@ const styles = StyleSheet.create({
   },
   input: {
     width: '100%',
-    padding: spacing.md,
+    height: 52,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 0,
+    textAlignVertical: 'center',
     borderRadius: radius.md,
     borderWidth: 1,
+  },
+  waitSpinner: {
+    marginBottom: spacing.xl,
   },
   errorText: { marginTop: spacing.sm, alignSelf: 'flex-start' },
   mechanicsHint: {
