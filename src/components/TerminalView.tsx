@@ -9,10 +9,12 @@ type Props = {
 };
 
 // Native terminal view: an embedded ttyd page rendered in react-native-webview.
-// The two injected scripts make the desktop ttyd/xterm layout usable on a phone
-// (force a mobile viewport, shrink the xterm font, and fit the terminal to the
-// webview). On web this component is replaced by TerminalView.web.tsx (an
-// iframe) since react-native-webview has no web implementation.
+// Design: the phone is a VIEWER of the desktop-sized terminal, never a driver
+// of its size. Resizing xterm from the phone sends the new cols/rows to tmux,
+// which reflows every attached client and loses TUI content — so after gotty's
+// initial fit we freeze #terminal at that size and let the user pinch-zoom/pan.
+// On web this component is replaced by TerminalView.web.tsx (an iframe) since
+// react-native-webview has no web implementation.
 export function TerminalView({ url, onLoadEnd }: Props) {
   const theme = useTheme();
   return (
@@ -41,51 +43,47 @@ export function TerminalView({ url, onLoadEnd }: Props) {
   );
 }
 
+// Desktop-width layout on purpose: with a ~980px layout the initial xterm fit
+// lands near the desktop's cols, so the phone joins tmux without shrinking
+// anyone. Wide zoom range because reading a desktop terminal on a phone IS a
+// zoom/pan workflow.
 const MOBILE_VIEWPORT_INJECT = `
   (function(){
     var existing = document.querySelector('meta[name="viewport"]');
     if (existing) existing.remove();
     var m = document.createElement('meta');
     m.name = 'viewport';
-    m.content = 'width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes, viewport-fit=cover';
+    m.content = 'width=980, user-scalable=yes, minimum-scale=0.1, maximum-scale=5';
     (document.head || document.documentElement).appendChild(m);
   })();
   true;
 `;
 
-// The gotty bundle keeps its Terminal instance inside the module closure —
-// nothing is exposed on window — so we cannot call term/fitAddon directly.
-// What we CAN do is drive the page geometry: gotty installs a ResizeObserver
-// on #terminal that refits xterm whenever the element's size changes. Sizing
-// #terminal to the *visual* viewport therefore (a) keeps the prompt above the
-// soft keyboard (Android edge-to-edge never resizes the window for the IME,
-// but the visual viewport does shrink) and (b) guarantees the terminal exactly
-// fills the screen — no clipped rows.
+// Freeze the terminal at its initially-fitted size. gotty's resize handlers
+// (window resize + a ResizeObserver on #terminal) refit xterm and SEND the new
+// cols/rows to tmux — on a phone that means the soft keyboard shrinking the
+// webview reflows the shared desktop terminal and loses TUI content. A
+// stylesheet rule with !important outguns gotty's inline "height:100%" writes,
+// so the element's computed size never changes again: the ResizeObserver stays
+// quiet and any later fit() recomputes the exact same cols/rows (no-op, no
+// resize message). The keyboard then simply overlays the page.
 const MOBILE_XTERM_INJECT = `
   (function(){
-    function apply(){
+    var tries = 0;
+    function freeze(){
       var el = document.getElementById('terminal');
-      if (!el) return;
-      var vv = window.visualViewport;
-      // While pinch-zoomed in, vv.height is the zoomed slice — resizing the
-      // layout to it would wreck the page. Only track the viewport at 1x.
-      if (vv && vv.scale > 1.01) return;
-      var h = vv ? Math.round(vv.height) : window.innerHeight;
-      document.documentElement.style.height = h + 'px';
-      if (document.body) document.body.style.height = h + 'px';
-      el.style.height = h + 'px';
-      window.scrollTo(0, 0);
+      var w = el && el.clientWidth;
+      var h = el && el.clientHeight;
+      if (!w || !h) { if (tries++ < 40) setTimeout(freeze, 250); return; }
+      var style = document.createElement('style');
+      style.textContent = '#terminal{width:' + w + 'px !important;height:' + h + 'px !important;}';
+      document.head.appendChild(style);
       document.documentElement.style.background = '#000';
       if (document.body) document.body.style.background = '#000';
     }
-    function applySoon(){ apply(); setTimeout(apply, 60); setTimeout(apply, 250); }
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', applySoon);
-      window.visualViewport.addEventListener('scroll', function(){ window.scrollTo(0, 0); });
-    }
-    window.addEventListener('resize', applySoon);
-    if (document.readyState === 'complete') applySoon();
-    else window.addEventListener('load', applySoon);
+    // Wait out gotty's own initial fit passes (it refits at +0/50/200ms after
+    // load) so we freeze the settled size, not a transient one.
+    setTimeout(freeze, 700);
   })();
   true;
 `;
