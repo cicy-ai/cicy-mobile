@@ -110,6 +110,8 @@
   },
   "update": {
     "available": "New version v{{version}} available",
-    "tapToInstall": "Tap to download and install"
+    "tapToInstall": "Tap to download and install",
+    "otaReady": "Update downloaded",
+    "otaTapToApply": "Tap to apply now"
   }
 }

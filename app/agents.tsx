@@ -15,6 +15,7 @@ import { TeamTitleModal } from '@/src/components/TeamTitleModal';
 import { Text } from '@/src/components/Text';
 import { api } from '@/src/api/http';
 import { checkApkUpdate, type ApkUpdate } from '@/src/lib/appUpdate';
+import { useOtaReady } from '@/src/lib/otaInfo';
 import type { Agent } from '@/src/api/types';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import {
@@ -84,6 +85,7 @@ export default function Agents() {
   const [titleModalOpen, setTitleModalOpen] = useState(false);
   const [gatewayByName, setGatewayByName] = useState<Record<string, boolean>>({});
   // Sideload self-update: newer APK on the CDN → banner (Android only).
+  const ota = useOtaReady();
   const [apkUpdate, setApkUpdate] = useState<ApkUpdate | null>(null);
   useEffect(() => {
     let alive = true;
@@ -225,7 +227,24 @@ export default function Agents() {
   // Update banner: tap → browser downloads the APK from our CDN → system
   // installer. One tap replaces the whole USB/adb loop.
   const renderUpdateBanner = () =>
-    apkUpdate ? (
+    ota.ready ? (
+      <PressableScale
+        onPress={ota.apply}
+        haptic
+        scaleTo={0.98}
+        style={[styles.updateBanner, { backgroundColor: theme.surface, borderColor: theme.ok }]}
+      >
+        <Ionicons name="flash" size={18} color={theme.ok} />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text variant="caption" style={{ color: theme.ok }}>
+            {t('update.otaReady')}
+          </Text>
+          <Text variant="caption" tone="faint" numberOfLines={1}>
+            {t('update.otaTapToApply')}
+          </Text>
+        </View>
+      </PressableScale>
+    ) : apkUpdate ? (
       <PressableScale
         onPress={() => { Linking.openURL(apkUpdate.apk).catch(() => {}); }}
         haptic

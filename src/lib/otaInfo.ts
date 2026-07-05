@@ -18,3 +18,20 @@ export function runningOtaLabel(): string {
     return '';
   }
 }
+
+// Hook: is a freshly-downloaded OTA update waiting to be applied? Wraps
+// expo-updates' useUpdates so callers stay platform-safe (web/no-module → false).
+export function useOtaReady(): { ready: boolean; apply: () => void } {
+  if (Platform.OS === 'web') return { ready: false, apply: () => {} };
+  try {
+    const Updates = require('expo-updates');
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const { isUpdatePending } = Updates.useUpdates();
+    return {
+      ready: !!isUpdatePending,
+      apply: () => { Updates.reloadAsync().catch(() => {}); },
+    };
+  } catch {
+    return { ready: false, apply: () => {} };
+  }
+}
