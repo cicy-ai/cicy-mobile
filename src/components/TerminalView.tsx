@@ -25,6 +25,10 @@ export function TerminalView({ url, onLoadEnd }: Props) {
       mediaPlaybackRequiresUserAction={false}
       onLoadEnd={onLoadEnd}
       startInLoadingState
+      // Pinch zoom: the viewport meta below allows scaling; these two make
+      // Android's built-in pinch work without showing the +/- buttons.
+      setBuiltInZoomControls
+      setDisplayZoomControls={false}
       injectedJavaScriptBeforeContentLoaded={MOBILE_VIEWPORT_INJECT}
       injectedJavaScript={MOBILE_XTERM_INJECT}
       renderLoading={() => (
@@ -43,7 +47,7 @@ const MOBILE_VIEWPORT_INJECT = `
     if (existing) existing.remove();
     var m = document.createElement('meta');
     m.name = 'viewport';
-    m.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';
+    m.content = 'width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes, viewport-fit=cover';
     (document.head || document.documentElement).appendChild(m);
   })();
   true;

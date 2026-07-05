@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, StyleSheet, View } from 'react-native';
 
 import { AgentAvatar } from '@/src/components/AgentAvatar';
 import { PressableScale } from '@/src/components/PressableScale';
@@ -54,7 +54,15 @@ export default function Terminal() {
         </View>
       )}
 
-      <View style={{ flex: 1, backgroundColor: '#000' }}>
+      {/* Edge-to-edge Android never resizes the window for the IME, so the
+          webview must yield to the keyboard itself — same trick as the chat
+          composer. The injected resize handler then refits xterm to the
+          shrunken height, keeping the prompt line visible while typing. */}
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: '#000' }}
+        behavior="padding"
+        keyboardVerticalOffset={0}
+      >
         {url ? (
           <TerminalView url={url} />
         ) : (
@@ -62,7 +70,7 @@ export default function Terminal() {
             <Text tone="muted">{t('chat.missingCreds')}</Text>
           </View>
         )}
-      </View>
+      </KeyboardAvoidingView>
     </Screen>
   );
 }
