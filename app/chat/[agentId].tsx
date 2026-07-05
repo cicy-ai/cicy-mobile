@@ -26,7 +26,7 @@ import { VoiceBar } from '@/src/components/VoiceBar';
 import { api } from '@/src/api/http';
 import { uploadAttachment } from '@/src/api/upload';
 import type { PendingAttachment } from '@/src/lib/attachments';
-import { normalizeAgentType } from '@/src/lib/agentType';
+import { isHeadlessCicyAgent } from '@/src/lib/agentType';
 import { isTelegram, showBackButton } from '@/src/lib/telegram';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { useAuthStore } from '@/src/store/auth';
@@ -290,7 +290,7 @@ export default function Chat() {
   const stopGeneration = async () => {
     if (!busy) return;
     try {
-      if (normalizeAgentType(agentMeta.agentType) === 'cicy-claude') {
+      if (isHeadlessCicyAgent(agentMeta.agentType)) {
         await api.cancelCicyReply(agentId);
       } else {
         await api.sendKeys(agentId, 'Escape');
@@ -323,8 +323,10 @@ export default function Chat() {
 
   // cicy-type agents run headless (no ttyd pane) — no terminal to open. Every
   // other agent gets the terminal button in the header (full-screen webview on
-  // the team server's gotty page).
-  const hasTerminal = normalizeAgentType(agentMeta.agentType) !== 'cicy-claude';
+  // the team server's gotty page). Hidden until the type is actually known —
+  // defaulting to visible flashed the button on cicy agents while /api/panes
+  // was still loading.
+  const hasTerminal = !!agentMeta.agentType && !isHeadlessCicyAgent(agentMeta.agentType);
   const displayTitle = agentMeta.title || agentId;
 
   const openTerminal = () =>

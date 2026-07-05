@@ -8,13 +8,15 @@ type NormalizedAgentType =
   | ''
   | 'claude'
   | 'codex'
+  | 'gemini'
   | 'opencode'
   | 'cursor'
   | 'kiro-cli'
   | 'copilot'
   | 'openclaw'
   | 'hermes'
-  | 'cicy-claude';
+  | 'cicy-claude'
+  | 'cicy';
 
 export type AgentTypeIconMeta = {
   label: string;
@@ -27,6 +29,7 @@ export type AgentTypeIconMeta = {
 const ICONS: Record<Exclude<NormalizedAgentType, ''>, AgentTypeIconMeta> = {
   claude: { label: 'Claude', src: require('../../assets/logos/claude-symbol.png') },
   codex: { label: 'Codex', src: require('../../assets/logos/openai.png') },
+  gemini: { label: 'Gemini', src: require('../../assets/logos/gemini.png') },
   opencode: { label: 'OpenCode', src: require('../../assets/logos/opencode.png') },
   cursor: { label: 'Cursor', src: require('../../assets/logos/cursor.png') },
   'kiro-cli': { label: 'Kiro', src: require('../../assets/logos/kiro.png') },
@@ -34,6 +37,7 @@ const ICONS: Record<Exclude<NormalizedAgentType, ''>, AgentTypeIconMeta> = {
   openclaw: { label: 'OpenClaw', text: '🦞' },
   hermes: { label: 'Hermes', text: 'HE' },
   'cicy-claude': { label: 'CiCy', src: require('../../assets/logos/cicy.png') },
+  cicy: { label: 'CiCy', src: require('../../assets/logos/cicy.png') },
 };
 
 export function normalizeAgentType(agentType?: string): NormalizedAgentType {
@@ -43,8 +47,10 @@ export function normalizeAgentType(agentType?: string): NormalizedAgentType {
       return 'openclaw';
     case 'codex':
     case 'openai':
-    case 'gemini':
       return 'codex';
+    case 'gemini':
+    case 'gemini-cli':
+      return 'gemini';
     case 'cursor':
     case 'cursor-agent':
     case 'cursor agent':
@@ -61,9 +67,14 @@ export function normalizeAgentType(agentType?: string): NormalizedAgentType {
     case 'claude code':
     case 'claude-code':
       return 'claude';
-    case 'cicy':
     case 'cicy-claude':
       return 'cicy-claude';
+    // CiCy 原生 lite agent(原 dispatcher,todo #104 改名)— mirrors web's
+    // normalizeAgentType: legacy "dispatcher"/"secretary" rows are cicy too.
+    case 'cicy':
+    case 'dispatcher':
+    case 'secretary':
+      return 'cicy';
     case 'opencode':
     case 'open code':
     case 'open-code':
@@ -81,4 +92,11 @@ export function getAgentTypeIconMeta(agentType?: string): AgentTypeIconMeta | nu
   const n = normalizeAgentType(agentType);
   if (!n) return null;
   return ICONS[n];
+}
+
+// Headless CiCy agents (lite "cicy" + gateway "cicy-claude") run without a
+// tmux pane — there is no terminal for the terminal button/webview to show.
+export function isHeadlessCicyAgent(agentType?: string): boolean {
+  const n = normalizeAgentType(agentType);
+  return n === 'cicy' || n === 'cicy-claude';
 }

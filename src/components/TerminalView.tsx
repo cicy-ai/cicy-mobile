@@ -53,58 +53,39 @@ const MOBILE_VIEWPORT_INJECT = `
   true;
 `;
 
+// The gotty bundle keeps its Terminal instance inside the module closure —
+// nothing is exposed on window — so we cannot call term/fitAddon directly.
+// What we CAN do is drive the page geometry: gotty installs a ResizeObserver
+// on #terminal that refits xterm whenever the element's size changes. Sizing
+// #terminal to the *visual* viewport therefore (a) keeps the prompt above the
+// soft keyboard (Android edge-to-edge never resizes the window for the IME,
+// but the visual viewport does shrink) and (b) guarantees the terminal exactly
+// fills the screen — no clipped rows.
 const MOBILE_XTERM_INJECT = `
   (function(){
-    var FONT_SIZE = 12;
-    var LINE_HEIGHT = 1.15;
-    var FONT_FAMILY = 'Menlo, "SF Mono", Consolas, monospace';
-    var tries = 0;
-    function looksLikeTerm(t){
-      return t && typeof t === 'object' && t.options && typeof t.resize === 'function';
+    function apply(){
+      var el = document.getElementById('terminal');
+      if (!el) return;
+      var vv = window.visualViewport;
+      // While pinch-zoomed in, vv.height is the zoomed slice — resizing the
+      // layout to it would wreck the page. Only track the viewport at 1x.
+      if (vv && vv.scale > 1.01) return;
+      var h = vv ? Math.round(vv.height) : window.innerHeight;
+      document.documentElement.style.height = h + 'px';
+      if (document.body) document.body.style.height = h + 'px';
+      el.style.height = h + 'px';
+      window.scrollTo(0, 0);
+      document.documentElement.style.background = '#000';
+      if (document.body) document.body.style.background = '#000';
     }
-    function findTerm(){
-      if (looksLikeTerm(window.term)) return window.term;
-      if (window.tty && looksLikeTerm(window.tty.term)) return window.tty.term;
-      if (window.terminal && looksLikeTerm(window.terminal)) return window.terminal;
-      return null;
+    function applySoon(){ apply(); setTimeout(apply, 60); setTimeout(apply, 250); }
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', applySoon);
+      window.visualViewport.addEventListener('scroll', function(){ window.scrollTo(0, 0); });
     }
-    function findFit(){
-      if (window.fitAddon && typeof window.fitAddon.fit === 'function') return window.fitAddon;
-      return null;
-    }
-    function tune(){
-      var t = findTerm();
-      if (!t) return false;
-      try {
-        if (t.options) {
-          t.options.fontSize = FONT_SIZE;
-          t.options.lineHeight = LINE_HEIGHT;
-          t.options.fontFamily = FONT_FAMILY;
-        } else {
-          t.setOption && t.setOption('fontSize', FONT_SIZE);
-          t.setOption && t.setOption('lineHeight', LINE_HEIGHT);
-          t.setOption && t.setOption('fontFamily', FONT_FAMILY);
-        }
-        var fit = findFit();
-        if (fit) {
-          fit.fit();
-        } else if (typeof t.fit === 'function') {
-          t.fit();
-        }
-        document.documentElement.style.background = '#000';
-        document.body && (document.body.style.background = '#000');
-        return true;
-      } catch (e) {
-        return false;
-      }
-    }
-    function loop(){
-      if (tune() || tries++ > 30) return;
-      setTimeout(loop, 250);
-    }
-    if (document.readyState === 'complete') loop();
-    else window.addEventListener('load', loop);
-    window.addEventListener('resize', function(){ setTimeout(tune, 100); });
+    window.addEventListener('resize', applySoon);
+    if (document.readyState === 'complete') applySoon();
+    else window.addEventListener('load', applySoon);
   })();
   true;
 `;
