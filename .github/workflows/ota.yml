@@ -41,3 +41,31 @@ jobs:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
         run: node scripts/publish-ota.mjs "${GITHUB_REF_NAME}"
+
+  # Keep the PWA / Telegram Mini App on the SAME JS as the native OTA train.
+  # (Learned the hard way: u* tags used to update only native — web users sat
+  # on days-old code and "fixed" bugs kept reproducing there.)
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install deps
+        run: npm ci
+      - name: Sync version from latest release tag
+        run: |
+          git fetch --tags --quiet
+          VER=$(git describe --tags --match 'v*' --abbrev=0 | sed 's/^v//')
+          node scripts/sync-version.mjs "$VER"
+      - name: Build web export
+        run: npx expo export -p web
+      - name: Deploy to Cloudflare Workers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler@4 deploy
