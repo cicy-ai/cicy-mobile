@@ -43,10 +43,18 @@ export function TerminalView({ url, onLoadEnd }: Props) {
   );
 }
 
-// Desktop-width layout on purpose: with a ~980px layout the initial xterm fit
-// lands near the desktop's cols, so the phone joins tmux without shrinking
-// anyone. Wide zoom range because reading a desktop terminal on a phone IS a
-// zoom/pan workflow.
+// Target terminal geometry. Without pinning, gotty fits xterm to the phone's
+// freak layout (980px-wide × keyboard-height → measured 123 cols × 140 ROWS)
+// and pushes that onto the shared tmux window — a stretched, unreadable
+// terminal that persists after disconnect. 120×32 is a normal desktop-ish
+// shape; tmux gets a sane resize and the phone reads it via pinch-zoom.
+const TARGET_COLS = 120;
+const TARGET_ROWS = 32;
+// fontSize-13 monospace cell estimate — refined in-page by measuring xterm's
+// own char-measure element once it exists.
+const EST_CHAR_W = 7.83;
+const EST_CHAR_H = 15;
+
 const MOBILE_VIEWPORT_INJECT = `
   (function(){
     var existing = document.querySelector('meta[name="viewport"]');
@@ -59,31 +67,44 @@ const MOBILE_VIEWPORT_INJECT = `
   true;
 `;
 
-// Freeze the terminal at its initially-fitted size. gotty's resize handlers
-// (window resize + a ResizeObserver on #terminal) refit xterm and SEND the new
-// cols/rows to tmux — on a phone that means the soft keyboard shrinking the
-// webview reflows the shared desktop terminal and loses TUI content. A
-// stylesheet rule with !important outguns gotty's inline "height:100%" writes,
-// so the element's computed size never changes again: the ResizeObserver stays
-// quiet and any later fit() recomputes the exact same cols/rows (no-op, no
-// resize message). The keyboard then simply overlays the page.
+// Pin #terminal to TARGET_COLS×TARGET_ROWS worth of pixels with !important
+// (outguns gotty's inline "height:100%" writes). gotty's own ResizeObserver
+// then refits xterm to exactly the target geometry and sends it to tmux once.
+// Because the pixel size is fixed, later webview/viewport changes (soft
+// keyboard, rotation churn) can never re-fit — no more resize storms into the
+// shared tmux session. Two passes: an immediate estimate, then a calibrated
+// pass using xterm's own char-measure element for exact cell metrics.
 const MOBILE_XTERM_INJECT = `
   (function(){
-    var tries = 0;
-    function freeze(){
-      var el = document.getElementById('terminal');
-      var w = el && el.clientWidth;
-      var h = el && el.clientHeight;
-      if (!w || !h) { if (tries++ < 40) setTimeout(freeze, 250); return; }
-      var style = document.createElement('style');
+    var COLS = ${TARGET_COLS}, ROWS = ${TARGET_ROWS};
+    var style = document.createElement('style');
+    (document.head || document.documentElement).appendChild(style);
+    function pin(cw, ch){
+      var w = Math.ceil(COLS * cw) + 2;
+      var h = Math.ceil(ROWS * ch) + 2;
       style.textContent = '#terminal{width:' + w + 'px !important;height:' + h + 'px !important;}';
-      document.head.appendChild(style);
+      // the before-load meta can be discarded by the HTML parser — recreate
+      var m = document.querySelector('meta[name="viewport"]');
+      if (!m) {
+        m = document.createElement('meta');
+        m.name = 'viewport';
+        (document.head || document.documentElement).appendChild(m);
+      }
+      m.content = 'width=' + w + ', user-scalable=yes, minimum-scale=0.1, maximum-scale=5';
+    }
+    pin(${EST_CHAR_W}, ${EST_CHAR_H});
+    var tries = 0;
+    function calibrate(){
+      var meas = document.querySelector('.xterm-char-measure-element');
+      var r = meas && meas.getBoundingClientRect();
+      // the measure element holds a run of reference chars — width per char
+      var n = meas && meas.textContent ? meas.textContent.length : 1;
+      if (!r || !r.height || !r.width) { if (tries++ < 40) setTimeout(calibrate, 250); return; }
+      pin(r.width / Math.max(1, n), r.height);
       document.documentElement.style.background = '#000';
       if (document.body) document.body.style.background = '#000';
     }
-    // Wait out gotty's own initial fit passes (it refits at +0/50/200ms after
-    // load) so we freeze the settled size, not a transient one.
-    setTimeout(freeze, 700);
+    setTimeout(calibrate, 400);
   })();
   true;
 `;
