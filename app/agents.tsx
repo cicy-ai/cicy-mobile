@@ -452,10 +452,10 @@ function AgentRow({ agent, metrics, gateway }: { agent: Agent; metrics?: AgentLi
         { backgroundColor: theme.surface, borderColor: theme.border },
       ]}
     >
-      <AgentAvatar agentType={agent.agent_type} title={agent.title || agent.name || String(routeId)} size={40} />
+      <AgentAvatar agentType={agent.agent_type} title={agent.title || agent.name || String(routeId)} size={52} />
       <View style={{ flex: 1, gap: 3 }}>
         <View style={rowStyles.titleRow}>
-          <Text variant="bodyMedium" numberOfLines={1} style={{ flexShrink: 1 }}>
+          <Text variant="bodyMedium" numberOfLines={1} style={{ flexShrink: 1, fontSize: 16.5, fontWeight: '600' }}>
             {agent.title || agent.name || String(routeId)}
           </Text>
           {/* 网关标识(同 cicy-code team-panel-worker-gateway):
@@ -548,8 +548,8 @@ const rowStyles = StyleSheet.create({
   card: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.lg,
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
     gap: spacing.md,
