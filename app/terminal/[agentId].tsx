@@ -90,8 +90,8 @@ export default function Terminal() {
             <Text variant="bodyMedium" numberOfLines={1}>
               {displayTitle}
             </Text>
-            <Text variant="caption" tone="faint">
-              {t('chat.terminalTitle')}
+            <Text variant="caption" tone="faint" numberOfLines={1}>
+              {`${agentId} · ${t('chat.terminalTitle')}`}
             </Text>
           </View>
         </View>

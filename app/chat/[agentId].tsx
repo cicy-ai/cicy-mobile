@@ -367,13 +367,12 @@ export default function Chat() {
           <Text variant="bodyMedium" numberOfLines={1}>
             {displayTitle}
           </Text>
-          {agentMeta.machineLabel ? (
-            <View style={styles.headerSubRow}>
-              <Text variant="caption" tone="faint" numberOfLines={1}>
-                {agentMeta.machineLabel}
-              </Text>
-            </View>
-          ) : null}
+          {/* worker id — the stable routing key, same as the list row shows */}
+          <View style={styles.headerSubRow}>
+            <Text variant="caption" tone="faint" numberOfLines={1}>
+              {agentMeta.machineLabel ? `${agentId} · ${agentMeta.machineLabel}` : agentId}
+            </Text>
+          </View>
         </View>
         {hasTerminal && (
           <PressableScale onPress={openTerminal} haptic scaleTo={0.94} style={styles.termBtn} hitSlop={6}>
