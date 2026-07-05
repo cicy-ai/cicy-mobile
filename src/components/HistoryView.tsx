@@ -1003,7 +1003,7 @@ function Turn({ turn, isLast }: { turn: HistoryTurn; isLast: boolean }) {
       {turn.q ? <QuestionBubble text={turn.q} /> : null}
 
       {hasAnswer ? (
-        <View style={{ gap: spacing.sm, paddingRight: spacing.lg }}>
+        <View style={[styles.answerCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
           {(turn.steps ?? []).map((step, i) => (
             <Step
               key={i}
@@ -1135,7 +1135,7 @@ function ToolCard({ tool }: { tool: ToolData }) {
   const clamp = (s: string) => (s.length > TOOL_BODY_MAX ? s.slice(0, TOOL_BODY_MAX) + '\n…(truncated)' : s);
 
   return (
-    <View style={[styles.toolCard, { borderColor: theme.border, backgroundColor: theme.surface }]}>
+    <View style={[styles.toolCard, { borderColor: theme.border, backgroundColor: theme.surfaceMuted }]}>
       <PressableScale
         onPress={() => hasBody && setOpen((v) => !v)}
         haptic={hasBody}
@@ -1283,7 +1283,7 @@ function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeo
     if (!para.length) return;
     const k = blocks.length;
     blocks.push(
-      <Text key={`p${k}`} variant="body" selectable>
+      <Text key={`p${k}`} selectable style={styles.mdBody}>
         {renderInline(para.join('\n'), theme, `p${k}`)}
       </Text>,
     );
@@ -1292,9 +1292,12 @@ function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeo
   for (const line of text.split('\n')) {
     const h = /^(#{1,3})\s+(.*)$/.exec(line);
     const hr = /^\s*([-*_])\1{2,}\s*$/.exec(line);
-    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
-    const num = /^\s*(\d+)\.\s+(.*)$/.exec(line);
+    const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line);
+    const num = /^(\s*)(\d+)\.\s+(.*)$/.exec(line);
     const quote = /^\s*>\s?(.*)$/.exec(line);
+    // Nested-list indent level (2 spaces per level, capped) — Qwen-style
+    // clearly indented sub-bullets instead of everything flush-left.
+    const indentOf = (ws: string) => Math.min(3, Math.floor((ws ?? '').replace(/\t/g, '  ').length / 2));
     const k = blocks.length + 1; // unique-ish key after the flush below
     if (h) {
       flushPara();
@@ -1304,7 +1307,7 @@ function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeo
           key={`h${k}`}
           variant="body"
           selectable
-          style={{ fontWeight: '700', fontSize: lvl === 1 ? 18 : lvl === 2 ? 16 : 14.5, marginTop: 2 }}
+          style={{ fontWeight: '700', fontSize: lvl === 1 ? 20 : lvl === 2 ? 17.5 : 16, lineHeight: lvl === 1 ? 28 : 25, marginTop: lvl === 1 ? 10 : 6, marginBottom: 2 }}
         >
           {renderInline(h[2], theme, `h${k}`)}
         </Text>,
@@ -1315,20 +1318,20 @@ function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeo
     } else if (bullet) {
       flushPara();
       blocks.push(
-        <View key={`bl${k}`} style={styles.mdListRow}>
-          <Text variant="body">•</Text>
-          <Text variant="body" selectable style={{ flex: 1, minWidth: 0 }}>
-            {renderInline(bullet[1], theme, `bl${k}`)}
+        <View key={`bl${k}`} style={[styles.mdListRow, { marginLeft: indentOf(bullet[1]) * 16 }]}>
+          <Text style={styles.mdBody}>•</Text>
+          <Text selectable style={[styles.mdBody, { flex: 1, minWidth: 0 }]}>
+            {renderInline(bullet[2], theme, `bl${k}`)}
           </Text>
         </View>,
       );
     } else if (num) {
       flushPara();
       blocks.push(
-        <View key={`nu${k}`} style={styles.mdListRow}>
-          <Text variant="body">{num[1]}.</Text>
-          <Text variant="body" selectable style={{ flex: 1, minWidth: 0 }}>
-            {renderInline(num[2], theme, `nu${k}`)}
+        <View key={`nu${k}`} style={[styles.mdListRow, { marginLeft: indentOf(num[1]) * 16 }]}>
+          <Text style={[styles.mdBody, { fontWeight: '600' }]}>{num[2]}.</Text>
+          <Text selectable style={[styles.mdBody, { flex: 1, minWidth: 0 }]}>
+            {renderInline(num[3], theme, `nu${k}`)}
           </Text>
         </View>,
       );
@@ -1348,7 +1351,7 @@ function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeo
     }
   }
   flushPara();
-  return <View style={{ gap: 4 }}>{blocks}</View>;
+  return <View style={{ gap: 9 }}>{blocks}</View>;
 }
 
 type Segment = { kind: 'text' | 'code'; text: string; lang?: string };
@@ -1384,6 +1387,13 @@ const styles = StyleSheet.create({
   },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing['2xl'] },
   qRow: { flexDirection: 'row', justifyContent: 'flex-end' },
+  // Answer surface — Qwen-style soft card that lifts the reply off the page.
+  answerCard: {
+    gap: spacing.sm,
+    padding: spacing.lg,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   qBubble: {
     maxWidth: '82%',
     paddingHorizontal: spacing.lg,
@@ -1419,7 +1429,9 @@ const styles = StyleSheet.create({
   // ellipsize on react-native-web (default min-width:auto would overflow/wrap).
   toolHeadline: { flex: 1, minWidth: 0, fontSize: 12 },
   toolBody: { paddingHorizontal: spacing.sm, paddingBottom: spacing.sm, gap: spacing.sm },
-  mdListRow: { flexDirection: 'row', gap: 6, alignItems: 'flex-start' },
+  mdListRow: { flexDirection: 'row', gap: 7, alignItems: 'flex-start' },
+  // Answer body type — Qwen-grade reading comfort (15.5/26 ≈ 1.7 leading).
+  mdBody: { fontSize: 15.5, lineHeight: 26 },
   mdQuote: { borderLeftWidth: 2, paddingLeft: spacing.sm, opacity: 0.9 },
   toolCode: {
     borderRadius: radius.sm,
