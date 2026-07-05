@@ -23,7 +23,7 @@ function cmpSemver(a: string, b: string): number {
 /** Newer APK available? null when up-to-date / not Android / check failed. */
 export async function checkApkUpdate(): Promise<ApkUpdate | null> {
   if (Platform.OS !== 'android') return null;
-  const installed = String(Constants.expoConfig?.version ?? Constants.nativeApplicationVersion ?? '').trim();
+  const installed = String(Constants.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '').trim();
   if (!installed) return null;
   try {
     const res = await fetch(`${VERSION_URL}?t=${Date.now()}`, { headers: { 'Cache-Control': 'no-cache' } });

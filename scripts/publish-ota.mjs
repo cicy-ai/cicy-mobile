@@ -11,6 +11,7 @@
 //
 // Env: R2_ACCOUNT_ID, R2_API_TOKEN. Runtime version read from app.json.
 import { createHash, randomUUID } from 'node:crypto';
+import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -57,6 +58,16 @@ function assetEntry(relPath, ext) {
 const launch = assetEntry(android.bundle, 'hbc');
 const assets = (android.assets || []).map((a) => assetEntry(a.path, a.ext));
 
+// Embed the public expo config like EAS does (extra.expoClient) so
+// Constants.expoConfig keeps working inside OTA bundles — without it,
+// expoConfig is null when running an update (version footer vanished).
+let expoClient = null;
+try {
+  expoClient = JSON.parse(execSync('npx expo config --json --type public', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+} catch {
+  console.warn('warn: could not resolve public expo config; extra.expoClient omitted');
+}
+
 const manifest = {
   id: updateId,
   createdAt: new Date().toISOString(),
@@ -64,7 +75,7 @@ const manifest = {
   launchAsset: launch.entry,
   assets: assets.map((a) => a.entry),
   metadata: {},
-  extra: { label },
+  extra: { label, ...(expoClient ? { expoClient } : {}) },
 };
 
 const files = [launch, ...assets];

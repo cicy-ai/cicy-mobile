@@ -33,7 +33,11 @@ export function TeamDrawer({ open, onClose }: Props) {
   const { t } = useTranslation();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
-  const appVersion = Constants.expoConfig?.version ?? '';
+  // nativeApplicationVersion first: it's the INSTALLED APK's version and is
+  // always present. expoConfig can be null when running a self-hosted OTA
+  // bundle (our manifests don't embed extra.expoClient) — reading it first
+  // made this whole footer vanish after the first hot update.
+  const appVersion = Constants.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '';
   const buildNo =
     Constants.expoConfig?.android?.versionCode ?? Constants.expoConfig?.ios?.buildNumber ?? null;
   const teams = useAuthStore((s) => s.teams);
