@@ -10,6 +10,7 @@ import type { HistoryStep, HistoryTurn } from '@/src/api/types';
 import { buildTurnsFromRawItems, normalizeHistoryTurns, replyItemsToSteps, splitLeadingHarnessBlocks, stripHarnessNoise } from '@/src/lib/historyParse';
 import { historyCache } from '@/src/lib/historyCache';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
+import { InlineVideo } from './InlineVideo';
 import { PressableScale } from './PressableScale';
 import { Text } from './Text';
 import { TypingDots } from './TypingDots';
@@ -1373,11 +1374,10 @@ function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeo
   return <View style={{ gap: 4 }}>{blocks}</View>;
 }
 
-// Rendered attachment: image → inline thumbnail (tap opens full in browser),
-// video/file → a card that opens in the system player / viewer. assetUri()
-// resolves the /assets/files path to an absolute URL + the Bearer header cloud
-// needs to serve it. Inline video PLAYBACK needs expo-video (native) — until
-// that ships, tapping the card opens the URL.
+// Rendered attachment: image → inline thumbnail (tap opens full), video → an
+// inline player (expo-video), file → a card that opens in the system viewer.
+// assetUri() resolves the /assets/files path to an absolute URL + the Bearer
+// header cloud needs to serve it.
 function MediaBlock({
   url, name, isImage, isVideo, theme,
 }: { url: string; name: string; isImage: boolean; isVideo: boolean; theme: ReturnType<typeof useTheme> }) {
@@ -1389,6 +1389,13 @@ function MediaBlock({
       <PressableScale onPress={open} scaleTo={0.98} style={styles.mediaImageWrap}>
         <Image source={src as any} style={styles.mediaImage} resizeMode="cover" />
       </PressableScale>
+    );
+  }
+  if (isVideo) {
+    return (
+      <View style={styles.mediaVideoWrap}>
+        <InlineVideo uri={src.uri} headers={src.headers} />
+      </View>
     );
   }
   return (
@@ -1489,6 +1496,10 @@ const styles = StyleSheet.create({
     height: 200,
     maxWidth: '100%',
     backgroundColor: '#000',
+  },
+  mediaVideoWrap: {
+    alignSelf: 'flex-start',
+    marginVertical: 2,
   },
   mediaCard: {
     flexDirection: 'row',

@@ -110,23 +110,32 @@ jobs:
       # secrets), so it has its own R2_* creds. Upload via the R2 REST API
       # directly (same path cicy-r2 uses) — no wrangler account mismatch.
       # Primary download CDN = Alibaba OSS (fast in mainland China; R2/Cloudflare
-      # is slow behind the GFW). Public-read bucket cicy-1372193042-cn, same one
-      # cicy-desktop releases live in. Versioned key + stable `latest` alias.
-      - name: Upload APK to OSS (primary CN CDN)
+      # is slow / intermittently unreachable behind the GFW). Public-read bucket
+      # cicy-1372193042-cn, same one cicy-desktop releases live in.
+      #
+      # OSS blocks raw .apk on ANY *.aliyuncs.com endpoint (ApkDownloadForbidden
+      # anti-abuse — mainland AND HK, public AND signed URL; only a bound CNAME
+      # domain is exempt). We deliberately avoid binding a domain, so we wrap the
+      # APK in an outer .zip: the zip's root isn't an APK, the content sniffer
+      # lets it through, and it serves from the bare OSS domain. The phone
+      # downloads cicy-*.zip and extracts the .apk to install.
+      - name: Zip-wrap APK → OSS (bare domain, fast in CN)
         env:
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: |
           VER="${GITHUB_REF_NAME#v}"
+          zip -qj "cicy-${VER}.zip" "cicy-${VER}.apk"
+          ls -lh "cicy-${VER}.zip"
           curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64 -o ossutil
           chmod +x ossutil
           EP=oss-cn-shanghai.aliyuncs.com
           B=oss://cicy-1372193042-cn/cicy-mobile
-          for key in "cicy-${VER}.apk" "cicy-latest.apk"; do
+          for key in "cicy-${VER}.zip" "cicy-latest.zip"; do
             ./ossutil -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -e "$EP" \
-              cp "cicy-${VER}.apk" "${B}/${key}" -f
+              cp "cicy-${VER}.zip" "${B}/${key}" -f
           done
-          echo "OSS APK: https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.apk"
+          echo "OSS ZIP: https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.zip"
       # R2 stays as a fallback mirror. version.json is still SERVED from R2 (the
       # app reads it there), but its download URL now points at OSS. Written LAST
       # (after the APK is up on both) so the in-app check never points at a
@@ -145,13 +154,16 @@ jobs:
               -H "Content-Type: ${CT}" \
               --data-binary @"cicy-${VER}.apk" >/dev/null
           done
-          OSS_APK="https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.apk"
-          printf '{"version":"%s","apk":"%s"}' "$VER" "$OSS_APK" > version.json
+          # Download URL points at the OSS zip (fast in CN, no domain binding).
+          # `zip:true` tells the app the payload is a zip-wrapped APK (extract
+          # before install). Field stays named `apk` for backward compat.
+          OSS_ZIP="https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.zip"
+          printf '{"version":"%s","apk":"%s","zip":true}' "$VER" "$OSS_ZIP" > version.json
           curl -fsS -X PUT "${base}/cicy-mobile/version.json" \
             -H "Authorization: Bearer ${R2_API_TOKEN}" \
             -H "Content-Type: application/json" \
             --data-binary @version.json >/dev/null
-          echo "version.json.apk → ${OSS_APK}"
+          echo "version.json.apk → ${OSS_ZIP}"
       # Publish the SAME JS as an OTA update so devices already on this
       # runtime converge without reinstalling the APK.
       - name: Publish matching OTA update
