@@ -74,6 +74,8 @@
   },
   "voice": {
     "holdToTalk": "Hold to talk",
+    "slideUpCancelHint": "Release to send · slide up to cancel",
+    "releaseToCancel": "Release to cancel",
     "releaseToSend": "Release to send",
     "transcribing": "Transcribing…",
     "permissionDenied": "Microphone permission denied",

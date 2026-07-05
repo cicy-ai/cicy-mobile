@@ -75,6 +75,8 @@
   "voice": {
     "holdToTalk": "按住说话",
     "releaseToSend": "松开发送",
+    "slideUpCancelHint": "松手发送,上移取消",
+    "releaseToCancel": "松手取消",
     "transcribing": "识别中…",
     "permissionDenied": "麦克风权限被拒绝",
     "startError": "启动失败：{{error}}",

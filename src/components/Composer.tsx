@@ -1,5 +1,5 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -9,11 +9,11 @@ import {
   StyleSheet,
   TextInput,
   View,
+  type GestureResponderEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PressableScale } from './PressableScale';
-import { RecordingDot } from './RecordingDot';
 import { Text } from './Text';
 import { useVoiceRecorder } from '@/src/hooks/useVoiceRecorder';
 import {
@@ -61,13 +61,41 @@ export function Composer({
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState<'text' | 'voice'>('text');
   const [sheetOpen, setSheetOpen] = useState(false);
-  const { phase, start, stop, durationMs } = useVoiceRecorder({ onTranscript, onError });
+  const { phase, start, stop } = useVoiceRecorder({ onTranscript, onError });
 
   const isRecording = phase === 'recording';
   const isTranscribing = phase === 'transcribing';
   const hasText = value.trim().length > 0;
   const canAttach = !IS_WEB && !!onPickAttachments;
   const showVoice = !IS_WEB;
+
+  // Slide-up-to-cancel (per the reference shots): while holding, moving the
+  // finger up past the threshold flips the pill red and the release cancels.
+  const [cancelIntent, setCancelIntent] = useState(false);
+  const cancelIntentRef = useRef(false);
+  const touchStartYRef = useRef(0);
+  const CANCEL_DY = 60;
+  const onHoldStart = (e: GestureResponderEvent) => {
+    touchStartYRef.current = e.nativeEvent.pageY;
+    cancelIntentRef.current = false;
+    setCancelIntent(false);
+    void start();
+  };
+  const onHoldMove = (e: GestureResponderEvent) => {
+    if (phase !== 'recording') return;
+    const up = touchStartYRef.current - e.nativeEvent.pageY;
+    const intent = up > CANCEL_DY;
+    if (intent !== cancelIntentRef.current) {
+      cancelIntentRef.current = intent;
+      setCancelIntent(intent);
+    }
+  };
+  const onHoldEnd = () => {
+    const cancel = cancelIntentRef.current;
+    cancelIntentRef.current = false;
+    setCancelIntent(false);
+    void stop({ cancel });
+  };
 
   async function runPick(fn: () => Promise<PendingAttachment[]>) {
     setSheetOpen(false);
@@ -93,46 +121,57 @@ export function Composer({
     </PressableScale>
   );
 
+  const recordingBg = cancelIntent ? theme.danger : theme.accent;
+
   return (
-    <>
+    <View style={styles.wrap}>
+      {/* Hint floats above the pill while recording (reference design). */}
+      {isRecording && (
+        <Text
+          variant="caption"
+          style={[styles.recordHint, { color: cancelIntent ? theme.danger : theme.textMuted }]}
+        >
+          {cancelIntent ? t('voice.releaseToCancel') : t('voice.slideUpCancelHint')}
+        </Text>
+      )}
       <View
         style={[
           styles.pill,
           {
-            backgroundColor: isRecording ? theme.accent : theme.surface,
+            backgroundColor: isRecording ? recordingBg : theme.surface,
             borderColor: isRecording ? 'transparent' : theme.border,
           },
         ]}
       >
         {mode === 'voice' && showVoice ? (
-          isRecording || isTranscribing ? (
-            /* Recording / transcribing — the whole pill is the live zone. */
-            <Pressable onPressOut={() => stop()} style={styles.holdZone}>
-              {isRecording ? <RecordingDot color={theme.accentText} size={8} /> : null}
-              <Text
-                variant="bodyMedium"
-                style={{ color: isRecording ? theme.accentText : theme.textMuted }}
-              >
-                {isTranscribing
-                  ? t('voice.transcribing')
-                  : `${t('voice.releaseToSend')}  ${formatDuration(durationMs / 1000)}`}
-              </Text>
+          <>
+            {/* Side icons hide while recording — the pill becomes pure waveform. */}
+            {!isRecording && !isTranscribing && canAttach &&
+              iconBtn('camera-outline', () => void runPick(captureMedia))}
+            {/* ONE always-mounted hold zone: swapping elements mid-gesture
+                would drop the release event. */}
+            <Pressable
+              onPressIn={onHoldStart}
+              onTouchMove={onHoldMove}
+              onPressOut={onHoldEnd}
+              disabled={disabled || isTranscribing}
+              style={styles.holdZone}
+            >
+              {isRecording ? (
+                <Waveform color={theme.accentText} />
+              ) : (
+                <Text variant="bodyMedium" tone={isTranscribing ? 'muted' : 'default'}>
+                  {isTranscribing ? t('voice.transcribing') : t('voice.holdToTalk')}
+                </Text>
+              )}
             </Pressable>
-          ) : (
-            <>
-              {canAttach && iconBtn('camera-outline', () => void runPick(captureMedia))}
-              <Pressable
-                onPressIn={start}
-                onPressOut={() => stop()}
-                disabled={disabled}
-                style={styles.holdZone}
-              >
-                <Text variant="bodyMedium">{t('voice.holdToTalk')}</Text>
-              </Pressable>
-              {iconBtn('keypad-outline', () => setMode('text'), { size: 22 })}
-              {canAttach && iconBtn('add-circle-outline', () => setSheetOpen(true))}
-            </>
-          )
+            {!isRecording && !isTranscribing && (
+              <>
+                {iconBtn('keypad-outline', () => setMode('text'), { size: 22 })}
+                {canAttach && iconBtn('add-circle-outline', () => setSheetOpen(true))}
+              </>
+            )}
+          </>
         ) : (
           <>
             <TextInput
@@ -193,20 +232,51 @@ export function Composer({
           </View>
         </Pressable>
       </Modal>
-    </>
+    </View>
   );
 }
 
-function formatDuration(sec: number) {
-  const s = Math.max(0, Math.floor(sec));
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return `${m}:${r.toString().padStart(2, '0')}`;
+// Animated fake waveform (reference look): a row of thin rounded bars whose
+// heights re-randomize on a short interval. Real mic metering isn't exposed
+// uniformly by both speech backends, and the visual is what matters here.
+const WAVE_BARS = 34;
+function Waveform({ color }: { color: string }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const iv = setInterval(() => setTick((n) => n + 1), 120);
+    return () => clearInterval(iv);
+  }, []);
+  const bars = [];
+  for (let i = 0; i < WAVE_BARS; i += 1) {
+    // center-weighted pseudo-random heights, reshuffled by `tick`
+    const seed = Math.sin(i * 12.9898 + tick * 78.233) * 43758.5453;
+    const rnd = seed - Math.floor(seed);
+    const centerBoost = 1 - Math.abs(i - WAVE_BARS / 2) / (WAVE_BARS / 2);
+    const h = 4 + Math.round(rnd * 10 * (0.5 + centerBoost));
+    bars.push(<View key={i} style={[styles.waveBar, { height: h, backgroundColor: color }]} />);
+  }
+  return <View style={styles.wave}>{bars}</View>;
 }
 
 const styles = StyleSheet.create({
-  pill: {
+  wrap: {
     flex: 1,
+  },
+  recordHint: {
+    textAlign: 'center',
+    marginBottom: spacing.sm,
+  },
+  wave: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    height: 24,
+  },
+  waveBar: {
+    width: 3,
+    borderRadius: 2,
+  },
+  pill: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     minHeight: 48,
