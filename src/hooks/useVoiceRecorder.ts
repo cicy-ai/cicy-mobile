@@ -32,10 +32,13 @@ type Options = {
 //   2. Whisper: record with expo-audio, upload to /api/stt on the server.
 //      Works on every device; depends on the user's cicy-code STT config.
 //
-// We pick lazily — try native first, fall back to whisper only if the device
-// reports no recognition service. Set FORCE_WHISPER = true to always use the
-// server (e.g. for a more accurate model than the OS provides).
-const FORCE_WHISPER = false;
+// Backend choice:
+//   Android → ALWAYS whisper. Chinese-ROM recognition services exist (so the
+//   availability probe passes) but their accuracy is garbage — 用户实测
+//   "android stt垃圾". Server whisper is dramatically better and /api/stt is
+//   already required for the meeting flow anyway.
+//   iOS → native Apple Speech (good quality, zero latency), whisper fallback.
+const FORCE_WHISPER = Platform.OS === 'android';
 
 export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
   const [phase, setPhase] = useState<VoicePhase>('idle');
