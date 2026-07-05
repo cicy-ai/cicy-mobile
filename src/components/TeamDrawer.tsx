@@ -19,6 +19,7 @@ import { ConfirmModal } from './ConfirmModal';
 import { PressableScale } from './PressableScale';
 import { TeamAvatar } from './TeamAvatar';
 import { Text } from './Text';
+import { runningOtaLabel } from '@/src/lib/otaInfo';
 import { useAuthStore, type Team } from '@/src/store/auth';
 import { radius, spacing, useTheme } from '@/src/theme';
 
@@ -40,6 +41,9 @@ export function TeamDrawer({ open, onClose }: Props) {
   // that read undefined; the real one lives in expo-application, a native
   // module we can't ship over the air.)
   const appVersion = Constants.expoConfig?.version ?? '';
+  // Running OTA label (e.g. "u202607055") — identifies exactly which hot
+  // update this session runs; empty on the APK-embedded bundle.
+  const otaLabel = runningOtaLabel();
   const buildNo =
     Constants.expoConfig?.android?.versionCode ?? Constants.expoConfig?.ios?.buildNumber ?? null;
   const teams = useAuthStore((s) => s.teams);
@@ -148,7 +152,7 @@ export function TeamDrawer({ open, onClose }: Props) {
           {appVersion ? (
             <View style={[styles.footer, { borderTopColor: theme.border }]}>
               <Text variant="caption" tone="faint">
-                {`v${appVersion}${buildNo ? ` (${buildNo})` : ''} · 热更新✓`}
+                {`v${appVersion}${buildNo ? ` (${buildNo})` : ''}${otaLabel ? ` · ${otaLabel}` : ''}`}
               </Text>
             </View>
           ) : null}
