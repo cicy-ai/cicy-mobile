@@ -44,7 +44,17 @@ export default function Chat() {
   useEffect(() => {
     dismissBootSplash();
   }, []);
-  const { agentId: rawAgentId } = useLocalSearchParams<{ agentId: string }>();
+  const {
+    agentId: rawAgentId,
+    title: seedTitle,
+    agentType: seedType,
+    machineLabel: seedMachine,
+  } = useLocalSearchParams<{
+    agentId: string;
+    title?: string;
+    agentType?: string;
+    machineLabel?: string;
+  }>();
   const agentId = String(rawAgentId);
   const { serverUrl, token } = useAuthStore();
   // Inside the Telegram Mini App we drop our own header and reuse Telegram's
@@ -148,7 +158,14 @@ export default function Chat() {
     status?: string;
     machineLabel?: string;
     useCustomGateway: boolean | null;
-  }>({ useCustomGateway: null });
+  }>({
+    // Seeded from the list row's route params — header title and the terminal
+    // button paint on first frame instead of waiting for /api/panes.
+    title: seedTitle ? String(seedTitle) : undefined,
+    agentType: seedType ? String(seedType) : undefined,
+    machineLabel: seedMachine ? String(seedMachine) : undefined,
+    useCustomGateway: null,
+  });
 
   useEffect(() => {
     let alive = true;
@@ -164,13 +181,14 @@ export default function Chat() {
           (a: any) => (a.name || a.pane_id?.split(':')[0]) === agentId,
         );
         const useCustomGateway = pane?.use_custom_gateway === true;
-        setAgentMeta({
-          title: agent?.title || pane?.title,
-          agentType: pane?.agent_type || agent?.agent_type,
-          status: agent?.status,
-          machineLabel: (pane as any)?.machine_label,
+        // Merge over the seed — a fetch miss must not wipe what the list knew.
+        setAgentMeta((m) => ({
+          title: agent?.title || pane?.title || m.title,
+          agentType: pane?.agent_type || agent?.agent_type || m.agentType,
+          status: agent?.status ?? m.status,
+          machineLabel: (pane as any)?.machine_label ?? m.machineLabel,
           useCustomGateway,
-        });
+        }));
       } catch {
         if (alive) setAgentMeta((m) => ({ ...m, useCustomGateway: null }));
       }

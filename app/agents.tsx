@@ -441,7 +441,20 @@ function AgentRow({ agent, metrics, gateway }: { agent: Agent; metrics?: AgentLi
 
   return (
     <PressableScale
-      onPress={() => router.push({ pathname: '/chat/[agentId]', params: { agentId: String(routeId) } })}
+      // Hand the row's metadata to the detail screen so the header/terminal
+      // button render instantly — the list already knows type + title, no
+      // reason to make the chat screen re-await /api/panes for first paint.
+      onPress={() =>
+        router.push({
+          pathname: '/chat/[agentId]',
+          params: {
+            agentId: String(routeId),
+            title: agent.title || '',
+            agentType: agent.agent_type || '',
+            machineLabel: (agent as any).machine_label || '',
+          },
+        })
+      }
       // In a scrolling list, a touch-down fires onPressIn → the card scales down,
       // then the scroll gesture cancels it → it springs back = a "弹一下" pop while
       // dragging. Delaying press-in lets a scroll (finger moves immediately) abort
