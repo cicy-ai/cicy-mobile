@@ -82,7 +82,9 @@
     "genFailed": "生成失败,请重试(如是余额问题请前往充值)",
     "modelSaveFailed": "切换模型失败:{{error}}",
     "modelPickerTitle": "选择模型 · CiCy Cloud",
-    "modelDefault": "平台默认({{model}})"
+    "modelDefault": "平台默认({{model}})",
+    "tapToPlay": "点击播放",
+    "tapToOpen": "点击打开"
   },
   "voice": {
     "holdToTalk": "按住说话",

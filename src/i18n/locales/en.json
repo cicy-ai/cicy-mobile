@@ -82,7 +82,9 @@
     "genFailed": "Generation failed — try again (top up if your balance is empty).",
     "modelSaveFailed": "Couldn't switch model: {{error}}",
     "modelPickerTitle": "Choose model · CiCy Cloud",
-    "modelDefault": "Platform default ({{model}})"
+    "modelDefault": "Platform default ({{model}})",
+    "tapToPlay": "Tap to play",
+    "tapToOpen": "Tap to open"
   },
   "voice": {
     "holdToTalk": "Hold to talk",

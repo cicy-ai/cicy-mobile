@@ -7,7 +7,7 @@ export type PendingAttachment = {
   uri: string;
   name: string;
   mime: string;
-  kind: 'image' | 'file';
+  kind: 'image' | 'video' | 'file';
   size?: number;
 };
 
@@ -78,7 +78,7 @@ export async function captureMedia(): Promise<PendingAttachment[]> {
       uri: a.uri,
       name: a.fileName || guessName(a.uri, isVideo ? 'video.mp4' : 'photo.jpg'),
       mime: a.mimeType || (isVideo ? 'video/mp4' : 'image/jpeg'),
-      kind: (isVideo ? 'file' : 'image') as 'image' | 'file',
+      kind: (isVideo ? 'video' : 'image') as 'image' | 'video' | 'file',
       size: a.fileSize,
     };
   });

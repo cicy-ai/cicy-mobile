@@ -1,14 +1,24 @@
 import { useAuthStore } from '@/src/store/auth';
 
-export type UploadResult = { path: string; size: number; mtime?: number };
+export type UploadResult = {
+  /** Servable path on the team server, e.g. "/assets/files/2026/07/05/ab__pic.jpg". */
+  url: string;
+  /** Absolute file:// ref on the server host — for agents that read files. */
+  fileRef: string;
+  name: string;
+  isImage: boolean;
+  contentType: string;
+  size: number;
+};
 
-// Upload a local file (image / document) into the *agent's own workspace* via
-// /api/fs/upload, so the CLI agent — which runs in that workspace — can read it
-// back by the returned (workspace-relative) path. We drop everything under a
-// `.uploads/` folder to keep the agent's tree tidy.
+// Upload a local file (image / video / document) to the team server's shared
+// asset store via POST /assets/files?pane=<agent> — the SAME endpoint the
+// cicy-code / cicy-cloud web chat uses. Returns a servable URL (/assets/files/…)
+// that renders on both (public on self-hosted; Bearer-guarded on cloud, which
+// <Image>/fetch satisfy with a header) plus the absolute file_ref agents read.
 //
-// Mirrors src/api/stt.ts: RN's FormData accepts {uri, name, type}; we must NOT
-// set Content-Type ourselves (RN sets the multipart boundary).
+// RN's FormData accepts {uri, name, type}; we must NOT set Content-Type ourselves
+// (RN sets the multipart boundary).
 export async function uploadAttachment(
   agentId: string,
   fileUri: string,
@@ -19,17 +29,10 @@ export async function uploadAttachment(
   if (!serverUrl || !token) throw new Error('not authenticated');
 
   const safeName = sanitizeName(name);
-  // Per-upload unique path so two files with the same name don't collide and we
-  // never need ?overwrite=1.
-  const target = `.uploads/${Date.now()}-${safeName}`;
-
   const form = new FormData();
   form.append('file', { uri: fileUri, name: safeName, type: mime } as any);
 
-  const url =
-    `${serverUrl}/api/fs/upload` +
-    `?agent_id=${encodeURIComponent(agentId)}` +
-    `&path=${encodeURIComponent(target)}`;
+  const url = `${serverUrl}/assets/files?pane=${encodeURIComponent(agentId)}`;
 
   let res: Response;
   try {
@@ -46,13 +49,33 @@ export async function uploadAttachment(
     const detail = await res.text().catch(() => '');
     throw new Error(`upload ${res.status}: ${detail.slice(0, 200)}`);
   }
-  const json = (await res.json()) as { path?: string; size?: number; mtime?: number };
-  if (!json?.path) throw new Error('upload returned no path');
-  return { path: json.path, size: json.size ?? 0, mtime: json.mtime };
+  const json = (await res.json()) as { file?: any };
+  const f = json?.file;
+  if (!f?.url) throw new Error('upload returned no url');
+  return {
+    url: String(f.url),
+    fileRef: String(f.file_ref || f.fileRef || ''),
+    name: String(f.name || safeName),
+    isImage: !!f.is_image || String(f.content_type || '').startsWith('image/'),
+    contentType: String(f.content_type || mime),
+    size: Number(f.size || 0),
+  };
 }
 
-// Keep filenames shell/path safe; the server also sanitizes, but we want the
-// path we echo to the agent to match what actually landed on disk.
+// Absolute servable URL for an asset ref returned by uploadAttachment. The
+// Bearer header is attached ONLY when the URL points at the team server itself
+// (cloud's /assets/files/ is session-guarded) — never leaked to an external
+// host like the OSS bucket the cloud default team may return a public URL for.
+export function assetUri(pathOrUrl: string): { uri: string; headers?: Record<string, string> } {
+  const { serverUrl, token } = useAuthStore.getState();
+  const p = String(pathOrUrl || '');
+  const isAbsolute = /^https?:\/\//i.test(p);
+  const uri = isAbsolute ? p : `${serverUrl ?? ''}${p.startsWith('/') ? '' : '/'}${p}`;
+  const sameOrigin = !isAbsolute || (!!serverUrl && uri.startsWith(serverUrl));
+  return token && sameOrigin ? { uri, headers: { Authorization: `Bearer ${token}` } } : { uri };
+}
+
+// Keep filenames shell/path safe; the server also sanitizes.
 function sanitizeName(name: string): string {
   const base = (name || 'file').split(/[\\/]/).pop() || 'file';
   return base.replace(/[^\w.\-]+/g, '_').slice(0, 80) || 'file';

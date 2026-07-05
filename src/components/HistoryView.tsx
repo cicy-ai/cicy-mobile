@@ -1,8 +1,10 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, type AppStateStatus, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, type AppStateStatus, Image, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
 
 import { api } from '@/src/api/http';
+import { assetUri } from '@/src/api/upload';
 import i18n from '@/src/i18n';
 import type { HistoryStep, HistoryTurn } from '@/src/api/types';
 import { buildTurnsFromRawItems, normalizeHistoryTurns, replyItemsToSteps, splitLeadingHarnessBlocks, stripHarnessNoise } from '@/src/lib/historyParse';
@@ -1290,6 +1292,26 @@ function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeo
     para = [];
   };
   for (const line of text.split('\n')) {
+    // Standalone media reference on its own line:
+    //   ![name](url)      → inline image thumbnail (tap → full)
+    //   [🎬 name](url)     → video card (tap → system player)
+    //   [name](/assets/…)  → file card (tap → open)
+    const media = /^\s*(!?)\[([^\]]*)\]\(([^)]+)\)\s*$/.exec(line);
+    if (media) {
+      const isImage = media[1] === '!';
+      const label = media[2].replace(/^🎬\s*/, '');
+      const url = media[3];
+      const looksAsset = /\/assets\/files\//.test(url) || /^https?:/.test(url) || url.startsWith('/');
+      const isVideo = /\.(mp4|mov|m4v|webm|3gp|mkv)(\?|$)/i.test(url) || media[2].startsWith('🎬');
+      if (looksAsset && (isImage || isVideo || /\/assets\/files\//.test(url))) {
+        flushPara();
+        const k2 = blocks.length + 1;
+        blocks.push(
+          <MediaBlock key={`m${k2}`} url={url} name={label} isImage={isImage && !isVideo} isVideo={isVideo} theme={theme} />,
+        );
+        continue;
+      }
+    }
     const h = /^(#{1,3})\s+(.*)$/.exec(line);
     const hr = /^\s*([-*_])\1{2,}\s*$/.exec(line);
     const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
@@ -1349,6 +1371,41 @@ function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeo
   }
   flushPara();
   return <View style={{ gap: 4 }}>{blocks}</View>;
+}
+
+// Rendered attachment: image → inline thumbnail (tap opens full in browser),
+// video/file → a card that opens in the system player / viewer. assetUri()
+// resolves the /assets/files path to an absolute URL + the Bearer header cloud
+// needs to serve it. Inline video PLAYBACK needs expo-video (native) — until
+// that ships, tapping the card opens the URL.
+function MediaBlock({
+  url, name, isImage, isVideo, theme,
+}: { url: string; name: string; isImage: boolean; isVideo: boolean; theme: ReturnType<typeof useTheme> }) {
+  const src = useMemo(() => assetUri(url), [url]);
+  const open = () => Linking.openURL(src.uri).catch(() => {});
+
+  if (isImage) {
+    return (
+      <PressableScale onPress={open} scaleTo={0.98} style={styles.mediaImageWrap}>
+        <Image source={src as any} style={styles.mediaImage} resizeMode="cover" />
+      </PressableScale>
+    );
+  }
+  return (
+    <PressableScale
+      onPress={open}
+      scaleTo={0.98}
+      style={[styles.mediaCard, { backgroundColor: theme.surface, borderColor: theme.border }]}
+    >
+      <View style={[styles.mediaIcon, { backgroundColor: theme.surfaceMuted }]}>
+        <Ionicons name={isVideo ? 'play' : 'document-outline'} size={18} color={theme.text} />
+      </View>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text variant="callout" numberOfLines={1}>{name || (isVideo ? 'video' : 'file')}</Text>
+        <Text variant="caption" tone="faint">{isVideo ? i18n.t('chat.tapToPlay') : i18n.t('chat.tapToOpen')}</Text>
+      </View>
+    </PressableScale>
+  );
 }
 
 type Segment = { kind: 'text' | 'code'; text: string; lang?: string };
@@ -1421,6 +1478,35 @@ const styles = StyleSheet.create({
   toolBody: { paddingHorizontal: spacing.sm, paddingBottom: spacing.sm, gap: spacing.sm },
   mdListRow: { flexDirection: 'row', gap: 6, alignItems: 'flex-start' },
   mdQuote: { borderLeftWidth: 2, paddingLeft: spacing.sm, opacity: 0.9 },
+  mediaImageWrap: {
+    borderRadius: radius.md,
+    overflow: 'hidden',
+    alignSelf: 'flex-start',
+    marginVertical: 2,
+  },
+  mediaImage: {
+    width: 200,
+    height: 200,
+    maxWidth: '100%',
+    backgroundColor: '#000',
+  },
+  mediaCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: spacing.sm,
+    maxWidth: 260,
+    marginVertical: 2,
+  },
+  mediaIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   toolCode: {
     borderRadius: radius.sm,
     borderWidth: StyleSheet.hairlineWidth,

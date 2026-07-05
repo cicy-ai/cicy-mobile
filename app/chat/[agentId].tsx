@@ -293,14 +293,17 @@ export default function Chat() {
     try {
       let body = text;
       if (atts.length) {
-        // Upload each attachment into the agent's workspace, then reference the
-        // returned (cwd-relative) paths so the CLI agent can read them.
-        const uploaded: string[] = [];
+        // Upload each attachment to the shared asset store, then reference it in
+        // the message as markdown — images inline (![](url)), video/files as a
+        // link ([name](url)). Same convention as cicy-code; HistoryView renders
+        // images as thumbnails and video/files as tappable cards.
+        const refs: string[] = [];
         const failed: PendingAttachment[] = [];
         for (const a of atts) {
           try {
             const r = await uploadAttachment(agentId, a.uri, a.name, a.mime);
-            uploaded.push(r.path);
+            const isVid = a.kind === 'video' || r.contentType.startsWith('video/');
+            refs.push(r.isImage ? `![${r.name}](${r.url})` : `[${isVid ? '🎬 ' : ''}${r.name}](${r.url})`);
           } catch {
             failed.push(a);
           }
@@ -309,9 +312,8 @@ export default function Chat() {
           setAttachments((cur) => [...failed, ...cur]); // keep for retry
           setVoiceError(t('attach.uploadFailed', { count: failed.length }));
         }
-        if (uploaded.length) {
-          const list = uploaded.map((p) => `- ${p}`).join('\n');
-          body = `${text ? `${text}\n\n` : ''}${t('attach.agentNote')}\n${list}`;
+        if (refs.length) {
+          body = `${text ? `${text}\n\n` : ''}${refs.join('\n\n')}`;
         } else if (!text) {
           setSending(false);
           return; // nothing uploaded and no text — abort
@@ -581,6 +583,13 @@ export default function Chat() {
                 <View key={a.key} style={[styles.chip, { backgroundColor: theme.surface, borderColor: theme.border }]}>
                   {a.kind === 'image' ? (
                     <Image source={{ uri: a.uri }} style={styles.chipThumb} />
+                  ) : a.kind === 'video' ? (
+                    <View style={styles.chipThumb}>
+                      <Image source={{ uri: a.uri }} style={StyleSheet.absoluteFill as any} />
+                      <View style={styles.videoBadge}>
+                        <Ionicons name="play" size={12} color="#fff" />
+                      </View>
+                    </View>
                   ) : (
                     <Ionicons name="document-outline" size={18} color={theme.textMuted} />
                   )}
@@ -744,6 +753,18 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 6,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  videoBadge: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   chipName: {
     flexShrink: 1,
