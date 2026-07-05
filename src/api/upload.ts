@@ -68,11 +68,18 @@ export async function uploadAttachment(
 // host like the OSS bucket the cloud default team may return a public URL for.
 export function assetUri(pathOrUrl: string): { uri: string; headers?: Record<string, string> } {
   const { serverUrl, token } = useAuthStore.getState();
-  const p = String(pathOrUrl || '');
+  let p = String(pathOrUrl || '');
   const isAbsolute = /^https?:\/\//i.test(p);
-  const uri = isAbsolute ? p : `${serverUrl ?? ''}${p.startsWith('/') ? '' : '/'}${p}`;
-  const sameOrigin = !isAbsolute || (!!serverUrl && uri.startsWith(serverUrl));
-  return token && sameOrigin ? { uri, headers: { Authorization: `Bearer ${token}` } } : { uri };
+  let full = isAbsolute ? p : `${serverUrl ?? ''}${p.startsWith('/') ? '' : '/'}${p}`;
+  const sameOrigin = !isAbsolute || (!!serverUrl && full.startsWith(serverUrl));
+  // The server auto-appends ?token=<session> to the asset URL — a plaintext
+  // session leak into image URLs (logs/caches). Strip it and read via the
+  // Authorization header instead (same-origin only; never to an OSS host).
+  if (token && sameOrigin) {
+    full = full.replace(/([?&])token=[^&]*(&|$)/, (_, pre, post) => (pre === '?' && post === '' ? '' : pre)).replace(/[?&]$/, '');
+    return { uri: full, headers: { Authorization: `Bearer ${token}` } };
+  }
+  return { uri: full };
 }
 
 // Keep filenames shell/path safe; the server also sanitizes.
