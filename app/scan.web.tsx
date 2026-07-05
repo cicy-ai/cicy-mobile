@@ -136,6 +136,15 @@ export default function ScanWeb() {
           onPress={() => join(value)}
           disabled={busy || !value.trim()}
         />
+
+        {/* cicy-cloud login — the zero-QR path to the built-in default team. */}
+        <View style={{ height: spacing.md }} />
+        <Button
+          title={t('login.entry')}
+          variant="secondary"
+          onPress={() => router.push('/login')}
+          disabled={busy}
+        />
       </View>
     </Screen>
   );

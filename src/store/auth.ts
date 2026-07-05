@@ -1,10 +1,14 @@
 import { create } from 'zustand';
 
 import i18n from '@/src/i18n';
+import { CLOUD_BASE, fetchCloudTeams, type CloudSession } from '@/src/api/cloudAuth';
 import { storage } from './storage';
 
 const TEAMS_KEY = 'cicy_teams_v1';
 const CLIENT_ID_KEY = 'cicy_client_id';
+const SESSION_KEY = 'cicy_session';
+const USER_EMAIL_KEY = 'cicy_user_email';
+const USER_ID_KEY = 'cicy_user_id';
 // Legacy keys — migrated to a single team on first launch, then never read.
 const LEGACY_TOKEN_KEY = 'cicy_token';
 const LEGACY_SERVER_KEY = 'cicy_server_url';
@@ -16,6 +20,10 @@ export type Team = {
   token: string;
   /** epoch ms — used to seed default order in the drawer. */
   addedAt: number;
+  /** cloud = came from cicy-cloud (token is the session); custom = QR-scanned. */
+  kind?: 'cloud' | 'custom';
+  /** The built-in default team — pinned on top, not removable. */
+  builtin?: boolean;
 };
 
 type Persisted = {
@@ -28,7 +36,14 @@ type AuthState = {
   currentTeamId: string | null;
   clientId: string;
   hydrated: boolean;
+  /** cicy-cloud session (sk-sess-…); null = not signed in to the cloud. */
+  session: string | null;
+  userEmail: string | null;
   hydrate: () => Promise<void>;
+  /** Persist a fresh cloud login: session + built-in default team + cloud team list. */
+  loginCloud: (s: CloudSession) => Promise<void>;
+  /** Drop the cloud session and every cloud-sourced team; QR-scanned customs stay. */
+  logoutCloud: () => Promise<void>;
   // Convenience derivations exposed for the API layer that still reads
   // `serverUrl` / `token` directly from the store. These shadow Team fields
   // for the *currently selected* team. When no team is selected they're null,
@@ -80,19 +95,29 @@ function selectCurrent(teams: Team[], currentTeamId: string | null) {
   };
 }
 
+// The default-team title is localized; cloud teams keep their cloud titles.
+function defaultCloudTeamTitle(): string {
+  return i18n.t('teams.cloudDefaultTitle', { defaultValue: '默认团队' });
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   teams: [],
   currentTeamId: null,
   clientId: '',
   hydrated: false,
+  session: null,
+  userEmail: null,
   serverUrl: null,
   token: null,
 
   hydrate: async () => {
-    const [teamsRaw, clientId] = await Promise.all([
+    const [teamsRaw, clientId, session, userEmail] = await Promise.all([
       storage.getItem(TEAMS_KEY),
       storage.getItem(CLIENT_ID_KEY),
+      storage.getItem(SESSION_KEY),
+      storage.getItem(USER_EMAIL_KEY),
     ]);
+    set({ session: session || null, userEmail: userEmail || null });
     let cid = clientId;
     if (!cid) {
       cid = makeClientId();
@@ -189,8 +214,79 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ teams });
   },
 
+  loginCloud: async (s) => {
+    await Promise.all([
+      storage.setItem(SESSION_KEY, s.token),
+      storage.setItem(USER_EMAIL_KEY, s.email),
+      storage.setItem(USER_ID_KEY, s.userId),
+    ]);
+
+    // A) Synthesize the built-in default team and select it. The cloud lazily
+    //    seeds its cicy roles on the first /api/panes hit — nothing else needed.
+    const now = Date.now();
+    let teams = get().teams.filter((tm) => !(tm.kind === 'cloud')); // re-login replaces cloud rows
+    const builtin: Team = {
+      id: 'cloud-default',
+      title: defaultCloudTeamTitle(),
+      serverUrl: CLOUD_BASE,
+      token: s.token,
+      addedAt: now,
+      kind: 'cloud',
+      builtin: true,
+    };
+    teams = [builtin, ...teams];
+
+    // B) Merge the user's cloud teams (kind=cloud/private → session auth).
+    //    Tokenless customs from the cloud are skipped — they need a QR scan
+    //    for their own token anyway; never clobber locally scanned rows.
+    try {
+      const cloudTeams = await fetchCloudTeams(s.token);
+      const seen = new Set(teams.map((tm) => tm.serverUrl.replace(/\/+$/, '')));
+      for (const ct of cloudTeams) {
+        const kind = String(ct.kind || 'cloud');
+        if (kind === 'custom') continue;
+        const url = String(ct.workspace_url || ct.host_url || CLOUD_BASE).replace(/\/+$/, '');
+        if (seen.has(url)) continue;
+        seen.add(url);
+        teams.push({
+          id: `cloud-${ct.id ?? url}`,
+          title: String(ct.title || url.replace(/^https?:\/\//, '')),
+          serverUrl: url,
+          token: s.token,
+          addedAt: now,
+          kind: 'cloud',
+        });
+      }
+    } catch {
+      // team list is a nice-to-have — the default team alone is a full login
+    }
+
+    await persist(teams, builtin.id);
+    const sel = selectCurrent(teams, builtin.id);
+    set({ teams, currentTeamId: builtin.id, session: s.token, userEmail: s.email, ...sel });
+  },
+
+  logoutCloud: async () => {
+    await Promise.all([
+      storage.removeItem(SESSION_KEY).catch(() => {}),
+      storage.removeItem(USER_EMAIL_KEY).catch(() => {}),
+      storage.removeItem(USER_ID_KEY).catch(() => {}),
+    ]);
+    const remaining = get().teams.filter((tm) => tm.kind !== 'cloud');
+    let next = get().currentTeamId;
+    if (!remaining.some((tm) => tm.id === next)) next = remaining[0]?.id ?? null;
+    await persist(remaining, next);
+    const sel = selectCurrent(remaining, next);
+    set({ teams: remaining, currentTeamId: next, session: null, userEmail: null, ...sel });
+  },
+
   clear: async () => {
+    await Promise.all([
+      storage.removeItem(SESSION_KEY).catch(() => {}),
+      storage.removeItem(USER_EMAIL_KEY).catch(() => {}),
+      storage.removeItem(USER_ID_KEY).catch(() => {}),
+    ]);
     await persist([], null);
-    set({ teams: [], currentTeamId: null, serverUrl: null, token: null });
+    set({ teams: [], currentTeamId: null, session: null, userEmail: null, serverUrl: null, token: null });
   },
 }));

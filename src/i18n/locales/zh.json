@@ -17,7 +17,24 @@
     "emptyTeamHint": "扫描 cicy-code 网页二维码即可加入。",
     "scanToAdd": "扫码添加团队"
   },
+  "login": {
+    "entry": "登录 cicy-cloud",
+    "title": "登录 cicy-cloud",
+    "subtitle": "输入邮箱,我们发送一封登录邮件。在任意设备点开链接即可完成登录。",
+    "emailPlaceholder": "you@example.com",
+    "send": "发送登录邮件",
+    "sentHint": "登录邮件已发送到 {{email}}。\n在任意设备点开邮件里的链接,这里会自动完成登录。",
+    "joining": "登录成功,正在进入默认团队…",
+    "invalidEmail": "邮箱格式不对",
+    "requestFailed": "发送登录邮件失败:{{error}}",
+    "expired": "登录链接已过期,请重新发送",
+    "timeout": "等待超时,请重新发送",
+    "signOut": "退出登录",
+    "signOutConfirmTitle": "退出 cicy-cloud?",
+    "signOutConfirmBody": "云端团队将从此设备移除;扫码添加的团队保留。"
+  },
   "teams": {
+    "cloudDefaultTitle": "默认团队",
     "drawerTitle": "团队",
     "drawerSubtitle": "{{count}} 个工作区",
     "addTeam": "扫码添加团队",

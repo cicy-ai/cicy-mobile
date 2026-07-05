@@ -180,12 +180,33 @@ export default function Scan() {
           </Text>
         </View>
       </View>
+
+      {/* cicy-cloud login — the zero-QR path to the built-in default team. */}
+      <PressableScale
+        onPress={() => router.push('/login')}
+        haptic
+        scaleTo={0.97}
+        style={styles.loginEntry}
+      >
+        <Ionicons name="cloud-outline" size={16} color={theme.accent} />
+        <Text variant="callout" style={{ color: theme.accent }}>
+          {t('login.entry')}
+        </Text>
+      </PressableScale>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
+  loginEntry: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: spacing.md,
+    marginBottom: spacing.md,
+  },
   navRow: {
     flexDirection: 'row',
     alignItems: 'center',

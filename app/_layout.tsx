@@ -137,6 +137,7 @@ export default function RootLayout() {
           <Stack.Screen name="terminal/[agentId]" options={{ headerShown: false }} />
           {/* Scan draws its own nav row — same reason as chat. */}
           <Stack.Screen name="scan" options={{ headerShown: false }} />
+          <Stack.Screen name="login" options={{ headerShown: false }} />
         </Stack>
         {/* Translucent — SystemUI paints theme.bg behind. Icon color tracks
             the active theme so it stays readable against that bg. */}

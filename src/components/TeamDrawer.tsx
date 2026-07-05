@@ -16,6 +16,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Ionicons } from '@expo/vector-icons';
+
 import { ConfirmModal } from './ConfirmModal';
 import { PressableScale } from './PressableScale';
 import { TeamAvatar } from './TeamAvatar';
@@ -54,6 +56,15 @@ export function TeamDrawer({ open, onClose }: Props) {
   const removeTeam = useAuthStore((s) => s.removeTeam);
   const liveRecord = useSettingsStore((s) => s.liveRecord);
   const setLiveRecord = useSettingsStore((s) => s.setLiveRecord);
+  const session = useAuthStore((s) => s.session);
+  const userEmail = useAuthStore((s) => s.userEmail);
+  const logoutCloud = useAuthStore((s) => s.logoutCloud);
+  const [confirmLogout, setConfirmLogout] = useState(false);
+
+  // Built-in default team pinned first, then cloud teams, then scanned customs
+  // (each group keeps its addedAt order).
+  const groupRank = (tm: Team) => (tm.builtin ? 0 : tm.kind === 'cloud' ? 1 : 2);
+  const ordered = [...teams].sort((a, b) => groupRank(a) - groupRank(b) || a.addedAt - b.addedAt);
 
   const tx = useRef(new Animated.Value(-DRAWER_W)).current;
   const scrimOpacity = useRef(new Animated.Value(0)).current;
@@ -129,12 +140,14 @@ export function TeamDrawer({ open, onClose }: Props) {
           </View>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list}>
-            {teams.map((team) => {
+            {ordered.map((team) => {
               return (
                 <PressableScale
                   key={team.id}
                   onPress={() => onPickTeam(team)}
-                  onLongPress={() => setConfirmTeam(team)}
+                  // The built-in default team can't be removed — sign out of
+                  // the cloud account below instead.
+                  onLongPress={team.builtin ? undefined : () => setConfirmTeam(team)}
                   haptic
                   scaleTo={0.97}
                   style={styles.teamRow}
@@ -148,10 +161,45 @@ export function TeamDrawer({ open, onClose }: Props) {
                       {team.serverUrl.replace(/^https?:\/\//, '')}
                     </Text>
                   </View>
+                  {team.kind === 'cloud' ? (
+                    <Ionicons name="cloud-outline" size={14} color={theme.textFaint} />
+                  ) : null}
                 </PressableScale>
               );
             })}
           </ScrollView>
+
+          {/* cicy-cloud account — login entry, or the signed-in email + sign-out. */}
+          <View style={[styles.settings, { borderTopColor: theme.border }]}>
+            {session ? (
+              <>
+                <Ionicons name="cloud-done-outline" size={18} color={theme.accent} />
+                <Text variant="caption" tone="muted" numberOfLines={1} style={{ flex: 1 }}>
+                  {userEmail || 'cicy-cloud'}
+                </Text>
+                <PressableScale onPress={() => setConfirmLogout(true)} hitSlop={8}>
+                  <Text variant="caption" style={{ color: theme.danger }}>
+                    {t('login.signOut')}
+                  </Text>
+                </PressableScale>
+              </>
+            ) : (
+              <PressableScale
+                onPress={() => {
+                  onClose();
+                  setTimeout(() => router.push('/login'), 80);
+                }}
+                haptic
+                scaleTo={0.97}
+                style={styles.loginRow}
+              >
+                <Ionicons name="cloud-outline" size={18} color={theme.accent} />
+                <Text variant="callout" style={{ color: theme.accent }}>
+                  {t('login.entry')}
+                </Text>
+              </PressableScale>
+            )}
+          </View>
 
           {/* App settings — feature switches live here (the drawer is the only
               global surface the app has). Live record is opt-in, off by default. */}
@@ -188,6 +236,27 @@ export function TeamDrawer({ open, onClose }: Props) {
           onConfirm={() => void onConfirmRemove()}
           onCancel={() => setConfirmTeam(null)}
         />
+
+        <ConfirmModal
+          open={confirmLogout}
+          title={t('login.signOutConfirmTitle')}
+          body={t('login.signOutConfirmBody')}
+          confirmText={t('login.signOut')}
+          cancelText={t('common.cancel')}
+          destructive
+          onConfirm={() => {
+            setConfirmLogout(false);
+            void (async () => {
+              await logoutCloud();
+              const remaining = useAuthStore.getState().teams;
+              if (remaining.length === 0) {
+                onClose();
+                setTimeout(() => router.replace('/scan'), 50);
+              }
+            })();
+          }}
+          onCancel={() => setConfirmLogout(false)}
+        />
       </View>
     </Modal>
   );
@@ -216,6 +285,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  loginRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: 2,
   },
   footer: {
     paddingHorizontal: spacing.sm,

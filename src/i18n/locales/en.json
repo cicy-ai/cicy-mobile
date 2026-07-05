@@ -17,7 +17,24 @@
     "emptyTeamHint": "Scan the QR code in the cicy-code web app to join.",
     "scanToAdd": "Scan to add team"
   },
+  "login": {
+    "entry": "Sign in to cicy-cloud",
+    "title": "Sign in to cicy-cloud",
+    "subtitle": "Enter your email and we'll send a sign-in link. Open it on any device to finish.",
+    "emailPlaceholder": "you@example.com",
+    "send": "Send sign-in email",
+    "sentHint": "Sign-in email sent to {{email}}.\nOpen the link on any device — this screen finishes automatically.",
+    "joining": "Signed in — entering your default team…",
+    "invalidEmail": "That doesn't look like an email address",
+    "requestFailed": "Couldn't send the sign-in email: {{error}}",
+    "expired": "The sign-in link expired — send a new one",
+    "timeout": "Timed out waiting — send a new one",
+    "signOut": "Sign out",
+    "signOutConfirmTitle": "Sign out of cicy-cloud?",
+    "signOutConfirmBody": "Cloud teams will be removed from this device; QR-scanned teams stay."
+  },
   "teams": {
+    "cloudDefaultTitle": "Default Team",
     "drawerTitle": "Teams",
     "drawerSubtitle": "{{count}} workspaces",
     "addTeam": "Scan to add team",
