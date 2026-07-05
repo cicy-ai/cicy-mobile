@@ -161,6 +161,14 @@ export default function Agents() {
     }
   }, [currentTeam]);
 
+  // Team switched → wipe the previous team's list immediately. Without this
+  // the old agents (and any stale error) linger until the new fetch lands —
+  // or forever, if the new team's server errors out.
+  useEffect(() => {
+    setAgents([]);
+    setError(null);
+  }, [currentTeamId]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {

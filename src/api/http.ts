@@ -34,7 +34,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
+    let text = await res.text().catch(() => '');
+    // Gateway error pages (Cloudflare 5xx etc.) are full HTML documents —
+    // never surface raw markup in the UI. Keep short plain-text bodies only.
+    if (/<!doctype|<html|<head|<body/i.test(text)) text = '';
+    else text = text.trim().slice(0, 200);
     throw new Error(`${res.status} ${res.statusText}${text ? `: ${text}` : ''}`);
   }
   if (res.status === 204) return undefined as T;
