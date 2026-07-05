@@ -118,7 +118,7 @@ jobs:
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: |
           VER="${GITHUB_REF_NAME#v}"
-          curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.19/ossutil64 -o ossutil
+          curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64 -o ossutil
           chmod +x ossutil
           EP=oss-cn-shanghai.aliyuncs.com
           B=oss://cicy-1372193042-cn/cicy-mobile

@@ -6,7 +6,9 @@ import {
   Image,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   View,
@@ -138,7 +140,16 @@ export default function Chat() {
         }
         const isNewTurn = cid !== baseline.cid || answerId > baseline.answerId;
         if (answerId > 0 && isNewTurn && !terminal) sawNewInFlight = true;
-        if (answerId > 0 && isNewTurn && terminal && Date.now() - since > 800) { setBusy(false); return; }
+        if (answerId > 0 && isNewTurn && terminal && Date.now() - since > 800) {
+          // Cloud turns that died in generation carry cicy_outcome:'error'
+          // (per w-10122 the real cause never enters the conversation — often
+          // a zero balance). Surface it instead of a silent dead bubble.
+          if (String((r as any)?.cicy_outcome || '') === 'error' || failed) {
+            setVoiceError(t('chat.genFailed'));
+          }
+          setBusy(false);
+          return;
+        }
         if (!sawNewInFlight && Date.now() - since > 15000) { setBusy(false); return; }
       } catch {}
       timer = setTimeout(tick, 1000);
@@ -162,6 +173,45 @@ export default function Chat() {
     machineLabel: seedMachine ? String(seedMachine) : undefined,
     useCustomGateway: null,
   });
+
+  // Model picker (cloud tenants): catalog + current choice from the pane
+  // detail. models empty → no picker (self-hosted agents without the field).
+  const [modelInfo, setModelInfo] = useState<{
+    models: string[];
+    current: string; // '' = platform default
+    effective: string; // what '' resolves to
+  } | null>(null);
+  const [modelSheetOpen, setModelSheetOpen] = useState(false);
+  const [modelSaving, setModelSaving] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.getPane(agentId).then((p: any) => {
+      if (!alive || !p) return;
+      const opts = Array.isArray(p.runtime_ai_provider_options) ? p.runtime_ai_provider_options : [];
+      const models: string[] = opts.flatMap((o: any) => (Array.isArray(o?.models) ? o.models : []));
+      if (!models.length) return;
+      setModelInfo({
+        models,
+        current: String(p.default_model || ''),
+        effective: String(p.runtime_ai_default?.model || ''),
+      });
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [agentId]);
+
+  const pickModel = async (model: string) => {
+    if (modelSaving) return;
+    setModelSaving(true);
+    try {
+      await api.updatePane(agentId, { default_model: model });
+      setModelInfo((m) => (m ? { ...m, current: model } : m));
+      setModelSheetOpen(false);
+    } catch (e: any) {
+      setVoiceError(t('chat.modelSaveFailed', { error: String(e?.message ?? e) }));
+    } finally {
+      setModelSaving(false);
+    }
+  };
 
   useEffect(() => {
     let alive = true;

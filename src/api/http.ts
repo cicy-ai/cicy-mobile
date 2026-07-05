@@ -72,6 +72,20 @@ export const api = {
       body: JSON.stringify({ pane_id: paneId }),
     }),
 
+  // Single pane detail — carries the model-picker fields for cloud tenants:
+  // runtime_ai_provider_options (single CiCy Cloud provider + model catalog),
+  // default_model ('' = platform default), runtime_ai_default (effective).
+  getPane: (id: string) =>
+    request<Record<string, any>>(`/api/tmux/panes/${encodeURIComponent(id)}`),
+  // Model choice: PATCH {default_model} — must be in the catalog ('' resets
+  // to platform default). Provider switching is intentionally NOT exposed
+  // (tenants see only CiCy Cloud; the server strips/rejects provider writes).
+  updatePane: (id: string, data: Record<string, unknown>) =>
+    request<unknown>(`/api/tmux/panes/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
   // ── Team-member management (same endpoints as cicy-code web) ──
   restartPane: (id: string) =>
     request<unknown>(`/api/tmux/panes/${encodeURIComponent(id)}/restart`, { method: 'POST' }),
