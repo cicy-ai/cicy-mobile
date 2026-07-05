@@ -141,3 +141,69 @@ description / screenshot 里 **不要**出现：
 - [App Store Review Guidelines](https://developer.apple.com/app-store/review/guidelines/)
 - [App Privacy Details](https://developer.apple.com/app-store/app-privacy-details/)
 - [Generative AI Guidelines (4.1)](https://developer.apple.com/app-store/review/guidelines/#design)
+
+---
+
+# 2026-07 增补:新规核查(全球发行,不上中国区)
+
+> 2026-07-05 由 w-10036 按最新资料核查。以上章节写作时间早于 2025-11 苹果新规,
+> 本节为增量,冲突处以本节为准。中国区 ICP/生成式 AI 备案与我们无关(不上中国区)。
+
+## A. 第三方 AI 数据共享(5.1.2(i),2025-11-13 生效)★新增红线
+
+苹果首次把「第三方 AI」写成受监管类别:凡把个人数据传给外部 AI(LLM/图像生成/
+推荐),必须**明确披露 + 显式同意**,且同意必须发生在**第一次传输之前**;宽泛的
+隐私政策不算数。违规:下架 + 可开除开发者账号。
+
+对我们的落地(需要写代码):
+- 首次发消息/首次语音前,一次性同意弹窗:「你的消息与录音将发送到你的团队
+  服务器,并由其配置的 AI 模型(如 Anthropic/OpenAI/DeepSeek)处理」。
+- App Privacy 标签如实申报:聊天内容、音频 → 第三方处理。
+- 拒绝同意 → 不发送、可继续浏览历史。
+
+## B. 新版年龄分级(2026-01-31 已截止)
+
+分级问卷新增 AI 助手/聊天必答项,按「敏感内容出现频率」定级。无过滤通用 LLM
+聊天普遍被推 17+/18+;我们按「自有服务器运维工具 + 团队 agent 客户端」定位,
+如实勾选 AI 聊天存在、争取工具类分级。不更新问卷 = 更新提交被卡。
+
+## C. AI 套壳审查趋严(2026 审核基调)
+
+纯聊天套壳(通用 prompt、无安全控制、数据流向不明)高拒审;有具体用途、清晰
+onboarding、透明数据处理的工具类通过率好。我们的定位优势在此,文案照第 1/9 节
+的口径写。
+
+## D. OTA 热更新政策澄清(修正第 1 节的保守表述)
+
+3.3.1B 允许 JavaScriptCore 执行的解释性 JS 更新(不得借此改变 app 核心用途),
+expo-updates/EAS Update 是生态内公认合规做法——**并非灰色**。但采纳第 1 节的
+审慎策略仍合理:iOS 首次过审版本可将 updates.enabled 关闭,过审后再开;开着
+过审也有大量先例。Android 侧载渠道不受此限(现已全量启用,见 ota workflow)。
+
+## E. 审核演示通路(补充第 7 节)
+
+- 演示 cicy-code 服务器审核期 7×24 在线,里面放一个能正常对话的演示 agent。
+- 审核备注给**粘贴链接**(https://…?flag=addTeam&token=…)而非二维码——审核员
+  无法扫另一块屏。
+- 备注模板加一句:app 本身不执行任何代码,终端只是到用户自有服务器的远程视图
+  (类比 Termius)。
+
+## F. Unlisted App Distribution(值得认真考虑)
+
+现阶段用户主要是自有团队/客户 → 可申请 Apple Unlisted 分发:走正常审核,但
+商店不可搜索、仅链接可装;比 TestFlight 持久,回避「大众价值/最小功能性」类
+挑剔,全球可用。公开上架前的理想过渡。
+
+## G. 其他
+
+- EU 分发需申报 trader 身份(地址/电话公示于商店页)。
+- 账号删除(5.1.1(v)):抽屉「移除团队」即本地数据删除入口,审核备注中指明。
+- 麦克风用途串写清语音输入 + 会议转写双用途;录音中状态 UI 已有(RecordingDot)。
+
+## 参考(2026-07)
+
+- https://developer.apple.com/app-store/review/guidelines/
+- https://developer.apple.com/news/?id=ey6d8onl (2025-11 更新公告)
+- https://techcrunch.com/2025/11/13/apples-new-app-review-guidelines-clamp-down-on-apps-sharing-personal-data-with-third-party-ai/
+- https://dev.to/arshtechpro/apples-guideline-512i-the-ai-data-sharing-rule-that-will-impact-every-ios-developer-1b0p
+- https://ppc.land/apple-tightens-app-store-age-controls-and-data-sharing-disclosure/
