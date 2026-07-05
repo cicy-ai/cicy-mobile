@@ -11,7 +11,6 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -54,8 +53,6 @@ export function TeamDrawer({ open, onClose }: Props) {
   const currentTeamId = useAuthStore((s) => s.currentTeamId);
   const switchTeam = useAuthStore((s) => s.switchTeam);
   const removeTeam = useAuthStore((s) => s.removeTeam);
-  const liveRecord = useSettingsStore((s) => s.liveRecord);
-  const setLiveRecord = useSettingsStore((s) => s.setLiveRecord);
   const session = useAuthStore((s) => s.session);
   const userEmail = useAuthStore((s) => s.userEmail);
   const logoutCloud = useAuthStore((s) => s.logoutCloud);
@@ -201,21 +198,9 @@ export function TeamDrawer({ open, onClose }: Props) {
             )}
           </View>
 
-          {/* App settings — feature switches live here (the drawer is the only
-              global surface the app has). Live record is opt-in, off by default. */}
-          <View style={[styles.settings, { borderTopColor: theme.border }]}>
-            <View style={{ flex: 1, gap: 2 }}>
-              <Text variant="callout">{t('settings.liveRecord')}</Text>
-              <Text variant="caption" tone="faint">
-                {t('settings.liveRecordHint')}
-              </Text>
-            </View>
-            <Switch
-              value={liveRecord}
-              onValueChange={setLiveRecord}
-              trackColor={{ true: theme.accent }}
-            />
-          </View>
+          {/* 会议实录 is shelved — switch hidden on request (store kept, so
+              restoring is just re-adding the row; the composer button stays
+              gone because liveRecord defaults to off). */}
 
           {appVersion ? (
             <View style={[styles.footer, { borderTopColor: theme.border }]}>
