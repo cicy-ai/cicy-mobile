@@ -59,7 +59,9 @@ export function Composer({
   const { t } = useTranslation();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
-  const [mode, setMode] = useState<'text' | 'voice'>('text');
+  // Voice-first on native (按住说话 is the default prompt); web has no voice
+  // stack and stays in text mode.
+  const [mode, setMode] = useState<'text' | 'voice'>(IS_WEB ? 'text' : 'voice');
   const [sheetOpen, setSheetOpen] = useState(false);
   const { phase, start, stop } = useVoiceRecorder({ onTranscript, onError });
 

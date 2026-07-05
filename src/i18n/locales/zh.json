@@ -15,7 +15,15 @@
     "emptyHint": "暂无 agent。请在桌面上的 cicy-code 启动一个。",
     "emptyTeamTitle": "还没有团队",
     "emptyTeamHint": "扫描 cicy-code 网页二维码即可加入。",
-    "scanToAdd": "扫码添加团队"
+    "scanToAdd": "扫码添加团队",
+    "createMember": "创建团员",
+    "createNamePlaceholder": "给团员起个名字",
+    "createSubmit": "创建",
+    "cloudOnlyCicy": "云端默认团队仅支持 cicy 助手",
+    "restart": "重启",
+    "delete": "删除",
+    "deleteConfirmTitle": "删除该团员?",
+    "deleteConfirmBody": "「{{title}}」将被移除,会话与配置不可恢复。"
   },
   "login": {
     "entry": "登录 cicy-cloud",

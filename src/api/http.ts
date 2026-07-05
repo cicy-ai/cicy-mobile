@@ -72,6 +72,20 @@ export const api = {
       body: JSON.stringify({ pane_id: paneId }),
     }),
 
+  // ── Team-member management (same endpoints as cicy-code web) ──
+  restartPane: (id: string) =>
+    request<unknown>(`/api/tmux/panes/${encodeURIComponent(id)}/restart`, { method: 'POST' }),
+  deletePane: (id: string) =>
+    request<unknown>(`/api/tmux/panes/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  // Create a worker bound to the team master (TeamPanel's createAndBind
+  // payload). Cloud default teams accept agent_type 'cicy' ONLY (server
+  // enforces; per w-10122 the endpoint itself is identical).
+  createPane: (data: Record<string, unknown>) =>
+    request<{ pane_id?: string; session?: string; success?: boolean; error?: string }>(
+      '/api/tmux/create',
+      { method: 'POST', body: JSON.stringify(data) },
+    ),
+
   // Conversation turns (q + a + steps) for an agent. Same endpoint the desktop
   // ChatHistoryView consumes; pane id format is the short pane name (e.g. w-10018).
   getHistoryView: (paneId: string, opts?: { limit?: number; offset?: number; q?: string }) => {

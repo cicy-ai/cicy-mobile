@@ -2,9 +2,24 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ActivityIndicator, AppState, type AppStateStatus, FlatList, Linking, RefreshControl, StyleSheet, View } from 'react-native';
+import {
+  ActivityIndicator,
+  AppState,
+  type AppStateStatus,
+  FlatList,
+  Linking,
+  Modal,
+  Platform,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  TextInput,
+  View,
+} from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 
 import { Button } from '@/src/components/Button';
+import { ConfirmModal } from '@/src/components/ConfirmModal';
 import { AgentAvatar } from '@/src/components/AgentAvatar';
 import { AgentStatusDot } from '@/src/components/AgentStatusDot';
 import { CtxRing } from '@/src/components/CtxRing';
@@ -26,7 +41,11 @@ import {
   type AgentLiveMetrics,
 } from '@/src/lib/agentMetrics';
 import { useAuthStore } from '@/src/store/auth';
-import { radius, spacing, useTheme } from '@/src/theme';
+import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
+
+// Same list the cicy-code web create-member dialog offers. Cloud default
+// teams are server-locked to 'cicy' (per w-10122) — the picker collapses.
+const CREATE_TYPES = ['cicy', 'claude', 'codex', 'gemini', 'opencode', 'cursor'] as const;
 
 // We only show the team's master/dispatcher pane and its direct workers. The
 // backend returns every agent regardless of host, so we filter client-side.
@@ -84,6 +103,19 @@ export default function Agents() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [titleModalOpen, setTitleModalOpen] = useState(false);
   const [gatewayByName, setGatewayByName] = useState<Record<string, boolean>>({});
+  // Team master pane id (derived per load) — needed as master_pane_id when
+  // creating a worker, and to shield the master row from swipe-delete.
+  const [hostPaneId, setHostPaneId] = useState<string | null>(null);
+  // ⊕ menu + create-member dialog + swipe-delete confirm state.
+  const [plusOpen, setPlusOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState('');
+  const [createType, setCreateType] = useState<string>('cicy');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; title: string } | null>(null);
+  // Cloud default team: server enforces agent_type 'cicy' (w-10122).
+  const cloudLocked = !!currentTeam?.builtin;
   // Sideload self-update: newer APK on the CDN → banner (Android only).
   const ota = useOtaReady();
   const [apkUpdate, setApkUpdate] = useState<ApkUpdate | null>(null);
@@ -116,6 +148,7 @@ export default function Agents() {
       const hostPane =
         workerRows.find((a) => typeof a.pane_id === 'string' && a.pane_id)?.pane_id ||
         DEFAULT_MASTER;
+      setHostPaneId(hostPane);
 
       const masters: Agent[] = panes
         .filter(
@@ -323,9 +356,10 @@ export default function Agents() {
         )}
       </View>
 
-      {/* ⊕ add-team (scan itself moved into the drawer's top-right corner) */}
+      {/* ⊕ — create a team member, or add a whole team (scan lives in the
+          drawer's top-right too) */}
       <PressableScale
-        onPress={() => router.push('/scan')}
+        onPress={() => setPlusOpen(true)}
         haptic
         scaleTo={0.94}
         style={[styles.iconBtnFallback, { backgroundColor: theme.surface, borderColor: theme.border }]}
@@ -334,6 +368,151 @@ export default function Agents() {
         <Ionicons name="add" size={24} color={theme.text} />
       </PressableScale>
     </View>
+  );
+
+  // ── member management: restart / delete / create (cicy-code endpoints) ──
+  const restartAgent = async (id: string) => {
+    try {
+      await api.restartPane(id);
+      await load();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    }
+  };
+  const deleteAgent = async (id: string) => {
+    try {
+      await api.deletePane(id);
+      await load();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    }
+  };
+  const createAgent = async () => {
+    const title = createName.trim();
+    if (!title || creating) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const agentType = cloudLocked ? 'cicy' : createType;
+      const res = await api.createPane({
+        role: 'worker',
+        title,
+        agent_type: agentType,
+        master_pane_id: hostPaneId || DEFAULT_MASTER,
+        ...(cloudLocked ? { master_agent_type: 'cicy' } : {}),
+      });
+      if (res && res.success === false) throw new Error(res.error || 'create failed');
+      setCreateOpen(false);
+      setCreateName('');
+      await load();
+    } catch (e: any) {
+      setCreateError(String(e?.message ?? e));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const plusMenuEl = (
+    <Modal visible={plusOpen} transparent animationType="fade" onRequestClose={() => setPlusOpen(false)}>
+      <Pressable style={styles.sheetBackdrop} onPress={() => setPlusOpen(false)}>
+        <View style={[styles.sheet, { backgroundColor: theme.bg, borderColor: theme.border }]}>
+          <PressableScale
+            onPress={() => { setPlusOpen(false); setCreateType(cloudLocked ? 'cicy' : 'claude'); setCreateError(null); setTimeout(() => setCreateOpen(true), 120); }}
+            scaleTo={0.98}
+            style={styles.sheetRow}
+          >
+            <Ionicons name="person-add-outline" size={22} color={theme.text} />
+            <Text variant="body">{t('agents.createMember')}</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={() => { setPlusOpen(false); setTimeout(() => router.push('/scan'), 120); }}
+            scaleTo={0.98}
+            style={styles.sheetRow}
+          >
+            <Ionicons name="scan-outline" size={22} color={theme.text} />
+            <Text variant="body">{t('teams.addTeam')}</Text>
+          </PressableScale>
+        </View>
+      </Pressable>
+    </Modal>
+  );
+
+  const createModalEl = (
+    <Modal visible={createOpen} transparent animationType="fade" onRequestClose={() => setCreateOpen(false)}>
+      <Pressable style={styles.modalBackdrop} onPress={() => setCreateOpen(false)}>
+        <Pressable style={[styles.modalCard, { backgroundColor: theme.bg, borderColor: theme.border }]} onPress={() => {}}>
+          <Text variant="h3">{t('agents.createMember')}</Text>
+          <TextInput
+            value={createName}
+            onChangeText={setCreateName}
+            placeholder={t('agents.createNamePlaceholder')}
+            placeholderTextColor={theme.textFaint}
+            autoFocus
+            style={[
+              styles.createInput,
+              { fontSize: typeScale.body.fontSize, color: theme.text, backgroundColor: theme.surface, borderColor: theme.border },
+            ]}
+          />
+          {cloudLocked ? (
+            <Text variant="caption" tone="faint">
+              {t('agents.cloudOnlyCicy')}
+            </Text>
+          ) : (
+            <View style={styles.typeChips}>
+              {CREATE_TYPES.map((ty) => {
+                const active = createType === ty;
+                return (
+                  <PressableScale
+                    key={ty}
+                    onPress={() => setCreateType(ty)}
+                    scaleTo={0.95}
+                    style={[
+                      styles.typeChip,
+                      {
+                        borderColor: active ? theme.accent : theme.border,
+                        backgroundColor: active ? theme.surfaceMuted : theme.surface,
+                      },
+                    ]}
+                  >
+                    <Text variant="caption" style={active ? { color: theme.accent, fontWeight: '600' } : undefined}>
+                      {ty}
+                    </Text>
+                  </PressableScale>
+                );
+              })}
+            </View>
+          )}
+          {createError ? (
+            <Text variant="caption" tone="danger" numberOfLines={3}>
+              {createError}
+            </Text>
+          ) : null}
+          <Button
+            title={t('agents.createSubmit')}
+            onPress={() => void createAgent()}
+            loading={creating}
+            disabled={creating || !createName.trim()}
+          />
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+
+  const deleteConfirmEl = (
+    <ConfirmModal
+      open={!!confirmDelete}
+      title={t('agents.deleteConfirmTitle')}
+      body={confirmDelete ? t('agents.deleteConfirmBody', { title: confirmDelete.title }) : undefined}
+      confirmText={t('agents.delete')}
+      cancelText={t('common.cancel')}
+      destructive
+      onConfirm={() => {
+        const target = confirmDelete;
+        setConfirmDelete(null);
+        if (target) void deleteAgent(target.id);
+      }}
+      onCancel={() => setConfirmDelete(null)}
+    />
   );
 
   const drawerEl = <TeamDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />;
@@ -431,24 +610,80 @@ export default function Agents() {
           </View>
         }
         renderItem={({ item }) => (
-          <AgentRow agent={item} metrics={liveMetrics[agentId(item)]} gateway={gatewayByName[agentId(item)]} />
+          <AgentRow
+            agent={item}
+            metrics={liveMetrics[agentId(item)]}
+            gateway={gatewayByName[agentId(item)]}
+            isMaster={agentId(item) === hostPaneId}
+            onRestart={(id) => void restartAgent(id)}
+            onDelete={(id, title) => setConfirmDelete({ id, title })}
+          />
         )}
       />
       {drawerEl}
       {titleModalEl}
+      {plusMenuEl}
+      {createModalEl}
+      {deleteConfirmEl}
     </Screen>
   );
 }
 
-function AgentRow({ agent, metrics, gateway }: { agent: Agent; metrics?: AgentLiveMetrics; gateway?: boolean }) {
+function AgentRow({
+  agent,
+  metrics,
+  gateway,
+  isMaster,
+  onRestart,
+  onDelete,
+}: {
+  agent: Agent;
+  metrics?: AgentLiveMetrics;
+  gateway?: boolean;
+  isMaster?: boolean;
+  onRestart?: (id: string) => void;
+  onDelete?: (id: string, title: string) => void;
+}) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const routeId = agent.name || agent.id || agent.pane_id;
+  const swipeRef = useRef<Swipeable | null>(null);
 
   // Show worker id ("w-10036") under the title — that's the chat-ws routing
   // key and the only stable identifier across renames.
   const workerId = agent.name || String(routeId);
 
-  return (
+  // Swipe-left actions (native only; RNGH Swipeable is unreliable on web):
+  // restart for everyone, delete for workers (the master is the team).
+  const renderRightActions = () => (
+    <View style={rowStyles.swipeActions}>
+      <PressableScale
+        onPress={() => { swipeRef.current?.close(); onRestart?.(String(routeId)); }}
+        style={[rowStyles.swipeBtn, { backgroundColor: theme.surfaceMuted }]}
+        scaleTo={0.95}
+        haptic
+      >
+        <Ionicons name="refresh" size={20} color={theme.text} />
+        <Text variant="caption">{t('agents.restart')}</Text>
+      </PressableScale>
+      {!isMaster && (
+        <PressableScale
+          onPress={() => {
+            swipeRef.current?.close();
+            onDelete?.(String(routeId), agent.title || agent.name || String(routeId));
+          }}
+          style={[rowStyles.swipeBtn, { backgroundColor: theme.danger }]}
+          scaleTo={0.95}
+          haptic
+        >
+          <Ionicons name="trash-outline" size={20} color="#fff" />
+          <Text variant="caption" style={{ color: '#fff' }}>{t('agents.delete')}</Text>
+        </PressableScale>
+      )}
+    </View>
+  );
+
+  const row = (
     <PressableScale
       // Hand the row's metadata to the detail screen so the header/terminal
       // button render instantly — the list already knows type + title, no
@@ -517,6 +752,19 @@ function AgentRow({ agent, metrics, gateway }: { agent: Agent; metrics?: AgentLi
       <Ionicons name="chevron-forward" size={18} color={theme.textFaint} />
     </PressableScale>
   );
+
+  // Web: RNGH Swipeable is unreliable there — plain row, no swipe actions.
+  if (Platform.OS === 'web') return row;
+  return (
+    <Swipeable
+      ref={swipeRef}
+      renderRightActions={renderRightActions}
+      overshootRight={false}
+      friction={2}
+    >
+      {row}
+    </Swipeable>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -554,6 +802,57 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  sheetBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' },
+  sheet: {
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing['2xl'],
+  },
+  sheetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.md,
+  },
+  modalBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    padding: spacing.xl,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: spacing.xl,
+    gap: spacing.md,
+  },
+  createInput: {
+    width: '100%',
+    height: 48,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 0,
+    textAlignVertical: 'center',
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  typeChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  typeChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
   iconBtnFallback: {
     width: 40,
     height: 40,
@@ -567,6 +866,19 @@ const styles = StyleSheet.create({
 });
 
 const rowStyles = StyleSheet.create({
+  swipeActions: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginLeft: spacing.sm,
+    gap: spacing.xs,
+  },
+  swipeBtn: {
+    width: 68,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
   card: {
     flexDirection: 'row',
     alignItems: 'center',

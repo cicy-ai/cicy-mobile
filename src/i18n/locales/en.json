@@ -15,7 +15,15 @@
     "emptyHint": "No agents yet. Start one in cicy-code on your desktop.",
     "emptyTeamTitle": "No team yet",
     "emptyTeamHint": "Scan the QR code in the cicy-code web app to join.",
-    "scanToAdd": "Scan to add team"
+    "scanToAdd": "Scan to add team",
+    "createMember": "New member",
+    "createNamePlaceholder": "Name this member",
+    "createSubmit": "Create",
+    "cloudOnlyCicy": "Cloud default teams support cicy assistants only",
+    "restart": "Restart",
+    "delete": "Delete",
+    "deleteConfirmTitle": "Delete this member?",
+    "deleteConfirmBody": "\"{{title}}\" will be removed; its session and config are gone for good."
   },
   "login": {
     "entry": "Sign in to cicy-cloud",
