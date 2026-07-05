@@ -59,6 +59,31 @@ export async function takePhoto(): Promise<PendingAttachment[]> {
   }));
 }
 
+// Open the system camera allowing BOTH photo capture and video recording (the
+// camera UI's own toggle) — the composer's camera button jumps straight here,
+// no menu in between.
+export async function captureMedia(): Promise<PendingAttachment[]> {
+  const perm = await ImagePicker.requestCameraPermissionsAsync();
+  if (!perm.granted) throw new Error('camera-denied');
+  const res = await ImagePicker.launchCameraAsync({
+    mediaTypes: ['images', 'videos'],
+    quality: 0.7,
+    videoMaxDuration: 300,
+  });
+  if (res.canceled) return [];
+  return res.assets.map((a) => {
+    const isVideo = (a.type || '').includes('video') || (a.mimeType || '').startsWith('video/');
+    return {
+      key: nextKey(),
+      uri: a.uri,
+      name: a.fileName || guessName(a.uri, isVideo ? 'video.mp4' : 'photo.jpg'),
+      mime: a.mimeType || (isVideo ? 'video/mp4' : 'image/jpeg'),
+      kind: (isVideo ? 'file' : 'image') as 'image' | 'file',
+      size: a.fileSize,
+    };
+  });
+}
+
 // Pick arbitrary documents.
 export async function pickDocuments(): Promise<PendingAttachment[]> {
   const res = await DocumentPicker.getDocumentAsync({

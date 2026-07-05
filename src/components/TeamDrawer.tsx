@@ -23,7 +23,6 @@ import { TeamAvatar } from './TeamAvatar';
 import { Text } from './Text';
 import { runningOtaLabel } from '@/src/lib/otaInfo';
 import { useAuthStore, type Team } from '@/src/store/auth';
-import { useSettingsStore } from '@/src/store/settings';
 import { radius, spacing, useTheme } from '@/src/theme';
 
 type Props = {

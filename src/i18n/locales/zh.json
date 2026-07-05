@@ -55,6 +55,7 @@
   },
   "chat": {
     "messagePlaceholder": "输入消息…",
+    "composerPlaceholder": "发消息或按住说话…",
     "missingCreds": "缺少服务器或 token",
     "sendFailed": "发送失败：{{error}}",
     "voiceError": "{{error}}",

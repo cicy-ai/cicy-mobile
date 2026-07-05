@@ -55,6 +55,7 @@
   },
   "chat": {
     "messagePlaceholder": "Message…",
+    "composerPlaceholder": "Message or hold to talk…",
     "missingCreds": "missing server or token",
     "sendFailed": "Send failed: {{error}}",
     "voiceError": "{{error}}",

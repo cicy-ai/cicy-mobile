@@ -1,29 +1,25 @@
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
-  TextInput,
   View,
 } from 'react-native';
 
 import { AgentAvatar } from '@/src/components/AgentAvatar';
+import { Composer } from '@/src/components/Composer';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
 import { TerminalView } from '@/src/components/TerminalView';
 import { Text } from '@/src/components/Text';
-import { VoiceBar } from '@/src/components/VoiceBar';
 import { api } from '@/src/api/http';
 import { isTelegram, showBackButton } from '@/src/lib/telegram';
 import { useAuthStore } from '@/src/store/auth';
-import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
-
-const IS_WEB = Platform.OS === 'web';
+import { spacing, useTheme } from '@/src/theme';
 
 // Full-screen live terminal (the team server's gotty page for this agent's
 // pane) with the same prompt area as the chat detail below it. Typing happens
@@ -49,11 +45,10 @@ export default function Terminal() {
     return `${serverUrl}/ttyd/${encodeURIComponent(agentId)}/?token=${encodeURIComponent(token)}&mode=1`;
   }, [serverUrl, token, agentId]);
 
-  // ── Composer state (subset of the chat detail's prompt area) ──
+  // ── Composer state (same one-pill prompt area as the chat detail) ──
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<'voice' | 'text'>(IS_WEB ? 'text' : 'voice');
   const [keyboardShown, setKeyboardShown] = useState(false);
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -136,65 +131,16 @@ export default function Terminal() {
           ]}
         >
           <View style={styles.composerRow}>
-            {mode === 'voice' ? (
-              <VoiceBar
-                onTranscript={(txt) => submit(txt)}
-                onError={(m) => setError(m)}
-                disabled={sending}
-              />
-            ) : (
-              <View
-                style={[
-                  styles.textInputInner,
-                  { backgroundColor: theme.surface, borderColor: theme.border },
-                ]}
-              >
-                <TextInput
-                  value={input}
-                  onChangeText={setInput}
-                  placeholder={t('chat.messagePlaceholder')}
-                  placeholderTextColor={theme.textFaint}
-                  multiline
-                  style={[styles.input, typeScale.body, { color: theme.text }]}
-                />
-                <PressableScale
-                  onPress={() => void submit(input)}
-                  disabled={sending || !input.trim()}
-                  haptic={!sending && !!input.trim()}
-                  style={[
-                    styles.send,
-                    {
-                      backgroundColor: input.trim() ? theme.accent : theme.surfaceMuted,
-                      opacity: sending ? 0.6 : 1,
-                    },
-                  ]}
-                >
-                  {sending ? (
-                    <ActivityIndicator size="small" color={input.trim() ? theme.accentText : theme.textFaint} />
-                  ) : (
-                    <Ionicons name="arrow-up" size={18} color={input.trim() ? theme.accentText : theme.textFaint} />
-                  )}
-                </PressableScale>
-              </View>
-            )}
-
-            {!IS_WEB && (
-              <PressableScale
-                onPress={() => {
-                  setMode((m) => (m === 'voice' ? 'text' : 'voice'));
-                  if (mode === 'text') Keyboard.dismiss();
-                }}
-                haptic
-                scaleTo={0.94}
-                style={[styles.modeToggle, { backgroundColor: theme.surface, borderColor: theme.border }]}
-              >
-                {mode === 'voice' ? (
-                  <Ionicons name="keypad-outline" size={20} color={theme.text} />
-                ) : (
-                  <MaterialCommunityIcons name="microphone-outline" size={22} color={theme.text} />
-                )}
-              </PressableScale>
-            )}
+            {/* Same one-pill composer as the chat detail (no attachments on
+                the terminal — text and voice go straight to the CLI). */}
+            <Composer
+              value={input}
+              onChangeText={setInput}
+              onSubmit={() => void submit(input)}
+              onTranscript={(txt) => void submit(txt)}
+              onError={(m) => setError(m)}
+              sending={sending}
+            />
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -242,38 +188,5 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-  },
-  textInputInner: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    borderRadius: radius.xl,
-    borderWidth: 1,
-    paddingHorizontal: spacing.sm + 2,
-    paddingVertical: spacing.xs + 2,
-    gap: spacing.sm,
-  },
-  input: {
-    flex: 1,
-    minHeight: 36,
-    maxHeight: 140,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    paddingTop: spacing.sm + 2,
-  },
-  send: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modeToggle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
 });

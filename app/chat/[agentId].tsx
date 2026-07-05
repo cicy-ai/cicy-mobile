@@ -3,26 +3,23 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  ActivityIndicator,
   Image,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
-  TextInput,
   View,
 } from 'react-native';
 
 import { AgentAvatar } from '@/src/components/AgentAvatar';
-import { AttachButton } from '@/src/components/AttachButton';
+import { Composer } from '@/src/components/Composer';
 import { HistoryView } from '@/src/components/HistoryView';
 import { LiveRecordBar } from '@/src/components/LiveRecordBar';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
 import { Text } from '@/src/components/Text';
 import { TypingDots } from '@/src/components/TypingDots';
-import { VoiceBar } from '@/src/components/VoiceBar';
 import { api } from '@/src/api/http';
 import { uploadAttachment } from '@/src/api/upload';
 import type { PendingAttachment } from '@/src/lib/attachments';
@@ -31,7 +28,7 @@ import { isTelegram, showBackButton } from '@/src/lib/telegram';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { useAuthStore } from '@/src/store/auth';
 import { useSettingsStore } from '@/src/store/settings';
-import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
+import { radius, spacing, useTheme } from '@/src/theme';
 
 // Voice input relies on native speech-recognition / audio recording, neither of
 // which we wire up on web — so web defaults to (and stays in) text mode.
@@ -83,7 +80,6 @@ export default function Chat() {
   // True until the first turn of a live session is sent — that first turn is
   // prefixed with a "you are a meeting assistant" instruction for the agent.
   const meetingPrimedRef = useRef(false);
-  const [mode, setMode] = useState<'voice' | 'text'>(IS_WEB ? 'text' : 'voice');
   // Track keyboard visibility for the small bottom-padding bump while typing.
   const [keyboardShown, setKeyboardShown] = useState(false);
   useEffect(() => {
@@ -496,63 +492,19 @@ export default function Chat() {
           )}
 
           <View style={styles.composerRow}>
-            {!IS_WEB && (
-              <AttachButton
-                onPick={(atts) => setAttachments((cur) => [...cur, ...atts])}
-                onError={(m) => setVoiceError(m)}
-                disabled={sending}
-              />
-            )}
-            {mode === 'voice' ? (
-              <VoiceBar
-                onTranscript={(t) => submit(t)}
-                onError={(m) => setVoiceError(m)}
-                disabled={sending}
-              />
-            ) : (
-              <View
-                style={[
-                  styles.textInputInner,
-                  { backgroundColor: theme.surface, borderColor: theme.border },
-                ]}
-              >
-                <TextInput
-                  value={input}
-                  onChangeText={setInput}
-                  placeholder={t('chat.messagePlaceholder')}
-                  placeholderTextColor={theme.textFaint}
-                  multiline
-                  autoFocus
-                  style={[styles.input, typeScale.body, { color: theme.text }]}
-                />
-                <PressableScale
-                  onPress={send}
-                  disabled={sending || (!input.trim() && attachments.length === 0)}
-                  haptic={!sending && (!!input.trim() || attachments.length > 0)}
-                  style={[
-                    styles.send,
-                    {
-                      backgroundColor:
-                        input.trim() || attachments.length > 0 ? theme.accent : theme.surfaceMuted,
-                      opacity: sending ? 0.6 : 1,
-                    },
-                  ]}
-                >
-                  {sending ? (
-                    <ActivityIndicator
-                      size="small"
-                      color={input.trim() || attachments.length > 0 ? theme.accentText : theme.textFaint}
-                    />
-                  ) : (
-                    <Ionicons
-                      name="arrow-up"
-                      size={18}
-                      color={input.trim() || attachments.length > 0 ? theme.accentText : theme.textFaint}
-                    />
-                  )}
-                </PressableScale>
-              </View>
-            )}
+            {/* Unified one-pill composer (text ⇄ hold-to-talk, camera straight
+                to photo/video capture, ⊕ = attach sheet). */}
+            <Composer
+              value={input}
+              onChangeText={setInput}
+              onSubmit={() => void send()}
+              onTranscript={(txt) => void submit(txt)}
+              onPickAttachments={(atts) => setAttachments((cur) => [...cur, ...atts])}
+              onError={(m) => setVoiceError(m)}
+              disabled={false}
+              sending={sending}
+              canSendEmpty={attachments.length > 0}
+            />
 
             {/* Live recording — continuous on-device dictation that auto-sends
                 each turn to the agent (the in-conversation meeting assistant).
@@ -566,26 +518,6 @@ export default function Chat() {
                 style={[styles.modeToggle, { backgroundColor: theme.surface, borderColor: theme.border }]}
               >
                 <MaterialCommunityIcons name="account-voice" size={22} color={theme.text} />
-              </PressableScale>
-            )}
-
-            {/* Mode toggle on the right — keypad in voice mode, mic in text mode.
-                Hidden on web, which has no voice backend and stays in text mode. */}
-            {!IS_WEB && (
-              <PressableScale
-                onPress={() => {
-                  setMode((m) => (m === 'voice' ? 'text' : 'voice'));
-                  if (mode === 'text') Keyboard.dismiss();
-                }}
-                haptic
-                scaleTo={0.94}
-                style={[styles.modeToggle, { backgroundColor: theme.surface, borderColor: theme.border }]}
-              >
-                {mode === 'voice' ? (
-                  <Ionicons name="keypad-outline" size={20} color={theme.text} />
-                ) : (
-                  <MaterialCommunityIcons name="microphone-outline" size={22} color={theme.text} />
-                )}
               </PressableScale>
             )}
           </View>
@@ -717,31 +649,6 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
     borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  textInputInner: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    borderRadius: radius.xl,
-    borderWidth: 1,
-    paddingHorizontal: spacing.sm + 2,
-    paddingVertical: spacing.xs + 2,
-    gap: spacing.sm,
-  },
-  input: {
-    flex: 1,
-    minHeight: 36,
-    maxHeight: 140,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    paddingTop: spacing.sm + 2,
-  },
-  send: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
   },
