@@ -323,6 +323,7 @@ export default function Agents() {
         )}
       </View>
 
+      {/* ⊕ add-team (scan itself moved into the drawer's top-right corner) */}
       <PressableScale
         onPress={() => router.push('/scan')}
         haptic
@@ -330,7 +331,7 @@ export default function Agents() {
         style={[styles.iconBtnFallback, { backgroundColor: theme.surface, borderColor: theme.border }]}
         hitSlop={6}
       >
-        <Ionicons name="scan-outline" size={22} color={theme.text} />
+        <Ionicons name="add" size={24} color={theme.text} />
       </PressableScale>
     </View>
   );

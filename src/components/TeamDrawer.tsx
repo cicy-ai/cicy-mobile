@@ -129,10 +129,25 @@ export function TeamDrawer({ open, onClose }: Props) {
           ]}
         >
           <View style={styles.headerRow}>
-            <Text variant="title">{t('teams.drawerTitle')}</Text>
-            <Text variant="caption" tone="muted" style={{ marginTop: 2 }}>
-              {t('teams.drawerSubtitle', { count: teams.length })}
-            </Text>
+            <View style={{ flex: 1 }}>
+              <Text variant="title">{t('teams.drawerTitle')}</Text>
+              <Text variant="caption" tone="muted" style={{ marginTop: 2 }}>
+                {t('teams.drawerSubtitle', { count: teams.length })}
+              </Text>
+            </View>
+            {/* Scan-to-add lives here now (home header's right button is ⊕). */}
+            <PressableScale
+              onPress={() => {
+                onClose();
+                setTimeout(() => router.push('/scan'), 80);
+              }}
+              haptic
+              scaleTo={0.94}
+              hitSlop={8}
+              style={[styles.scanBtn, { backgroundColor: theme.surface, borderColor: theme.border }]}
+            >
+              <Ionicons name="scan-outline" size={20} color={theme.text} />
+            </PressableScale>
           </View>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list}>
@@ -257,9 +272,19 @@ const styles = StyleSheet.create({
     borderRightWidth: StyleSheet.hairlineWidth,
   },
   headerRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.xs,
     paddingBottom: spacing.lg,
+  },
+  scanBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   list: { paddingVertical: spacing.xs, gap: spacing.xs },
   settings: {
