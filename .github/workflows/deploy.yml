@@ -109,7 +109,29 @@ jobs:
       # R2 lives in a DIFFERENT Cloudflare account than Workers (the CLOUDFLARE_*
       # secrets), so it has its own R2_* creds. Upload via the R2 REST API
       # directly (same path cicy-r2 uses) — no wrangler account mismatch.
-      - name: Upload APK to public R2 CDN
+      # Primary download CDN = Alibaba OSS (fast in mainland China; R2/Cloudflare
+      # is slow behind the GFW). Public-read bucket cicy-1372193042-cn, same one
+      # cicy-desktop releases live in. Versioned key + stable `latest` alias.
+      - name: Upload APK to OSS (primary CN CDN)
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.19/ossutil64 -o ossutil
+          chmod +x ossutil
+          EP=oss-cn-shanghai.aliyuncs.com
+          B=oss://cicy-1372193042-cn/cicy-mobile
+          for key in "cicy-${VER}.apk" "cicy-latest.apk"; do
+            ./ossutil -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -e "$EP" \
+              cp "cicy-${VER}.apk" "${B}/${key}" -f
+          done
+          echo "OSS APK: https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.apk"
+      # R2 stays as a fallback mirror. version.json is still SERVED from R2 (the
+      # app reads it there), but its download URL now points at OSS. Written LAST
+      # (after the APK is up on both) so the in-app check never points at a
+      # missing file.
+      - name: Mirror APK to R2 + write version.json (→ OSS url)
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
@@ -123,15 +145,13 @@ jobs:
               -H "Content-Type: ${CT}" \
               --data-binary @"cicy-${VER}.apk" >/dev/null
           done
-          # Version manifest LAST (after the APK is up) so the in-app update
-          # check can never point at an APK that isn't there yet.
-          printf '{"version":"%s","apk":"https://r2.deepfetch.de5.net/cicy-mobile/cicy-%s.apk"}' "$VER" "$VER" > version.json
+          OSS_APK="https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.apk"
+          printf '{"version":"%s","apk":"%s"}' "$VER" "$OSS_APK" > version.json
           curl -fsS -X PUT "${base}/cicy-mobile/version.json" \
             -H "Authorization: Bearer ${R2_API_TOKEN}" \
             -H "Content-Type: application/json" \
             --data-binary @version.json >/dev/null
-          echo "Public APK: https://r2.deepfetch.de5.net/cicy-mobile/cicy-${VER}.apk"
-          echo "Latest:     https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.apk"
+          echo "version.json.apk → ${OSS_APK}"
       # Publish the SAME JS as an OTA update so devices already on this
       # runtime converge without reinstalling the APK.
       - name: Publish matching OTA update

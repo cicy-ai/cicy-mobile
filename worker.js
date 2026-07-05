@@ -9,10 +9,11 @@ export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url);
     // Short install link for phones: https://m.cicy-ai.com/apk →
-    // the latest Android build on the public R2 CDN (browser download →
-    // system installer; replaces the USB/adb loop).
+    // the latest Android build on Alibaba OSS (fast in mainland China; browser
+    // download → system installer; replaces the USB/adb loop). R2 still holds a
+    // fallback mirror at the same key if OSS is ever unreachable.
     if (pathname === '/apk') {
-      return Response.redirect('https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.apk', 302);
+      return Response.redirect('https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-latest.apk', 302);
     }
     // expo-updates manifest (self-hosted OTA). CI publishes the complete
     // protocol-1 JSON manifest to R2 (scripts/publish-ota.mjs, written last =
