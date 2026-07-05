@@ -33,11 +33,13 @@ export function TeamDrawer({ open, onClose }: Props) {
   const { t } = useTranslation();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
-  // nativeApplicationVersion first: it's the INSTALLED APK's version and is
-  // always present. expoConfig can be null when running a self-hosted OTA
-  // bundle (our manifests don't embed extra.expoClient) — reading it first
-  // made this whole footer vanish after the first hot update.
-  const appVersion = Constants.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '';
+  // expoConfig.version is correct in BOTH contexts now: embedded bundles get
+  // it from the release CI's sync-version, OTA bundles from the ota workflow
+  // syncing to the newest v* tag before export. (SDK 55 expo-constants has NO
+  // native version field — Constants.nativeApplicationVersion was a phantom
+  // that read undefined; the real one lives in expo-application, a native
+  // module we can't ship over the air.)
+  const appVersion = Constants.expoConfig?.version ?? '';
   const buildNo =
     Constants.expoConfig?.android?.versionCode ?? Constants.expoConfig?.ios?.buildNumber ?? null;
   const teams = useAuthStore((s) => s.teams);

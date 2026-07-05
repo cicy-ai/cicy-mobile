@@ -18,12 +18,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - name: Install deps
         run: npm ci
+      # The OTA bundle's expoClient config must carry the REAL app version
+      # (repo app.json stays at a placeholder; releases sync it in-CI only).
+      # Use the newest v* tag — that's the APK generation this JS runs on.
+      - name: Sync version from latest release tag
+        run: |
+          git fetch --tags --quiet
+          VER=$(git describe --tags --match 'v*' --abbrev=0 | sed 's/^v//')
+          node scripts/sync-version.mjs "$VER"
       - name: Export update bundle
         run: npx expo export -p android
       - name: Publish OTA to R2
