@@ -124,7 +124,7 @@
     "permissionBody": "扫码登录需要访问相机。请在系统设置里开启。",
     "grantPermission": "授予相机权限",
     "stepOpenWeb": "在电脑上打开 cicy-code 网页",
-    "stepShowQr": "右上角点击二维码图标显示登录码",
+    "stepShowQr": "左下角点击二维码图标显示登录码",
     "stepAimHere": "把二维码对准上方扫描框",
     "successHint": "已识别，正在加入…",
     "invalidTitle": "无法识别",

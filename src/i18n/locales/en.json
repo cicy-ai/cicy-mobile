@@ -124,7 +124,7 @@
     "permissionBody": "Scanning a QR code requires camera access. Enable it in system settings.",
     "grantPermission": "Grant camera permission",
     "stepOpenWeb": "Open cicy-code in your browser on a computer",
-    "stepShowQr": "Click the QR code icon in the top-right corner",
+    "stepShowQr": "Click the QR code icon in the bottom-left corner",
     "stepAimHere": "Aim the QR code at the frame above",
     "successHint": "Got it — joining…",
     "invalidTitle": "Couldn't read code",
