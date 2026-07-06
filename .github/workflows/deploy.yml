@@ -99,7 +99,12 @@ jobs:
           # zip-wrapped APK is the ONLY artifact we publish (GitHub Release + OSS);
           # the raw .apk is never exposed. Phone downloads the zip, extracts, installs.
           zip -qj "cicy-${VER}.zip" "cicy-${VER}.apk"
-          ls -lh "cicy-${VER}.apk" "cicy-${VER}.zip"
+          # Stable-name alias so GitHub Release has BOTH cicy-<ver>.zip and
+          # cicy-latest.zip (releases/latest/download/cicy-latest.zip — the skill
+          # contract). GitHub doesn't auto-alias; the softprops glob below picks
+          # up both physical files.
+          cp "cicy-${VER}.zip" cicy-latest.zip
+          ls -lh "cicy-${VER}.zip" cicy-latest.zip
       - name: Publish GitHub Release (zip-wrapped APK)
         uses: softprops/action-gh-release@v2
         with:
@@ -177,6 +182,8 @@ jobs:
   ios:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
+    permissions:
+      contents: write # attach the IPA to the matching GitHub Release
     env:
       VER: ${{ github.event.inputs.ios_version }}
     steps:
@@ -215,7 +222,17 @@ jobs:
           echo "app=$APP"
           rm -rf Payload && mkdir -p Payload && cp -R "$APP" Payload/
           zip -qry "cicy-${VER}.ipa" Payload
+          # Stable-name alias for releases/latest/download/cicy-latest.ipa.
+          cp "cicy-${VER}.ipa" cicy-latest.ipa
           ls -lh cicy-*.ipa
+      # Attach to the matching GitHub Release (created by the android tag-run).
+      # softprops appends to the existing v<ver> release; glob grabs both the
+      # versioned ipa and the latest alias.
+      - name: Attach IPA to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VER }}
+          files: cicy-*.ipa
       # .ipa is NOT subject to OSS's apk block — upload raw to OSS (primary,
       # fast in CN), same cicy-mobile/ prefix + latest alias as the zip.
       - name: Upload IPA → OSS (+ R2 mirror, migration)
