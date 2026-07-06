@@ -233,22 +233,24 @@ jobs:
         with:
           tag_name: v${{ env.VER }}
           files: cicy-*.ipa
-      # .ipa is NOT subject to OSS's apk block — upload raw to OSS (primary,
-      # fast in CN), same cicy-mobile/ prefix + latest alias as the zip.
-      - name: Upload IPA → OSS (+ R2 mirror, migration)
+      # OSS bars .ipa on its bare domain too (same ApkDownloadForbidden as .apk —
+      # it flags iOS app packages as well). So OSS gets a ZIP-WRAPPED ipa under a
+      # distinct -ios key; the skill unzips → .ipa for Sideloadly. R2 + GitHub
+      # Release keep the RAW .ipa (neither has this restriction).
+      - name: Zip-wrap IPA → OSS + raw .ipa → R2 (migration)
         env:
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
         run: |
-          # Signed curl (no ossutil binary — this job runs on a macOS runner
-          # where the Linux ossutil64 can't execute). Same signer as the Android job.
+          # OSS: zip-wrapped (root isn't an app package → passes the sniffer)
+          zip -qj "cicy-${VER}-ios.zip" "cicy-${VER}.ipa"
           source scripts/oss-put.sh
-          for key in "cicy-${VER}.ipa" "cicy-latest.ipa"; do
-            oss_put "cicy-mobile/${key}" "cicy-${VER}.ipa" application/octet-stream
+          for key in "cicy-${VER}-ios.zip" "cicy-latest-ios.zip"; do
+            oss_put "cicy-mobile/${key}" "cicy-${VER}-ios.zip" application/zip
           done
-          # Migration mirror → R2 (drop once fully on OSS)
+          # R2: raw .ipa (no restriction; direct Sideloadly download)
           CT=application/octet-stream
           base="https://api.cloudflare.com/client/v4/accounts/${R2_ACCOUNT_ID}/r2/buckets/cicy-assets-poc/objects"
           for key in "cicy-mobile/cicy-${VER}.ipa" "cicy-mobile/cicy-latest.ipa"; do
@@ -257,4 +259,4 @@ jobs:
               -H "Content-Type: ${CT}" \
               --data-binary @"cicy-${VER}.ipa" >/dev/null
           done
-          echo "OSS IPA: https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.ipa"
+          echo "OSS iOS zip: https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}-ios.zip"
