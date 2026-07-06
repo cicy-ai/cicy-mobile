@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Wire types for cicy-code chat-ws + REST. Keep small — only what mobile needs.
 
 export type Agent = {

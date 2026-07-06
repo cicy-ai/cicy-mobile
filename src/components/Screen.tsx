@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 import { StyleSheet, View, type ViewProps } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 

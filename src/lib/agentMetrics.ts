@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Per-agent live header metrics (status / model / context usage / cost), derived
 // from /api/agents/current-reply (reply.json). Ported verbatim from cicy-code's
 // app/src/lib/agentMetrics.ts so the team list shows the same battle-tested math.

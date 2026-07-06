@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // cicy-cloud email magic-link DEVICE-POLL login — verbatim port of
 // cicy-desktop/src/backends/auth-email.js (cloud contract by w-10122):
 //

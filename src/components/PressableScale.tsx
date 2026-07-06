@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 import * as Haptics from 'expo-haptics';
 import { useCallback } from 'react';
 import { Platform, Pressable, type PressableProps } from 'react-native';

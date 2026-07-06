@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Verbatim subset of cicy-code app/src/components/chat/history/types.ts —
 // kept in a mirror path so future diffs against the web reference are 1:1.
 // (User rule: the web chat already stepped on every pitfall; COPY it, don't

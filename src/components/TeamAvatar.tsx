@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 import { StyleSheet, View, type ViewStyle } from 'react-native';
 
 import { teamAvatarColor, teamInitial } from '@/src/lib/teamAvatar';

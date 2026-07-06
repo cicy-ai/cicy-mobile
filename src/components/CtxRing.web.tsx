@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // 上下文圆环 — web 版,渲染和 cicy-code TeamPanel CtxRing 一致的 SVG 环。
 // react-native-web 没有为 unstable_createElement 发布类型,经 any 取用。
 const { unstable_createElement: ce } = require('react-native-web') as {

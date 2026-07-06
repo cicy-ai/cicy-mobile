@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 
 /**
  * This script is used to reset the project to a blank state.

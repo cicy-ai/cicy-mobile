@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Static-serving shim ONLY (the app remains a pure client — no proxy, no
 // backend): fix the 404 semantics of hashed build assets. With SPA
 // not_found_handling, a request for an OLD (deleted) /_expo/static/*.js would

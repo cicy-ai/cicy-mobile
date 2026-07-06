@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 import { Text as RNText, type TextProps } from 'react-native';
 
 import { type as typeScale, useTheme } from '@/src/theme';

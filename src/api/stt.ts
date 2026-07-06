@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 import { File } from 'expo-file-system';
 
 import { useAuthStore } from '@/src/store/auth';

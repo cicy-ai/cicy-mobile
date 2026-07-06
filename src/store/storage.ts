@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Cross-platform key/value storage.
 //
 // - Native (iOS / Android): expo-secure-store backed by Keychain / EncryptedSharedPreferences.

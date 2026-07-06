@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Mirrors cicy-code/app/src/lib/agentType.ts. Mobile uses static `require`s for
 // images (Metro bundler needs string literals) so the icon map exposes
 // already-resolved module IDs rather than asset URLs.

@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 import { Platform } from 'react-native';
 
 // The static boot splash (app/+html.tsx) covers the whole startup: JS download

@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Web fallback — expo-video is native-only. A plain <video> tag works in the
 // browser (headers can't be attached, but web assets are same-origin cookies
 // / the ?token URL still works there).

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Publish an expo-updates OTA update to Alibaba OSS (self-hosted; no Expo
 // servers — mainland-reachable; todo46 moved this off R2). Run AFTER
 // `npx expo export -p android -p ios`:

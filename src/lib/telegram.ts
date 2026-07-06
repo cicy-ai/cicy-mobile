@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Telegram Mini App glue. When the app is opened inside Telegram, the
 // telegram-web-app.js SDK (loaded in app/+html.tsx) exposes
 // `window.Telegram.WebApp` with a signed `initData` launch payload (the backend

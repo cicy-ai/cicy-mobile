@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import * as NavigationBar from 'expo-navigation-bar';
 import { Stack } from 'expo-router';

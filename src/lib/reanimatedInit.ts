@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Native: reanimated must be imported once at the app entry so its runtime /
 // worklets initialise before any animated component mounts. The web build uses
 // the `.web` sibling (a no-op), which is how react-native-reanimated is kept

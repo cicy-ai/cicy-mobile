@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Parse a QR / deep-link payload into team credentials. Shared by the native
 // camera scanner (app/scan.tsx) and the web paste-form fallback
 // (app/scan.web.tsx). Two canonical formats:

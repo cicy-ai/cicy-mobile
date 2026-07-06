@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Design tokens — single source of truth for the entire app.
 // Tone: warm, restrained, refined. Inspired by Claude mobile.
 

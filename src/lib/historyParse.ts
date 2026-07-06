@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Thin shim over the VERBATIM web-chat parser (src/lib/history/*, copied from
 // cicy-code app/src/components/chat/history/lib). User rule: the web chat has
 // already stepped on every provider-format pitfall — copy it, never re-invent.

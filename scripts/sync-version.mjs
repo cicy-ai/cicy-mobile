@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Sync the release version into app.json before a build.
 //   node scripts/sync-version.mjs <version> [versionCode]
 //   e.g.  node scripts/sync-version.mjs 1.0.1 42

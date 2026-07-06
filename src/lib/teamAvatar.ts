@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Stable hashed colors + initial letter for a workspace, so the avatar in
 // the drawer, header and modal all look identical. Same id → same color
 // every time.

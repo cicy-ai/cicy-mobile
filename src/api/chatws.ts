@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 import type { WsClientMessage, WsServerMessage } from './types';
 
 export type WsStatus = 'idle' | 'connecting' | 'open' | 'closed';

@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';

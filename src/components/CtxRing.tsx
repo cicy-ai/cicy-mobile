@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 import { Text } from './Text';
 
 // 上下文用量指示 — native 回退版:没有 SVG 依赖,显示带档位色的百分比文本。

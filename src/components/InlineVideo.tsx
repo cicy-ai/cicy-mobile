@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { StyleSheet } from 'react-native';
 

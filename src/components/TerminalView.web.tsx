@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Web terminal view: react-native-webview has no web implementation, so on web
 // we render the ttyd page in a plain iframe. The native version's injected
 // scripts (mobile viewport / xterm font tuning) are skipped here — on a desktop

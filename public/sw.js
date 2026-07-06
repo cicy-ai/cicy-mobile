@@ -1,3 +1,6 @@
+// Copyright 2026 CiCy AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Minimal service worker — its presence (plus the manifest) makes the app
 // installable and satisfies the PWA criteria. We deliberately keep caching
 // network-first so the single-page app shell always reflects the latest deploy;
