@@ -124,13 +124,9 @@ jobs:
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: |
           VER="${GITHUB_REF_NAME#v}"
-          curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64 -o ossutil
-          chmod +x ossutil
-          EP=oss-cn-shanghai.aliyuncs.com
-          B=oss://cicy-1372193042-cn/cicy-mobile
+          source scripts/oss-put.sh
           for key in "cicy-${VER}.zip" "cicy-latest.zip"; do
-            ./ossutil -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -e "$EP" \
-              cp "cicy-${VER}.zip" "${B}/${key}" -f
+            oss_put "cicy-mobile/${key}" "cicy-${VER}.zip" application/zip
           done
           echo "OSS ZIP: https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.zip"
       # version.json (todo46 R2→OSS): primary copy on OSS — the worker
@@ -152,11 +148,9 @@ jobs:
           # before install). Field stays named `apk` for backward compat.
           OSS_ZIP="https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.zip"
           printf '{"version":"%s","apk":"%s","zip":true}' "$VER" "$OSS_ZIP" > version.json
-          # Primary → OSS
-          curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64 -o ossutil
-          chmod +x ossutil
-          ./ossutil -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -e oss-cn-shanghai.aliyuncs.com \
-            cp version.json oss://cicy-1372193042-cn/cicy-mobile/version.json -f
+          # Primary → OSS (signed curl, no ossutil binary)
+          source scripts/oss-put.sh
+          oss_put "cicy-mobile/version.json" version.json application/json
           # Migration mirror → R2 (old installs read the hardcoded R2 URL)
           base="https://api.cloudflare.com/client/v4/accounts/${R2_ACCOUNT_ID}/r2/buckets/cicy-assets-poc/objects"
           curl -fsS -X PUT "${base}/cicy-mobile/version.json" \
@@ -231,13 +225,11 @@ jobs:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
         run: |
-          curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64 -o ossutil
-          chmod +x ossutil
-          EP=oss-cn-shanghai.aliyuncs.com
-          B=oss://cicy-1372193042-cn/cicy-mobile
+          # Signed curl (no ossutil binary — this job runs on a macOS runner
+          # where the Linux ossutil64 can't execute). Same signer as the Android job.
+          source scripts/oss-put.sh
           for key in "cicy-${VER}.ipa" "cicy-latest.ipa"; do
-            ./ossutil -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -e "$EP" \
-              cp "cicy-${VER}.ipa" "${B}/${key}" -f
+            oss_put "cicy-mobile/${key}" "cicy-${VER}.ipa" application/octet-stream
           done
           # Migration mirror → R2 (drop once fully on OSS)
           CT=application/octet-stream
