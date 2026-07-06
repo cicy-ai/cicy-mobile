@@ -91,27 +91,26 @@ jobs:
         run: |
           printf '\norg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8\n' >> android/gradle.properties
           cd android && timeout 40m ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
-      - name: Stage APK
+      - name: Stage APK + zip-wrap
         run: |
           VER="${GITHUB_REF_NAME#v}"
           cp android/app/build/outputs/apk/release/app-release.apk "cicy-${VER}.apk"
-          ls -lh cicy-*.apk
-      - name: Publish GitHub Release with APK
+          # OSS blocks raw .apk on its bare domain (ApkDownloadForbidden). The
+          # zip-wrapped APK is the ONLY artifact we publish (GitHub Release + OSS);
+          # the raw .apk is never exposed. Phone downloads the zip, extracts, installs.
+          zip -qj "cicy-${VER}.zip" "cicy-${VER}.apk"
+          ls -lh "cicy-${VER}.apk" "cicy-${VER}.zip"
+      - name: Publish GitHub Release (zip-wrapped APK)
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: cicy-*.apk
+          files: cicy-*.zip
       # Public download — the repo is private, so the GitHub Release isn't
-      # reachable without auth. Mirror the APK to the public R2 CDN
-      # (r2.deepfetch.de5.net) under a versioned key + a stable `latest` alias.
-      # R2 lives in a DIFFERENT Cloudflare account than Workers (the CLOUDFLARE_*
-      # secrets), so it has its own R2_* creds. Upload via the R2 REST API
-      # directly (same path cicy-r2 uses) — no wrangler account mismatch.
-      # Primary download CDN = Alibaba OSS (fast in mainland China; R2/Cloudflare
-      # is slow / intermittently unreachable behind the GFW). Public-read bucket
-      # cicy-1372193042-cn, same one cicy-desktop releases live in.
+      # reachable without auth. Primary CDN = Alibaba OSS (fast in mainland China;
+      # R2/Cloudflare is slow / intermittently unreachable behind the GFW).
+      # Public-read bucket cicy-1372193042-cn, same one cicy-desktop releases use.
       #
       # OSS blocks raw .apk on ANY *.aliyuncs.com endpoint (ApkDownloadForbidden
       # anti-abuse — mainland AND HK, public AND signed URL; only a bound CNAME
@@ -119,14 +118,12 @@ jobs:
       # APK in an outer .zip: the zip's root isn't an APK, the content sniffer
       # lets it through, and it serves from the bare OSS domain. The phone
       # downloads cicy-*.zip and extracts the .apk to install.
-      - name: Zip-wrap APK → OSS (bare domain, fast in CN)
+      - name: Upload zip → OSS (bare domain, fast in CN)
         env:
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: |
           VER="${GITHUB_REF_NAME#v}"
-          zip -qj "cicy-${VER}.zip" "cicy-${VER}.apk"
-          ls -lh "cicy-${VER}.zip"
           curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64 -o ossutil
           chmod +x ossutil
           EP=oss-cn-shanghai.aliyuncs.com
@@ -136,45 +133,50 @@ jobs:
               cp "cicy-${VER}.zip" "${B}/${key}" -f
           done
           echo "OSS ZIP: https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.zip"
-      # R2 stays as a fallback mirror. version.json is still SERVED from R2 (the
-      # app reads it there), but its download URL now points at OSS. Written LAST
-      # (after the APK is up on both) so the in-app check never points at a
-      # missing file.
-      - name: Mirror APK to R2 + write version.json (→ OSS url)
+      # version.json (todo46 R2→OSS): primary copy on OSS — the worker
+      # /version.json route reads OSS-first, R2-fallback. JSON isn't apk-banned so
+      # it serves from the bare OSS domain. We ALSO mirror to R2 during migration:
+      # installs ≤ the OTA that repoints appUpdate.ts still read the hardcoded R2
+      # URL directly. Drop the R2 write once every install has OTA-converged.
+      # Written LAST (after the zip is up) so the check never points at a missing file.
+      - name: Write version.json → OSS (+ R2 mirror, migration)
         env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
         run: |
           VER="${GITHUB_REF_NAME#v}"
-          CT=application/vnd.android.package-archive
-          base="https://api.cloudflare.com/client/v4/accounts/${R2_ACCOUNT_ID}/r2/buckets/cicy-assets-poc/objects"
-          for key in "cicy-mobile/cicy-${VER}.apk" "cicy-mobile/cicy-latest.apk"; do
-            curl -fsS -X PUT "${base}/${key}" \
-              -H "Authorization: Bearer ${R2_API_TOKEN}" \
-              -H "Content-Type: ${CT}" \
-              --data-binary @"cicy-${VER}.apk" >/dev/null
-          done
           # Download URL points at the OSS zip (fast in CN, no domain binding).
           # `zip:true` tells the app the payload is a zip-wrapped APK (extract
           # before install). Field stays named `apk` for backward compat.
           OSS_ZIP="https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.zip"
           printf '{"version":"%s","apk":"%s","zip":true}' "$VER" "$OSS_ZIP" > version.json
+          # Primary → OSS
+          curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64 -o ossutil
+          chmod +x ossutil
+          ./ossutil -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -e oss-cn-shanghai.aliyuncs.com \
+            cp version.json oss://cicy-1372193042-cn/cicy-mobile/version.json -f
+          # Migration mirror → R2 (old installs read the hardcoded R2 URL)
+          base="https://api.cloudflare.com/client/v4/accounts/${R2_ACCOUNT_ID}/r2/buckets/cicy-assets-poc/objects"
           curl -fsS -X PUT "${base}/cicy-mobile/version.json" \
             -H "Authorization: Bearer ${R2_API_TOKEN}" \
             -H "Content-Type: application/json" \
             --data-binary @version.json >/dev/null
-          echo "version.json.apk → ${OSS_ZIP}"
+          echo "version.json → OSS + R2 (apk=${OSS_ZIP})"
       # Publish the SAME JS as an OTA update so devices already on this
       # runtime converge without reinstalling the APK.
       - name: Publish matching OTA update
+        # publish-ota.mjs was migrated R2→OSS (signed PUT) by w-10036, so this
+        # step now needs OSS creds, not R2. (ota.yml's copy was updated in tandem.)
         env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: |
           npx expo export -p android -p ios
           node scripts/publish-ota.mjs "${GITHUB_REF_NAME#v}"
 
-  # ── iOS unsigned IPA → GitHub Release + public R2 ────────────────────────────
+  # ── iOS unsigned IPA → OSS (+ R2 mirror during migration) ────────────────────────────
   # Unsigned on purpose: Sideloadly / AltStore re-sign with the user's Apple ID
   # on install (free account = 7-day cert). Must build on macOS. NOTE: private-
   # repo macOS minutes bill at 10x — each run is expensive.
@@ -220,11 +222,24 @@ jobs:
           rm -rf Payload && mkdir -p Payload && cp -R "$APP" Payload/
           zip -qry "cicy-${VER}.ipa" Payload
           ls -lh cicy-*.ipa
-      - name: Upload IPA to public R2 CDN
+      # .ipa is NOT subject to OSS's apk block — upload raw to OSS (primary,
+      # fast in CN), same cicy-mobile/ prefix + latest alias as the zip.
+      - name: Upload IPA → OSS (+ R2 mirror, migration)
         env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
         run: |
+          curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64 -o ossutil
+          chmod +x ossutil
+          EP=oss-cn-shanghai.aliyuncs.com
+          B=oss://cicy-1372193042-cn/cicy-mobile
+          for key in "cicy-${VER}.ipa" "cicy-latest.ipa"; do
+            ./ossutil -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -e "$EP" \
+              cp "cicy-${VER}.ipa" "${B}/${key}" -f
+          done
+          # Migration mirror → R2 (drop once fully on OSS)
           CT=application/octet-stream
           base="https://api.cloudflare.com/client/v4/accounts/${R2_ACCOUNT_ID}/r2/buckets/cicy-assets-poc/objects"
           for key in "cicy-mobile/cicy-${VER}.ipa" "cicy-mobile/cicy-latest.ipa"; do
@@ -233,5 +248,4 @@ jobs:
               -H "Content-Type: ${CT}" \
               --data-binary @"cicy-${VER}.ipa" >/dev/null
           done
-          echo "Public IPA: https://r2.deepfetch.de5.net/cicy-mobile/cicy-${VER}.ipa"
-          echo "Latest:     https://r2.deepfetch.de5.net/cicy-mobile/cicy-latest.ipa"
+          echo "OSS IPA: https://cicy-1372193042-cn.oss-cn-shanghai.aliyuncs.com/cicy-mobile/cicy-${VER}.ipa"
