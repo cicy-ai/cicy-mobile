@@ -1,12 +1,13 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
-// Self-update check for the sideloaded Android build (no app store, no adb):
-// CI publishes every release APK to the public R2 CDN plus a version manifest
-// (written AFTER the APK so it can never point at a missing file). The agents
-// screen shows an update banner when the manifest is newer than the installed
-// build; tapping opens the APK URL in the browser → system installer.
-const VERSION_URL = 'https://r2.deepfetch.de5.net/cicy-mobile/version.json';
+// Self-update check for the sideloaded build (no app store, no adb): CI writes
+// a version manifest (after the packages, so it can never point at a missing
+// file); the agents screen shows a banner when it's newer than the installed
+// build. Served via the worker (m.cicy-ai.com/version.json) — a domain-stable,
+// geo-agnostic URL that reads OSS first, R2 second, so the app is decoupled
+// from the storage backend (todo46 R2→OSS migration).
+const VERSION_URL = 'https://m.cicy-ai.com/version.json';
 
 export type ApkUpdate = { version: string; apk: string };
 
