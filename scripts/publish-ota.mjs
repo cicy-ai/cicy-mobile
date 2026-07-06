@@ -1,22 +1,27 @@
 #!/usr/bin/env node
-// Publish an expo-updates OTA update to the public R2 CDN (self-hosted; no
-// Expo servers — mainland-reachable). Run AFTER `npx expo export -p android`:
+// Publish an expo-updates OTA update to Alibaba OSS (self-hosted; no Expo
+// servers — mainland-reachable; todo46 moved this off R2). Run AFTER
+// `npx expo export -p android -p ios`:
 //
 //   node scripts/publish-ota.mjs <version-label>
 //
-// Uploads every exported file under cicy-mobile/updates/<runtime>/<uuid>/…
-// and writes the complete expo-updates protocol-1 JSON manifest LAST at
-// cicy-mobile/updates/<runtime>/manifest.json (atomic switch — the worker
-// serves it verbatim, so a check can never see a half-published update).
+// Uploads every exported file under cicy-mobile/updates/<runtime>/<uuid>/… and
+// writes the complete expo-updates protocol-1 JSON manifest LAST at
+// cicy-mobile/updates/<runtime>/manifest-<platform>.json (atomic switch — the
+// worker serves it verbatim, so a check can never see a half-published update).
 //
-// Env: R2_ACCOUNT_ID, R2_API_TOKEN. Runtime version read from app.json.
-import { createHash, randomUUID } from 'node:crypto';
+// Env: OSS_ACCESS_KEY_ID, OSS_ACCESS_KEY_SECRET. Runtime version read from app.json.
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const CDN = 'https://r2.deepfetch.de5.net';
-const BUCKET_BASE = (acc) => `https://api.cloudflare.com/client/v4/accounts/${acc}/r2/buckets/cicy-assets-poc/objects`;
+const OSS_BUCKET = 'cicy-1372193042-cn';
+const OSS_ENDPOINT = 'oss-cn-shanghai.aliyuncs.com';
+const OSS_HOST = `${OSS_BUCKET}.${OSS_ENDPOINT}`;
+// Public read URL prefix — the bundle `url`s baked into the manifest, and where
+// the worker's dualRead() finds the manifests.
+const CDN = `https://${OSS_HOST}`;
 
 const MIME = {
   hbc: 'application/javascript', js: 'application/javascript', bundle: 'application/javascript',
@@ -25,21 +30,33 @@ const MIME = {
   json: 'application/json', mp3: 'audio/mpeg', wav: 'audio/wav',
 };
 
-const { R2_ACCOUNT_ID, R2_API_TOKEN } = process.env;
-if (!R2_ACCOUNT_ID || !R2_API_TOKEN) { console.error('missing R2 creds'); process.exit(1); }
+const { OSS_ACCESS_KEY_ID, OSS_ACCESS_KEY_SECRET } = process.env;
+if (!OSS_ACCESS_KEY_ID || !OSS_ACCESS_KEY_SECRET) { console.error('missing OSS creds'); process.exit(1); }
 const label = process.argv[2] || 'dev';
 
 const appJson = JSON.parse(readFileSync('app.json', 'utf8'));
 const runtime = String(appJson.expo.runtimeVersion || '1');
 const meta = JSON.parse(readFileSync('dist/metadata.json', 'utf8'));
 
+// Sign + PUT a single object to OSS. Signature is the standard OSS v1 scheme:
+//   StringToSign = "PUT\n\n<Content-Type>\n<Date>\n/<bucket>/<key>"
+//   Authorization: "OSS <keyId>:base64(hmac-sha1(secret, StringToSign))"
+// key is the full object key (e.g. "cicy-mobile/updates/2/<uuid>/bundle.hbc").
 async function put(key, buf, contentType) {
-  // CF API throws transient 5xx now and then — one mid-run 502 must not strand
-  // a platform on an old manifest (happened: android updated, ios did not).
   for (let attempt = 1; ; attempt += 1) {
-    const res = await fetch(`${BUCKET_BASE(R2_ACCOUNT_ID)}/${encodeURIComponent(key).replace(/%2F/g, '/')}`, {
+    const date = new Date().toUTCString();
+    const resource = `/${OSS_BUCKET}/${key}`;
+    const stringToSign = `PUT\n\n${contentType}\n${date}\n${resource}`;
+    const signature = createHmac('sha1', OSS_ACCESS_KEY_SECRET).update(stringToSign, 'utf8').digest('base64');
+    const url = `${CDN}/${key.split('/').map(encodeURIComponent).join('/')}`;
+    const res = await fetch(url, {
       method: 'PUT',
-      headers: { Authorization: `Bearer ${R2_API_TOKEN}`, 'Content-Type': contentType },
+      headers: {
+        Host: OSS_HOST,
+        Date: date,
+        'Content-Type': contentType,
+        Authorization: `OSS ${OSS_ACCESS_KEY_ID}:${signature}`,
+      },
       body: buf,
     }).catch((e) => ({ ok: false, status: 0, text: async () => String(e) }));
     if (res.ok) return;

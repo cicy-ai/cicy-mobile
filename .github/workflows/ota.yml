@@ -36,10 +36,10 @@ jobs:
           node scripts/sync-version.mjs "$VER"
       - name: Export update bundles (android + ios)
         run: npx expo export -p android -p ios
-      - name: Publish OTA to R2
+      - name: Publish OTA to OSS
         env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: node scripts/publish-ota.mjs "${GITHUB_REF_NAME}"
 
   # Keep the PWA / Telegram Mini App on the SAME JS as the native OTA train.
