@@ -43,8 +43,13 @@ type AuthState = {
   session: string | null;
   userEmail: string | null;
   hydrate: () => Promise<void>;
-  /** Persist a fresh cloud login: session + built-in default team + cloud team list. */
+  /** Persist a fresh cloud login: session + the user's cloud team list (mirrored
+   *  from the server — no client-fabricated default team). */
   loginCloud: (s: CloudSession) => Promise<void>;
+  /** Re-mirror cloud teams from the server so deletions/additions propagate to
+   *  the local list. QR-scanned customs are untouched. No-op without a session;
+   *  keeps the cache on a fetch failure. */
+  syncCloudTeams: () => Promise<void>;
   /** Drop the cloud session and every cloud-sourced team; QR-scanned customs stay. */
   logoutCloud: () => Promise<void>;
   // Convenience derivations exposed for the API layer that still reads
@@ -98,9 +103,31 @@ function selectCurrent(teams: Team[], currentTeamId: string | null) {
   };
 }
 
-// The default-team title is localized; cloud teams keep their cloud titles.
-function defaultCloudTeamTitle(): string {
-  return i18n.t('teams.cloudDefaultTitle', { defaultValue: '默认团队' });
+// Map the server's cloud team list into local Team rows (the cloud is the source
+// of truth). `custom` entries are skipped — those need their own QR-scanned token
+// and are kept as locally-scanned rows, never mirrored from here. Dedupe by URL.
+// addedAt is preserved from an existing row of the same id so re-syncs don't
+// reshuffle the drawer order.
+function buildCloudTeams(session: string, now: number, fetched: any[], prev: Team[]): Team[] {
+  const prevById = new Map(prev.map((t) => [t.id, t]));
+  const out: Team[] = [];
+  const seen = new Set<string>();
+  for (const ct of Array.isArray(fetched) ? fetched : []) {
+    if (String(ct?.kind || 'cloud') === 'custom') continue;
+    const url = String(ct?.workspace_url || ct?.host_url || CLOUD_BASE).replace(/\/+$/, '');
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const id = `cloud-${ct?.id ?? url}`;
+    out.push({
+      id,
+      title: String(ct?.title || url.replace(/^https?:\/\//, '')),
+      serverUrl: url,
+      token: session,
+      addedAt: prevById.get(id)?.addedAt ?? now,
+      kind: 'cloud',
+    });
+  }
+  return out;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -164,8 +191,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
     }
 
+    // Purge the retired built-in default team (client-fabricated; no longer
+    // served cloud-side). It was pinned locally and never synced, so it lingers
+    // in old persisted blobs — drop it on load.
+    if (teams.some((tm) => tm.builtin || tm.id === 'cloud-default')) {
+      teams = teams.filter((tm) => !(tm.builtin || tm.id === 'cloud-default'));
+      if (!teams.some((tm) => tm.id === currentTeamId)) currentTeamId = teams[0]?.id ?? null;
+      await persist(teams, currentTeamId);
+    }
+
     const { serverUrl, token } = selectCurrent(teams, currentTeamId);
     set({ teams, currentTeamId, clientId: cid, hydrated: true, serverUrl, token });
+
+    // Signed in to the cloud → mirror the server's current team list in the
+    // background (propagates deletions/additions). Non-blocking; keeps cache on
+    // failure. Runs after the initial paint so startup isn't gated on the network.
+    if (session) void get().syncCloudTeams();
   },
 
   addTeam: async ({ serverUrl, token, title }) => {
@@ -224,49 +265,43 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       storage.setItem(USER_ID_KEY, s.userId),
     ]);
 
-    // A) Synthesize the built-in default team and select it. The cloud lazily
-    //    seeds its cicy roles on the first /api/panes hit — nothing else needed.
+    // The cloud is the source of truth: mirror exactly the teams the server
+    // returns (NO client-fabricated default team — the retired default team no
+    // longer exists cloud-side, so it must not be synthesized locally). Keep
+    // QR-scanned customs. A fetch failure → no cloud teams this login (retry).
     const now = Date.now();
-    let teams = get().teams.filter((tm) => !(tm.kind === 'cloud')); // re-login replaces cloud rows
-    const builtin: Team = {
-      id: 'cloud-default',
-      title: defaultCloudTeamTitle(),
-      serverUrl: CLOUD_BASE,
-      token: s.token,
-      addedAt: now,
-      kind: 'cloud',
-      builtin: true,
-    };
-    teams = [builtin, ...teams];
-
-    // B) Merge the user's cloud teams (kind=cloud/private → session auth).
-    //    Tokenless customs from the cloud are skipped — they need a QR scan
-    //    for their own token anyway; never clobber locally scanned rows.
+    const customs = get().teams.filter((tm) => tm.kind !== 'cloud');
+    let cloudTeams: Team[] = [];
     try {
-      const cloudTeams = await fetchCloudTeams(s.token);
-      const seen = new Set(teams.map((tm) => tm.serverUrl.replace(/\/+$/, '')));
-      for (const ct of cloudTeams) {
-        const kind = String(ct.kind || 'cloud');
-        if (kind === 'custom') continue;
-        const url = String(ct.workspace_url || ct.host_url || CLOUD_BASE).replace(/\/+$/, '');
-        if (seen.has(url)) continue;
-        seen.add(url);
-        teams.push({
-          id: `cloud-${ct.id ?? url}`,
-          title: String(ct.title || url.replace(/^https?:\/\//, '')),
-          serverUrl: url,
-          token: s.token,
-          addedAt: now,
-          kind: 'cloud',
-        });
-      }
+      cloudTeams = buildCloudTeams(s.token, now, await fetchCloudTeams(s.token), get().teams);
     } catch {
-      // team list is a nice-to-have — the default team alone is a full login
+      // leave cloudTeams empty — the drawer shows customs only until a resync
     }
+    const teams = [...cloudTeams, ...customs];
+    const currentTeamId = teams[0]?.id ?? null;
+    await persist(teams, currentTeamId);
+    const sel = selectCurrent(teams, currentTeamId);
+    set({ teams, currentTeamId, session: s.token, userEmail: s.email, ...sel });
+  },
 
-    await persist(teams, builtin.id);
-    const sel = selectCurrent(teams, builtin.id);
-    set({ teams, currentTeamId: builtin.id, session: s.token, userEmail: s.email, ...sel });
+  syncCloudTeams: async () => {
+    const session = get().session;
+    if (!session) return;
+    let fetched: any[];
+    try {
+      fetched = await fetchCloudTeams(session);
+    } catch {
+      return; // network hiccup → keep the cached list, don't wipe cloud rows
+    }
+    const now = Date.now();
+    const cloudTeams = buildCloudTeams(session, now, fetched, get().teams);
+    const customs = get().teams.filter((tm) => tm.kind !== 'cloud');
+    const teams = [...cloudTeams, ...customs];
+    let currentTeamId = get().currentTeamId;
+    if (!teams.some((tm) => tm.id === currentTeamId)) currentTeamId = teams[0]?.id ?? null;
+    await persist(teams, currentTeamId);
+    const sel = selectCurrent(teams, currentTeamId);
+    set({ teams, currentTeamId, ...sel });
   },
 
   logoutCloud: async () => {
