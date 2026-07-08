@@ -139,7 +139,10 @@ export default function Agents() {
       setError(null);
       return;
     }
-    setError(null);
+    // NB: don't clear the error here. A background poll (every 5s) that clears
+    // the error up-front, then re-sets it when the request fails again, makes
+    // the error screen flash to empty and back every tick on a persistently-
+    // failing team (e.g. 502). Clear the error only once a fetch SUCCEEDS.
     try {
       // Cloud teams (default team included): roster comes from /api/panes
       // ONLY. The tenant's cicy roles are configOnly (no pane_agents binding),
@@ -168,6 +171,7 @@ export default function Agents() {
         // master pinned first, everyone else in server order
         rows.sort((a, b) => (a.name === masterShort ? -1 : 0) - (b.name === masterShort ? -1 : 0));
         setAgents(rows);
+        setError(null);
         return;
       }
 
@@ -223,6 +227,7 @@ export default function Agents() {
         }));
 
       setAgents([...masters, ...workers]);
+      setError(null);
     } catch (e: any) {
       setError(String(e?.message ?? e));
     }
