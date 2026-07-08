@@ -609,20 +609,35 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType }: Pr
       const { serverUrl, token } = useAuthStore.getState();
       if (!serverUrl || !token) return;
       const client = new ChatWsClient({ serverUrl, token, clientId: clientIdRef.current, agentId });
+      const matchesAgent = (aid: string) =>
+        !aid || aid === agentId || agentId.endsWith(aid) || aid.endsWith(agentId);
       const off = client.on((msg) => {
-        if (msg.type !== 'ai_chunk' && msg.type !== 'thinking_chunk') return;
-        const d = (msg.data ?? {}) as StreamDelta;
-        const aid = String(d.agent_id ?? '').trim();
-        // Only this agent's stream (agent_id may be short or prefixed).
-        if (aid && aid !== agentId && !agentId.endsWith(aid) && !aid.endsWith(agentId)) return;
-        appendStreamDelta(msg.type === 'thinking_chunk' ? 'thinking' : 'text', String(d.delta ?? ''), String(d.turn_id ?? ''));
+        const d = (msg.data ?? {}) as StreamDelta & { status?: string };
+        if (!matchesAgent(String(d.agent_id ?? '').trim())) return;
+        if (msg.type === 'ai_chunk' || msg.type === 'thinking_chunk') {
+          appendStreamDelta(msg.type === 'thinking_chunk' ? 'thinking' : 'text', String(d.delta ?? ''), String(d.turn_id ?? ''));
+          return;
+        }
+        if (msg.type === 'status_change') {
+          // A tool round started (cicy answers are multi-round: … text → tool →
+          // text …). Refresh the authoritative multi-round structure from
+          // reply.json BEFORE the next round's deltas arrive, so they land on a
+          // fresh step instead of gluing onto the previous round's text (which
+          // read as the earlier round being overwritten). The tool card content
+          // lives only in reply.json — WS never carries it.
+          const st = String(d.status ?? '').toLowerCase();
+          if (st === 'tool_use' || st === 'tool_call' || st === 'working') nudgePoll();
+          return;
+        }
+        // A turn committed / its item updated → reconcile via the poll.
+        if (msg.type === 'current_updated') nudgePoll();
       });
       client.connect();
       return () => {
         off();
         client.close();
       };
-    }, [agentId, wsEnabled, appendStreamDelta]),
+    }, [agentId, wsEnabled, appendStreamDelta, nudgePoll]),
   );
 
   // Full-screen error → Try again: re-run the initial committed load in place
