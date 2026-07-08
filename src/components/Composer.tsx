@@ -92,7 +92,9 @@ export function Composer({
     void start();
   };
   const onHoldMove = (e: GestureResponderEvent) => {
-    if (phase !== 'recording') return;
+    // Track intent for the whole hold (responder fires move only between
+    // grant→release, so this is inherently scoped to the press). No phase gate:
+    // a fast slide-up before recording finishes starting must still cancel.
     const up = touchStartYRef.current - e.nativeEvent.pageY;
     const intent = up > CANCEL_DY;
     if (intent !== cancelIntentRef.current) {
@@ -178,20 +180,18 @@ export function Composer({
             {/* Side icons hide while recording — the pill becomes pure waveform. */}
             {!isRecording && !isTranscribing && canAttach &&
               iconBtn('camera-outline', () => void runPick(captureMedia))}
-            {/* ONE always-mounted hold zone: swapping elements mid-gesture
-                would drop the release event. */}
-            <Pressable
-              onPressIn={onHoldStart}
-              onTouchMove={onHoldMove}
-              onPressOut={onHoldEnd}
-              disabled={disabled || isTranscribing}
-              // Keep the press alive far outside the zone: RN's default retention
-              // (~20px) fires onPressOut at ~40px of upward travel — BELOW the
-              // 60px cancel threshold — so a slide-up-to-cancel SENT the recording
-              // mid-gesture, and sliding back down re-entered the rect and started
-              // a ghost second recording. With a huge retention the release always
-              // arrives in onPressOut with the onTouchMove-tracked intent.
-              pressRetentionOffset={{ top: 1000, bottom: 200, left: 200, right: 200 }}
+            {/* ONE always-mounted hold zone driven by the RAW responder system —
+                NOT Pressable. Pressable's onTouchMove is unreliable (Pressability
+                swallows move events), so slide-up-to-cancel never fired. The
+                responder handlers (grant/move/release/terminate) deliver every
+                move with pageY, so the upward-travel intent is tracked precisely. */}
+            <View
+              onStartShouldSetResponder={() => !(disabled || isTranscribing)}
+              onMoveShouldSetResponder={() => !(disabled || isTranscribing)}
+              onResponderGrant={onHoldStart}
+              onResponderMove={onHoldMove}
+              onResponderRelease={onHoldEnd}
+              onResponderTerminate={onHoldEnd}
               style={styles.holdZone}
             >
               {isRecording ? (
@@ -201,7 +201,7 @@ export function Composer({
                   {isTranscribing ? t('voice.transcribing') : t('voice.holdToTalk')}
                 </Text>
               )}
-            </Pressable>
+            </View>
             {!isRecording && !isTranscribing && (
               <>
                 {iconBtn('keypad-outline', () => setMode('text'), { size: 22 })}
