@@ -17,7 +17,19 @@ type Src = { uri: string; headers?: Record<string, string> };
 // because the external browser has no Bearer. Native gets pinch-zoom + pan +
 // double-tap toggle (RNGH + reanimated, both already deps); web keeps it
 // simple: tap backdrop to close, ↗ to open the raw URL.
-export function ImageLightbox({ src, name, onClose }: { src: Src; name?: string; onClose: () => void }) {
+export function ImageLightbox({
+  src,
+  browserUrl,
+  name,
+  onClose,
+}: {
+  src: Src;
+  // Token-bearing URL the external browser can open on its own (the in-app
+  // <Image> above uses src.headers; the browser has no header).
+  browserUrl?: string;
+  name?: string;
+  onClose: () => void;
+}) {
   const insets = useSafeAreaInsets();
 
   // ── zoom/pan state (native only, but hooks must run unconditionally) ──
@@ -69,7 +81,7 @@ export function ImageLightbox({ src, name, onClose }: { src: Src; name?: string;
     transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: scale.value }],
   }));
 
-  const openExternal = () => Linking.openURL(src.uri).catch(() => {});
+  const openExternal = () => Linking.openURL(browserUrl || src.uri).catch(() => {});
 
   const img = <Image source={src as any} style={styles.img} resizeMode="contain" />;
 

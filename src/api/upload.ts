@@ -110,6 +110,27 @@ export function assetUri(pathOrUrl: string): { uri: string; headers?: Record<str
   return { uri: full };
 }
 
+// URL an EXTERNAL browser / system viewer can open on its own. The in-app
+// <Image>/fetch paths authenticate with the Authorization: Bearer header, but
+// Linking.openURL hands the URL to the system browser, which carries NO header —
+// and assetUri deliberately strips the ?token (so the session never leaks into
+// logs/caches). The result: the browser hits an UNauthenticated /assets/files
+// and gets an error/empty download instead of the file ("只能下载,打不开").
+// For the external-open path we therefore re-append ?token=<session> so the
+// browser can authenticate itself. Same-origin only — never leak the token to
+// an external (OSS) host.
+export function assetBrowserUrl(pathOrUrl: string): string {
+  const { serverUrl, token } = useAuthStore.getState();
+  const p = assetAbsPathToURL(String(pathOrUrl || ''));
+  const isAbsolute = /^https?:\/\//i.test(p);
+  let full = isAbsolute ? p : `${serverUrl ?? ''}${p.startsWith('/') ? '' : '/'}${p}`;
+  const sameOrigin = !isAbsolute || (!!serverUrl && full.startsWith(serverUrl));
+  if (token && sameOrigin && !/[?&]token=/.test(full)) {
+    full += (full.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
+  }
+  return full;
+}
+
 // Keep filenames shell/path safe; the server also sanitizes.
 function sanitizeName(name: string): string {
   const base = (name || 'file').split(/[\\/]/).pop() || 'file';

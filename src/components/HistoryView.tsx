@@ -9,7 +9,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, type AppStateStatus, Image, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
 
 import { api } from '@/src/api/http';
-import { assetUri, isAssetRef } from '@/src/api/upload';
+import { assetBrowserUrl, assetUri, isAssetRef } from '@/src/api/upload';
 import i18n from '@/src/i18n';
 import type { HistoryStep, HistoryTurn } from '@/src/api/types';
 import { buildTurnsFromRawItems, normalizeHistoryTurns, replyItemsToSteps, splitLeadingHarnessBlocks, stripHarnessNoise } from '@/src/lib/historyParse';
@@ -1696,7 +1696,7 @@ function renderInline(text: string, theme: ReturnType<typeof useTheme>, kp: stri
         <Text
           key={`${kp}l${i}`}
           style={{ color: theme.accent, textDecorationLine: 'underline' }}
-          onPress={url ? () => Linking.openURL(url).catch(() => {}) : undefined}
+          onPress={url ? () => Linking.openURL(assetBrowserUrl(url)).catch(() => {}) : undefined}
         >
           {label}
         </Text>,
@@ -1906,7 +1906,9 @@ function MediaBlock({
   // Real aspect ratio once the thumbnail loads (was a hard 200×200 crop);
   // clamped so extreme panoramas/scrolls don't take over the list.
   const [ratio, setRatio] = useState(0);
-  const open = () => Linking.openURL(src.uri).catch(() => {});
+  // External open (browser / system viewer) needs the token IN the URL — the
+  // browser can't send our Bearer header (see assetBrowserUrl).
+  const open = () => Linking.openURL(assetBrowserUrl(url)).catch(() => {});
 
   if (isImage) {
     return (
@@ -1924,7 +1926,9 @@ function MediaBlock({
             }}
           />
         </PressableScale>
-        {viewerOpen ? <ImageLightbox src={src} name={name} onClose={() => setViewerOpen(false)} /> : null}
+        {viewerOpen ? (
+          <ImageLightbox src={src} browserUrl={assetBrowserUrl(url)} name={name} onClose={() => setViewerOpen(false)} />
+        ) : null}
       </>
     );
   }
