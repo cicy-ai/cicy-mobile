@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from 'expo-router';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, type AppStateStatus, Image, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
@@ -76,14 +78,6 @@ function turnTopInContent(node: any, turnKey: string): number | null {
   const target = findTurnEl(node, turnKey);
   if (!target || typeof target.getBoundingClientRect !== 'function') return null;
   return node.scrollTop + (target.getBoundingClientRect().top - node.getBoundingClientRect().top);
-}
-// Re-apply across progressive reflow (markdown/fonts/code blocks shift offsetTop).
-function scheduleTurnTop(node: any, turnKey: string): { raf: number; timers: number[] } {
-  const apply = () => { pinTurnTop(node, turnKey); };
-  apply();
-  const raf = requestAnimationFrame(apply) as unknown as number;
-  const timers = [80, 240, 600].map((d) => setTimeout(apply, d) as unknown as number);
-  return { raf, timers };
 }
 function scheduleBottom(node: any): { raf: number; timers: number[] } {
   const apply = () => { node.scrollTop = node.scrollHeight; };
@@ -171,8 +165,13 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
   const reconcilingRef = useRef(false);
   const requestSeqRef = useRef(0);
   const lastNonceRef = useRef(0); // last processed `pending.nonce`
+  const optimisticActiveRef = useRef(false); // poll-side mirror of `optimistic` (staleTerminal guard)
+  const itemsRef = useRef<HistoryTurn[]>([]); // render-time mirror for send-time rollback
+  const typeSeededRef = useRef(false); // first tail attach since focus → reveal instantly, don't type
+  const suppressNextAnchorRef = useRef(false); // failed/timed-out send → don't re-anchor the OLD q
   const onReplyInFlightRef = useRef<typeof onReplyInFlight>(undefined);
   onReplyInFlightRef.current = onReplyInFlight;
+  itemsRef.current = items;
   const committedReadyRef = useRef(false); // Part 1 loaded → poll may attach tail
   const firstReplyDoneRef = useRef(false); // Part 2's first poll resolved → reveal
 
@@ -184,6 +183,9 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
   const didInitialScrollRef = useRef(false);
   const shouldStickBottomRef = useRef(true);
   const preserveScrollOffsetRef = useRef(false); // loadMore prepend → keep position
+  // Metrics sampled RIGHT BEFORE the prepend's setItems (web invariant: sampling
+  // earlier lets an interleaved poll render consume them mid-fetch → 翻页跳屏).
+  const preserveScrollMetricsRef = useRef<{ h: number; top: number } | null>(null);
   const scheduledScrollRef = useRef<{ raf: number; timers: number[] } | null>(null);
 
   const domNode = useCallback((): any => {
@@ -302,6 +304,17 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
         const cid = String(ids.conversation_id ?? '') || nextCid;
         const newMax = Number(ids.id ?? 0);
         if (!cid || newMax <= 0) {
+          // 新会话是空的(/clear 后):必须把视图完整重置成空,而不是只换 id。否则旧
+          // turn 留在屏上,且 maxLoadedIdRef 仍停在旧会话的 max —— 新会话里任何小 id
+          // 的答案/报错都会被判在边界下方而永不 attach(错误也出不来)。(web 同款坑)
+          maxLoadedIdRef.current = 0;
+          minLoadedIdRef.current = 0;
+          liveTurnIdRef.current = '';
+          lastSigRef.current = '';
+          liveTargetRef.current = null;
+          setLiveTurn(null);
+          setItems([]);
+          setHasMore(false);
           convRef.current = cid;
           setConversationId(cid);
           return;
@@ -345,12 +358,15 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
     const key = `${target.history_id}:${steps.length}:${last?.type ?? ''}`;
     const rv = revealRef.current;
     if (rv.key !== key) {
-      // First attach after mount/clear (key '') = pre-existing content (entering a
-      // chat whose last reply is done or mid-flight) — show it in full instantly;
-      // replaying it char-by-char would be a fake typewriter over history. Only
-      // text that arrives AFTER we're watching gets typed. Mid-stream key changes
-      // (a new step starting) still reveal from 0 as before.
-      const preExisting = rv.key === '';
+      // First attach since FOCUS = pre-existing content (entering a chat whose
+      // last reply is done or mid-flight) — show it in full instantly; replaying
+      // it char-by-char would be a fake typewriter over history. Only text that
+      // arrives AFTER we're watching gets typed. A dedicated ref, NOT rv.key===''
+      // — clearLiveTurn resets the key mid-session (suggestion-mode rotation,
+      // transient answerId 0), which would re-arm the instant reveal and make the
+      // next real reply's first chunk pop in un-typed.
+      const preExisting = !typeSeededRef.current;
+      typeSeededRef.current = true;
       rv.key = key;
       rv.shown = preExisting ? fullLen : 0;
       rv.frac = 0;
@@ -401,7 +417,17 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
       return;
     }
     try {
-      const r = await api.getCurrentReply(agentId, convRef.current);
+      // Do NOT pin to the committed conversationId: the backend echoes a pinned
+      // cid back even after the agent rotated (returning maxID=0 for it), so a
+      // rotation could never be observed — the view froze until re-entry and the
+      // whole softRebind path was dead code. Poll the agent's CURRENT reply. (web
+      // useCurrentHistory has the same invariant, commented.)
+      const r = await api.getCurrentReply(agentId);
+      // A stop path (blur/background) or kickPoll invalidated this loop while the
+      // request was in flight → drop the response. Without this, resuming forks a
+      // SECOND poll loop (both reschedule), and a stale out-of-order snapshot can
+      // overwrite a newer liveTarget (text visibly regresses).
+      if (!aliveRef.current || gen !== pollGenRef.current) return;
       complete = !!r.complete;
       const cid = String(r.conversation_id ?? '').trim();
       // Agent rotated to a different conversation than committed shows → rebind.
@@ -411,6 +437,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
           reconcilingRef.current = true;
           await softRebind(cid);
           reconcilingRef.current = false;
+          if (!aliveRef.current || gen !== pollGenRef.current) return;
         }
       } else {
         if (cid && !convRef.current) {
@@ -420,15 +447,26 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
         const replyCid = String(r.reply_conversation_id ?? '').trim();
         const answerId = Number(r.history_id ?? 0); // == committedMax + 1
         const replyMaxId = answerId > 0 ? answerId - 1 : 0; // current.json maxID (q_last)
+        const status = String(r.status ?? 'thinking').trim() || 'thinking';
+        const replyFailed = /^(failed|fail|error)$/.test(status.toLowerCase());
         if (answerId <= 0) {
-          if (liveTurnIdRef.current) clearLiveTurn();
+          if (liveTargetRef.current) clearLiveTurn();
         } else {
           // A newer turn committed → pull ONLY the new tail (never below).
           if (replyMaxId > maxLoadedIdRef.current && !reconcilingRef.current) {
             reconcilingRef.current = true;
             await reconcileTail();
             reconcilingRef.current = false;
+            if (!aliveRef.current || gen !== pollGenRef.current) return;
           }
+          const boundary = maxLoadedIdRef.current;
+          // cicy reseeds current.json every tool round, so mid-turn the boundary
+          // can advance PAST the answer slot this poll snapshotted (answerId is
+          // one round stale). The reply is still THIS in-flight turn — keep the
+          // tail attached at the new slot instead of clear→reattach, which used
+          // to flash the committed copy for one poll = the list jumping every
+          // round. (web's effectiveAnswerId invariant.)
+          const effectiveAnswerId = !complete && !replyFailed ? Math.max(answerId, boundary + 1) : answerId;
           const answer = String(r.answer ?? '');
           const thinking = String(r.thinking ?? '');
           const liveItems: any[] = Array.isArray(r.items) ? r.items : [];
@@ -436,18 +474,28 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
           const sameConversation = !replyCid || !convRef.current || replyCid === convRef.current;
           // Suppress a reply to a harness/system message ("(silence)") — noise.
           const realQ = replyAnswersRealQuestion(r.question);
-          if (sameConversation && realQ && answerId > maxLoadedIdRef.current && (hasContent || !complete)) {
+          // 乐观 q 还在、真 answer 还没来时,reply.json 里的「终结态」回复(failed /
+          // slash-ack)属于上一轮,不是这条新 q 的答案 —— 不贴,显示 thinking,直到这
+          // 条 q 自己的在途回复到来。绝不挡正常 complete 的上一条答案(否则 a1 闪一下)。
+          const isSlashAck = String(r.turn_id ?? '') === 'slash-ack';
+          const staleTerminal = (isSlashAck || replyFailed) && optimisticActiveRef.current;
+          if (sameConversation && realQ && effectiveAnswerId > boundary && (hasContent || !complete) && !staleTerminal) {
             const turnId = String(r.turn_id ?? '');
-            const status = String(r.status ?? 'thinking').trim() || 'thinking';
-            const sig = `${turnId}:${answerId}:${status}:${String(r.updated_at ?? '')}:${thinking.length}:${answer.length}:${liveItems.length}`;
+            // Per-item lengths in the sig: a tool_use item's input can grow while
+            // item count / answer / thinking stay constant — without this the
+            // frame never re-renders. (web parity)
+            const itemsSig = JSON.stringify(
+              liveItems.map((it: any) => [it?.type, String(it?.thinking ?? it?.text ?? '').length, it?.name ?? '']),
+            );
+            const sig = `${turnId}:${effectiveAnswerId}:${status}:${String(r.updated_at ?? '')}:${thinking.length}:${answer.length}:${itemsSig}`;
             if (sig !== lastSigRef.current) {
               lastSigRef.current = sig;
               liveTurnIdRef.current = turnId;
               // Set the typewriter's TARGET (full text); it reveals char-by-char so
               // the answer reads as continuous typing instead of 700ms chunks.
-              if (!complete) onReplyInFlightRef.current?.();
+              if (!complete && !replyFailed) onReplyInFlightRef.current?.();
               liveTargetRef.current = {
-                history_id: answerId,
+                history_id: effectiveAnswerId,
                 conversation_id: cid || convRef.current,
                 role: 'assistant',
                 q: '',
@@ -459,7 +507,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
               };
               kickType();
             }
-          } else if (liveTurnIdRef.current) {
+          } else if (liveTargetRef.current) {
             clearLiveTurn();
           }
         }
@@ -485,11 +533,38 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
     if (aliveRef.current) pollReply();
   }, [pollReply]);
 
+  // Full-screen error → Try again: re-run the initial committed load in place
+  // (backing out and re-entering was the only recovery before) + restart polling.
+  const retryInitialLoad = useCallback(() => {
+    setError(null);
+    setLoading(true);
+    (async () => {
+      try {
+        await loadWindow();
+        setError(null);
+      } catch (e: any) {
+        setError(String(e?.message ?? e));
+      } finally {
+        committedReadyRef.current = true;
+        setLoading(false);
+      }
+      kickPoll();
+    })();
+  }, [loadWindow, kickPoll]);
+
+  // Re-run the latest cancelled/failed turn (web's OutcomeNoticeCard 重试).
+  const retryOutcome = useCallback(async () => {
+    try {
+      await api.retryCicyReply(agentId);
+    } catch {}
+    shouldStickBottomRef.current = true;
+    kickPoll();
+  }, [agentId, kickPoll]);
+
   // Load an older page of committed turns (prepend, keep scroll position).
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore || !minLoadedIdRef.current) return;
     setLoadingMore(true);
-    preserveScrollOffsetRef.current = true;
     try {
       const hist = await api.getCurrentHistory(agentId, {
         limit: WINDOW,
@@ -500,6 +575,15 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
       if (!older.length) {
         setHasMore(false);
       } else {
+        // Sample metrics + arm the preserve flag ONLY now, right before setItems
+        // (not at fetch start — an interleaved poll render would consume the flag
+        // mid-fetch = 翻页跳屏). The anchor pass compensates scrollTop by the
+        // height delta; browser scroll anchoring alone doesn't exist on iOS
+        // WebKit (Safari / Mini-App WKWebView). Native relies on the ScrollView's
+        // maintainVisibleContentPosition instead.
+        const node = domNode();
+        preserveScrollMetricsRef.current = node ? { h: node.scrollHeight, top: node.scrollTop } : null;
+        preserveScrollOffsetRef.current = true;
         minLoadedIdRef.current = Number(older[0].history_id ?? minLoadedIdRef.current);
         setItems((prev) => normalizeHistoryTurns([...older, ...prev]));
         setHasMore(!!hist.has_more);
@@ -509,7 +593,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
     } finally {
       setLoadingMore(false);
     }
-  }, [agentId, loadingMore, hasMore]);
+  }, [agentId, loadingMore, hasMore, domNode]);
 
   // Load-earlier is driven by an IntersectionObserver on a TOP sentinel (port of
   // web): it fires only when the user scrolls the sentinel into view. On a
@@ -559,6 +643,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
       liveTurnIdRef.current = '';
       liveTargetRef.current = null;
       revealRef.current = { key: '', shown: 0, frac: 0 };
+      typeSeededRef.current = false; // first tail attach after focus reveals instantly
       if (typeRafRef.current != null) { cancelAnimationFrame(typeRafRef.current); typeRafRef.current = null; }
       // On a cache hit the committed window is already painted, so the poll loop
       // may attach the live tail immediately; on a miss it waits for loadWindow.
@@ -588,8 +673,15 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
         mounted = false;
         aliveRef.current = false;
         focusedRef.current = false;
+        // Invalidate any in-flight pollReply: without the gen bump, a request
+        // suspended across blur→refocus reschedules alongside the new loop —
+        // two poll chains forever.
+        pollGenRef.current += 1;
         if (pollTimer.current) clearTimeout(pollTimer.current);
         pollTimer.current = null;
+        // The typewriter self-reschedules until its backlog drains — cancel it
+        // too, or it keeps setState-ing a blurred screen every frame.
+        if (typeRafRef.current != null) { cancelAnimationFrame(typeRafRef.current); typeRafRef.current = null; }
         clearScheduledScrolls();
       };
     }, [agentId, loadWindow, pollReply, applyAnchorSpacerHeight, clearScheduledScrolls]),
@@ -608,6 +700,9 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
         }
       } else {
         aliveRef.current = false;
+        // Invalidate the in-flight request too (see focus cleanup) — resuming
+        // while one is suspended must not fork a second poll loop.
+        pollGenRef.current += 1;
         if (pollTimer.current) clearTimeout(pollTimer.current);
         pollTimer.current = null;
       }
@@ -624,21 +719,67 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
   // round-trips — the q must never lag the keypress. Cleared when a NEWER
   // committed user turn lands (the real q) or on a 60s no-show timeout.
   const [optimistic, setOptimistic] = useState<{ text: string; nonce: number; baselineId: number } | null>(null);
+  optimisticActiveRef.current = !!optimistic;
   useEffect(() => {
     if (!pending) return;
     if (pending.nonce === lastNonceRef.current) return;
     lastNonceRef.current = pending.nonce;
-    setOptimistic({ text: pending.text, nonce: pending.nonce, baselineId: maxLoadedIdRef.current });
+    // Slash commands (/clear, /compact) are intercepted server-side and never
+    // become a committed user turn — an optimistic bubble would never see its
+    // teardown signal and would sit there until the 60s timeout. Skip it; the
+    // command's ack arrives via the reply.json poll. (web onNudge invariant)
+    if (/^\/\w+(\s|$)/.test(pending.text.trim())) {
+      kickPoll();
+      return;
+    }
+    // 上一轮若是「生成失败」→ 新 q 就地覆盖它(后端 dropTrailingFailedTurnLocked 丢掉
+    // 失败的 q 并让新 q 复用同一个 id)。前端必须配合:删掉失败的 q + 它的 a,并把
+    // committed 边界回退到失败 q 之前 —— 否则新 q 复用旧 id 后 reconcileTail 的
+    // `newMax > maxLoadedIdRef` 永不成立,那个 slot 永不重拉 = UI 一直卡着旧 q。
+    // 失败可能是 committed 的 outcome==='error',也可能还挂在 live tail,两者都要清。
+    let base = itemsRef.current;
+    const lastLive = liveTargetRef.current;
+    const liveFailed = !!lastLive && /fail|error/i.test(String((lastLive as any)?.status ?? ''));
+    const committedFailed = base.length > 0 && String((base[base.length - 1] as any)?.outcome ?? '') === 'error';
+    if (committedFailed || liveFailed) {
+      let cut = base.length;
+      for (let i = base.length - 1; i >= 0; i -= 1) {
+        if (base[i]?.role === 'user') { cut = i; break; }
+      }
+      base = base.slice(0, cut);
+      setItems(base);
+      maxLoadedIdRef.current = Number(base[base.length - 1]?.history_id ?? 0);
+      clearLiveTurn();
+    }
+    // Baseline = max USER id (web parity), not max overall id: after a rollback
+    // the new q reuses the failed q's id, which can be ≤ the old overall max.
+    let maxUserId = 0;
+    for (const it of base) {
+      if (it?.role === 'user') maxUserId = Math.max(maxUserId, Number(it?.history_id ?? 0));
+    }
+    setOptimistic({ text: pending.text, nonce: pending.nonce, baselineId: maxUserId });
     kickPoll();
-  }, [pending, kickPoll]);
-  // `pending: null` from the send path = the send FAILED → drop the bubble.
+  }, [pending, kickPoll, clearLiveTurn]);
+  // `pending: null` from the send path = the send FAILED → drop the bubble. The
+  // anchor must NOT mistake the previous q for a "new question" when the opt-
+  // key disappears (it would glide the OLD q to the top and open a viewport-
+  // sized blank spacer that nothing ever shrinks).
   useEffect(() => {
-    if (pending === null) setOptimistic(null);
+    if (pending === null) {
+      suppressNextAnchorRef.current = true;
+      setOptimistic(null);
+    }
   }, [pending]);
   useEffect(() => {
     if (!optimistic) return;
     const timer = setTimeout(() => {
-      setOptimistic((cur) => (cur && cur.nonce === optimistic.nonce ? null : cur));
+      setOptimistic((cur) => {
+        if (cur && cur.nonce === optimistic.nonce) {
+          suppressNextAnchorRef.current = true; // no-show ≠ new question — don't re-anchor the old q
+          return null;
+        }
+        return cur;
+      });
     }, 60000);
     return () => clearTimeout(timer);
   }, [optimistic]);
@@ -746,17 +887,37 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
     return '';
   }, [displayItems, optimistic]);
 
+  // ↓-chip: visible once the user is parked >300px above the bottom (mid-stream
+  // scroll-up otherwise requires repeated flings to get back down).
+  const [showJump, setShowJump] = useState(false);
+  const showJumpRef = useRef(false);
   const onScroll = useCallback(
     (e: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
       const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
       const y = contentOffset.y;
-      shouldStickBottomRef.current = contentSize.height - y - layoutMeasurement.height <= 80;
+      const dist = contentSize.height - y - layoutMeasurement.height;
+      shouldStickBottomRef.current = dist <= 80;
+      const jump = dist > 300;
+      if (jump !== showJumpRef.current) {
+        showJumpRef.current = jump;
+        setShowJump(jump);
+      }
       // load-earlier is NOT triggered here. Auto-loading on every scroll near the top
       // fired on open and paged in the WHOLE history ("一打开全打开了"). Like web, it's
       // an IntersectionObserver on a top sentinel that only fires when scrolled into view.
     },
     [],
   );
+  const jumpToLatest = useCallback(() => {
+    shouldStickBottomRef.current = true;
+    // Jumping down while an anchor spacer is open would land in its blank — the
+    // user explicitly wants the bottom, so release the anchor.
+    activeSpacerTurnKeyRef.current = '';
+    applyAnchorSpacerHeight(0);
+    const node = domNode();
+    if (node) animateScrollTop(node, node.scrollHeight, 300);
+    else scrollRef.current?.scrollToEnd({ animated: true });
+  }, [domNode, applyAnchorSpacerHeight]);
 
   // w-10064's RN tip: re-assert the anchor on content-size change (markdown/code
   // reflow shifts offsetTop) — more reliable than timers alone. Keeps the in-flight
@@ -796,9 +957,15 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
       const node = domNode();
       if (!node) return;
 
-      // loadMore prepend → keep the user's position, don't anchor.
+      // loadMore prepend → restore the user's position: scrollTop += the height
+      // the prepend added. Chrome's scroll anchoring does this for free, iOS
+      // WebKit (Safari / WKWebView) doesn't — without the explicit compensation
+      // the content jumps out from under the finger on every "load earlier".
       if (preserveScrollOffsetRef.current) {
         preserveScrollOffsetRef.current = false;
+        const m = preserveScrollMetricsRef.current;
+        preserveScrollMetricsRef.current = null;
+        if (m) node.scrollTop = m.top + (node.scrollHeight - m.h);
         didInitialScrollRef.current = true;
         return;
       }
@@ -812,6 +979,19 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
         runScheduledScroll(scheduleBottom(node));
         shouldStickBottomRef.current = true;
         didInitialScrollRef.current = true;
+        return;
+      }
+
+      // A failed / timed-out send dropped the optimistic q: the PREVIOUS q becoming
+      // "the newest" again is not a new question. Resync the anchor bookkeeping and
+      // close the spacer without scrolling — re-anchoring here glided the OLD q to
+      // the top and left a viewport-sized blank that nothing ever shrank.
+      if (suppressNextAnchorRef.current) {
+        suppressNextAnchorRef.current = false;
+        anchoredQKeyRef.current = lastUserKey;
+        activeSpacerTurnKeyRef.current = '';
+        replySeenActiveRef.current = false;
+        applyAnchorSpacerHeight(0);
         return;
       }
 
@@ -847,7 +1027,10 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
         const key = activeSpacerTurnKeyRef.current;
         const qTop = turnTopInContent(node, key);
         if (qTop == null) {
+          // The anchored element vanished (e.g. optimistic dropped) — close the
+          // spacer too, or a viewport-sized blank persists with no owner.
           activeSpacerTurnKeyRef.current = '';
+          applyAnchorSpacerHeight(0);
           return;
         }
         const lastCommitted = displayItems[displayItems.length - 1];
@@ -885,19 +1068,29 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
   // blank it.
   if (error && displayItems.length === 0 && !liveVisible) {
     return (
-      <View style={styles.center}>
+      <View style={[styles.center, { gap: spacing.lg, paddingHorizontal: spacing.xl }]}>
         <Text variant="callout" tone="danger" style={{ textAlign: 'center' }}>
           {error}
         </Text>
+        <PressableScale
+          onPress={retryInitialLoad}
+          haptic
+          scaleTo={0.96}
+          style={[styles.retryBtn, { borderColor: theme.border, backgroundColor: theme.surface }]}
+        >
+          <Ionicons name="refresh" size={16} color={theme.text} />
+          <Text variant="callout">{i18n.t('common.tryAgain')}</Text>
+        </PressableScale>
       </View>
     );
   }
 
   const isEmpty = displayItems.length === 0 && !liveVisible;
   return (
-    // Single non-virtualized scroll container (windowed to WINDOW committed items).
-    // On web this is one overflow <div> — required for the top-anchor mechanism
-    // (precise scrollTop + a dynamic bottom spacer), exactly like cicy-code.
+    <View style={{ flex: 1 }}>
+    {/* Single non-virtualized scroll container (windowed to WINDOW committed items).
+        On web this is one overflow <div> — required for the top-anchor mechanism
+        (precise scrollTop + a dynamic bottom spacer), exactly like cicy-code. */}
     <ScrollView
       ref={scrollRef}
       style={{ flex: 1 }}
@@ -905,6 +1098,9 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
       onScroll={onScroll}
       scrollEventThrottle={16}
       onContentSizeChange={onContentSizeChange}
+      // Native "load earlier": keep the currently-visible turn in place when a
+      // page is prepended (the DOM scroll compensation above is web-only).
+      maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
     >
       {/* Load-earlier at the TOP. When more exists, a sentinel (data-load-more) the
           IntersectionObserver watches — only fires when scrolled into view (also
@@ -945,25 +1141,19 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
       {displayItems.map((t, i) => {
         if (recapResponses.has(t)) return null;
         const turnKey = String(t.history_id ?? `u-${i}`);
+        const isLastRow = !liveVisible && i === displayItems.length - 1;
         return (
           <View key={`row-${t.history_id ?? t.turn_id ?? i}`} {...({ dataSet: { turnKey } } as any)}>
-            <Turn turn={t} isLast={!liveVisible && i === displayItems.length - 1} />
+            <Turn
+              turn={t}
+              isLast={isLastRow}
+              // 重试 only on the LATEST turn's outcome (older failures are history),
+              // and never for 'blocked' (web parity).
+              onRetry={t.outcome && t.outcome !== 'blocked' && isLastRow ? retryOutcome : undefined}
+            />
           </View>
         );
       })}
-
-      {/* Optimistic q + reserved answer slot — painted the same frame as the
-          send, replaced in place when the real committed q + live tail arrive. */}
-      {optimistic ? (
-        <View key={`opt-${optimistic.nonce}`} {...({ dataSet: { turnKey: `opt-${optimistic.nonce}` } } as any)} style={{ gap: spacing.md }}>
-          <QuestionBubble text={optimistic.text} />
-          {!liveVisible ? (
-            <View>
-              <TypingDots />
-            </View>
-          ) : null}
-        </View>
-      ) : null}
 
       {/* Part 2 — the live tail (answer-only) right after committed, rendered
           SEPARATELY so its per-token growth never re-renders committed. */}
@@ -973,40 +1163,190 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
         </View>
       ) : null}
 
+      {/* Optimistic q + reserved answer slot — painted the same frame as the
+          send, replaced in place when the real committed q + live tail arrive.
+          MUST render AFTER the live tail: with cicy's lazy migration the previous
+          answer a1 is still the live tail when q2 is sent — q2 before it reads as
+          "q1 → q2 → a1" (a1 visually answering q2). Order is …q1, a1, q2, dots.
+          `optimisticStale` drops the bubble the same FRAME the real committed q
+          paints (the retire effect runs post-paint → one-frame double bubble).
+          Dots gate on "live tail not actively streaming", NOT !liveVisible: the
+          previous COMPLETED answer keeps liveVisible=true, which starved the new
+          q of its thinking indicator until the next turn polled in. */}
+      {optimistic &&
+      !displayItems.some((t) => t?.role === 'user' && Number(t?.history_id ?? 0) > optimistic.baselineId) ? (
+        <View key={`opt-${optimistic.nonce}`} {...({ dataSet: { turnKey: `opt-${optimistic.nonce}` } } as any)} style={{ gap: spacing.md }}>
+          <QuestionBubble text={optimistic.text} />
+          {!(liveVisible && liveTurn && isActiveAssistantStatus(String(liveTurn.status ?? ''))) ? (
+            <View>
+              <TypingDots />
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
       {/* Dynamic bottom spacer: room so a short q+reply can sit at the top; sized
           once when the q appears, shrunk once after the reply settles. */}
       <View {...({ dataSet: { anchorSpacer: '1' } } as any)} style={{ height: anchorSpacerHeight }} />
     </ScrollView>
+
+    {/* ↓ chip — parked above the composer, only when scrolled well off the bottom. */}
+    {showJump ? (
+      <PressableScale
+        onPress={jumpToLatest}
+        haptic
+        scaleTo={0.9}
+        accessibilityLabel={i18n.t('chat.jumpToLatest')}
+        style={[styles.jumpChip, { backgroundColor: theme.surface, borderColor: theme.border }]}
+      >
+        <Ionicons name="arrow-down" size={18} color={theme.text} />
+      </PressableScale>
+    ) : null}
+    </View>
   );
 }
 
 // User question bubble = web's CollapsibleQ, minus the system fold: leading
 // harness blocks (system-reminder / recap / continuation / command echoes) are
 // DROPPED — only the real question renders.
+function copyToClipboard(text: string) {
+  Clipboard.setStringAsync(text).catch(() => {});
+  if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+}
+
 function QuestionBubble({ text }: { text: string }) {
   const theme = useTheme();
+  const [copied, setCopied] = useState(false);
   // Harness/system blocks (system-reminder / task-notification / recap /
   // continuation) are stripped wherever they appear — leading, embedded, or
   // trailing — so the display layer never shows system content.
   const remaining = useMemo(() => stripHarnessNoise(text), [text]);
   if (!remaining) return null;
+  // Long-press → copy (RN text selection is fiddly per-block; ChatGPT/Claude
+  // mobile treat long-press copy as table stakes).
+  const onCopy = () => {
+    copyToClipboard(remaining);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
   return (
     <View style={{ gap: spacing.sm }}>
-      {remaining ? (
-        <View style={styles.qRow}>
-          <View style={[styles.qBubble, { backgroundColor: theme.accent }]}>
-            <Text style={{ color: theme.accentText, fontSize: 15, lineHeight: 22 }}>{remaining}</Text>
-          </View>
-        </View>
+      <View style={styles.qRow}>
+        <PressableScale onLongPress={onCopy} scaleTo={0.98} style={[styles.qBubble, { backgroundColor: theme.accent }]}>
+          <Text style={{ color: theme.accentText, fontSize: 15, lineHeight: 22 }} selectable>
+            {remaining}
+          </Text>
+        </PressableScale>
+      </View>
+      {copied ? (
+        <Text variant="caption" tone="faint" style={{ alignSelf: 'flex-end' }}>
+          {i18n.t('chat.copied')}
+        </Text>
       ) : null}
     </View>
   );
 }
 
-function Turn({ turn, isLast }: { turn: HistoryTurn; isLast: boolean }) {
+// Web's ANSWER_RENDER_CAP: a single agentic reply can be 40+ tool rounds —
+// rendering every step of every committed turn at once is what causes the jank,
+// especially on phone CPUs. Cap to the LAST 8 with a "show all" expander.
+const STEP_RENDER_CAP = 8;
+
+// A cicy "turn produced no reply" record (cancel / post-retry failure / blocked):
+// danger-tinted notice + 重试 on the latest turn. Web's OutcomeNoticeCard.
+function OutcomeCard({ turn, onRetry }: { turn: HistoryTurn; onRetry?: (() => Promise<void> | void) | null }) {
   const theme = useTheme();
+  const [busy, setBusy] = useState(false);
+  const danger = turn.outcome === 'error';
+  return (
+    <View style={[styles.outcomeCard, { borderColor: danger ? theme.danger : theme.border, backgroundColor: theme.surface }]}>
+      <Ionicons
+        name={turn.outcome === 'cancelled' ? 'stop-circle-outline' : 'alert-circle-outline'}
+        size={16}
+        color={danger ? theme.danger : theme.textMuted}
+      />
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <Text variant="callout" tone={danger ? 'danger' : 'muted'}>
+          {turn.text || turn.a || ''}
+        </Text>
+        {turn.outcomeDetail ? (
+          <Text variant="caption" tone="faint" numberOfLines={3}>
+            {turn.outcomeDetail}
+          </Text>
+        ) : null}
+      </View>
+      {onRetry ? (
+        <PressableScale
+          disabled={busy}
+          haptic
+          scaleTo={0.94}
+          onPress={() => {
+            if (busy) return;
+            setBusy(true);
+            Promise.resolve(onRetry())
+              .catch(() => {})
+              .finally(() => setTimeout(() => setBusy(false), 2000));
+          }}
+          style={[styles.outcomeRetry, { borderColor: theme.border, backgroundColor: theme.surfaceMuted }]}
+        >
+          {busy ? (
+            <ActivityIndicator size="small" color={theme.textMuted} />
+          ) : (
+            <Text variant="caption">{i18n.t('chat.retry')}</Text>
+          )}
+        </PressableScale>
+      ) : null}
+    </View>
+  );
+}
+
+// Faint copy-answer affordance at the end of a completed assistant turn.
+function CopyAnswerRow({ text }: { text: string }) {
+  const theme = useTheme();
+  const [copied, setCopied] = useState(false);
+  return (
+    <PressableScale
+      onPress={() => {
+        copyToClipboard(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      hitSlop={8}
+      scaleTo={0.9}
+      accessibilityLabel={i18n.t('chat.copyAnswer')}
+      style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 2 }}
+    >
+      <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={13} color={theme.textFaint} />
+      {copied ? (
+        <Text variant="caption" tone="faint">
+          {i18n.t('chat.copied')}
+        </Text>
+      ) : null}
+    </PressableScale>
+  );
+}
+
+function Turn({
+  turn,
+  isLast,
+  onRetry,
+}: {
+  turn: HistoryTurn;
+  isLast: boolean;
+  onRetry?: (() => Promise<void> | void) | null;
+}) {
+  const theme = useTheme();
+  const [showAllSteps, setShowAllSteps] = useState(false);
   // System/developer notices never render — display layer filters them fully.
   if (turn.role === 'system') return null;
+  if (turn.outcome) {
+    return (
+      <View style={{ gap: spacing.md }}>
+        {turn.q ? <QuestionBubble text={turn.q} /> : null}
+        <OutcomeCard turn={turn} onRetry={onRetry} />
+      </View>
+    );
+  }
   const status = (turn.status ?? '').toLowerCase();
   const streaming = isLast && (status === 'streaming' || status === 'pending' || status === 'tool_use');
 
@@ -1014,17 +1354,43 @@ function Turn({ turn, isLast }: { turn: HistoryTurn; isLast: boolean }) {
   // its leading gap left a large blank between the q and the next (answer) turn
   // ("q和a 之间很大间隔"). Only render the answer section when it has content.
   const hasAnswer = (turn.steps?.length ?? 0) > 0 || !!turn.a || streaming;
+  const steps = turn.steps ?? [];
+  const capped = !showAllSteps && steps.length > STEP_RENDER_CAP;
+  // Keys stay the ORIGINAL index so the visible window sliding during streaming
+  // doesn't remount every Step each poll.
+  const offset = capped ? steps.length - STEP_RENDER_CAP : 0;
+  const visibleSteps = capped ? steps.slice(offset) : steps;
+  // Copyable answer = the text steps joined (or flat `a`); only once settled.
+  const copySource = !streaming
+    ? steps
+        .filter((s) => s.type === 'text' && typeof (s as any).text === 'string')
+        .map((s) => (s as any).text as string)
+        .join('\n\n') || String(turn.a ?? '')
+    : '';
   return (
     <View style={{ gap: spacing.md }}>
       {turn.q ? <QuestionBubble text={turn.q} /> : null}
 
       {hasAnswer ? (
         <View style={{ gap: spacing.sm, paddingRight: spacing.lg }}>
-          {(turn.steps ?? []).map((step, i) => (
+          {capped ? (
+            <PressableScale
+              onPress={() => setShowAllSteps(true)}
+              haptic
+              scaleTo={0.97}
+              style={[styles.stepsExpander, { borderColor: theme.border, backgroundColor: theme.surface }]}
+            >
+              <Ionicons name="chevron-up" size={13} color={theme.textFaint} />
+              <Text variant="caption" tone="faint">
+                {i18n.t('chat.showAllSteps', { count: steps.length })}
+              </Text>
+            </PressableScale>
+          ) : null}
+          {visibleSteps.map((step, i) => (
             <Step
-              key={i}
+              key={offset + i}
               step={step}
-              streaming={streaming && i === (turn.steps?.length ?? 0) - 1}
+              streaming={streaming && offset + i === steps.length - 1}
             />
           ))}
 
@@ -1036,6 +1402,8 @@ function Turn({ turn, isLast }: { turn: HistoryTurn; isLast: boolean }) {
               <TypingDots />
             </View>
           ) : null}
+
+          {copySource ? <CopyAnswerRow text={copySource} /> : null}
         </View>
       ) : null}
     </View>
@@ -1214,20 +1582,53 @@ function RichText({ text }: { text: string }) {
     <View style={{ gap: spacing.sm }}>
       {segments.map((seg, i) =>
         seg.kind === 'code' ? (
-          <View key={i} style={[styles.codeBlock, { backgroundColor: theme.surfaceMuted, borderColor: theme.border }]}>
-            {seg.lang ? (
-              <Text variant="caption" tone="faint" style={{ marginBottom: 4 }}>
-                {seg.lang}
-              </Text>
-            ) : null}
-            <Text style={[typeScale.mono, { color: theme.text }]} selectable>
-              {seg.text}
-            </Text>
-          </View>
+          <CodeBlock key={i} lang={seg.lang} text={seg.text} />
         ) : (
           <MarkdownBlocks key={i} text={seg.text} theme={theme} />
         ),
       )}
+    </View>
+  );
+}
+
+// Fenced code in an ANSWER: header (lang + copy) + horizontally-scrolling body.
+// Long lines used to soft-wrap into unreadable stair-steps — ToolCode already
+// solved this (white-space: pre + horizontal ScrollView); reuse the pattern.
+function CodeBlock({ lang, text }: { lang?: string; text: string }) {
+  const theme = useTheme();
+  const [copied, setCopied] = useState(false);
+  return (
+    <View style={[styles.codeBlock, { backgroundColor: theme.surfaceMuted, borderColor: theme.border }]}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+        <Text variant="caption" tone="faint" style={{ flex: 1 }}>
+          {lang || 'code'}
+        </Text>
+        <PressableScale
+          onPress={() => {
+            copyToClipboard(text);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
+          hitSlop={8}
+          scaleTo={0.9}
+        >
+          {copied ? (
+            <Text variant="caption" tone="faint">
+              {i18n.t('chat.copied')}
+            </Text>
+          ) : (
+            <Ionicons name="copy-outline" size={13} color={theme.textFaint} />
+          )}
+        </PressableScale>
+      </View>
+      <ScrollView horizontal style={{ width: '100%' }}>
+        <Text
+          style={[typeScale.mono, { color: theme.text }, Platform.OS === 'web' ? ({ whiteSpace: 'pre' } as any) : null]}
+          selectable
+        >
+          {text}
+        </Text>
+      </ScrollView>
     </View>
   );
 }
@@ -1458,6 +1859,58 @@ const styles = StyleSheet.create({
     paddingBottom: spacing['2xl'],
     gap: spacing.lg,
     flexGrow: 1,
+  },
+  retryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  jumpChip: {
+    position: 'absolute',
+    right: spacing.lg,
+    bottom: spacing.lg,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // subtle lift so it reads as floating over the list
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  outcomeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  outcomeRetry: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepsExpander: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 6,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: 'dashed',
   },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing['2xl'] },
   qRow: { flexDirection: 'row', justifyContent: 'flex-end' },

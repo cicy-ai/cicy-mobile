@@ -75,6 +75,13 @@ export const api = {
       body: JSON.stringify({ pane_id: paneId }),
     }),
 
+  // Re-run the latest cancelled/failed turn (web parity: OutcomeNoticeCard 重试).
+  retryCicyReply: (paneId: string) =>
+    request<unknown>('/api/cicy/retry', {
+      method: 'POST',
+      body: JSON.stringify({ pane_id: paneId }),
+    }),
+
   // Single pane detail — carries the model-picker fields for cloud tenants:
   // runtime_ai_provider_options (single CiCy Cloud provider + model catalog),
   // default_model ('' = platform default), runtime_ai_default (effective).

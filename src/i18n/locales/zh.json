@@ -84,7 +84,12 @@
     "modelPickerTitle": "选择模型 · CiCy Cloud",
     "modelDefault": "平台默认({{model}})",
     "tapToPlay": "点击播放",
-    "tapToOpen": "点击打开"
+    "tapToOpen": "点击打开",
+    "retry": "重试",
+    "copied": "已复制",
+    "copyAnswer": "复制回答",
+    "showAllSteps": "展开全部 {{count}} 步",
+    "jumpToLatest": "回到最新"
   },
   "voice": {
     "holdToTalk": "按住说话",

@@ -45,6 +45,16 @@ const FORCE_WHISPER = Platform.OS === 'android';
 
 export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
   const [phase, setPhase] = useState<VoicePhase>('idle');
+  // Phase mirror for async paths. The queued-stop in start() fires a `stop`
+  // closure captured while phase was still 'idle' — checking the STATE there
+  // made it early-return and never stop the recorder (quick-tap on 按住说话
+  // left the mic recording forever, and the next tap sent the ambient audio
+  // as a transcript). Refs don't go stale.
+  const phaseRef = useRef<VoicePhase>('idle');
+  const updatePhase = (p: VoicePhase) => {
+    phaseRef.current = p;
+    setPhase(p);
+  };
   const partialRef = useRef('');
   const permittedRef = useRef(false);
   const useWhisperRef = useRef<boolean>(FORCE_WHISPER);
@@ -89,16 +99,16 @@ export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
       if (e.isFinal) {
         onTranscript(partialRef.current.trim());
         partialRef.current = '';
-        setPhase('idle');
+        updatePhase('idle');
       }
     }
   });
 
   useSpeechRecognitionEvent('error', (e) => {
     if (useWhisperRef.current) return;
-    if (e.error === 'no-speech') { setPhase('idle'); return; }
+    if (e.error === 'no-speech') { updatePhase('idle'); return; }
     onError?.(e.message || e.error);
-    setPhase('idle');
+    updatePhase('idle');
   });
 
   useSpeechRecognitionEvent('end', () => {
@@ -107,7 +117,7 @@ export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
       onTranscript(partialRef.current.trim());
       partialRef.current = '';
     }
-    setPhase('idle');
+    updatePhase('idle');
   });
 
   async function ensurePermission(): Promise<boolean> {
@@ -126,7 +136,7 @@ export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
   }
 
   async function start() {
-    if (phase !== 'idle' || startingRef.current) return;
+    if (phaseRef.current !== 'idle' || startingRef.current) return;
     if (!permittedRef.current && !(await ensurePermission())) {
       onError?.('Microphone permission denied');
       return;
@@ -148,7 +158,7 @@ export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
           continuous: false,
         });
       }
-      setPhase('recording');
+      updatePhase('recording');
       if (!IS_WEB) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
       // If stop() was queued while we were starting, run it now.
       if (pendingStopRef.current) {
@@ -157,7 +167,7 @@ export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
       }
     } catch (e: any) {
       onError?.(`Could not start: ${String(e?.message ?? e)}`);
-      setPhase('idle');
+      updatePhase('idle');
     } finally {
       startingRef.current = false;
     }
@@ -168,22 +178,22 @@ export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
       pendingStopRef.current = true;
       return;
     }
-    if (phase === 'idle') return;
+    if (phaseRef.current === 'idle') return;
 
     if (useWhisperRef.current) {
       const elapsed = Date.now() - startedAtRef.current;
       try { await recorder.stop(); } catch { /* uri may still be valid */ }
       if (opts?.cancel || elapsed < MIN_RECORD_MS) {
-        setPhase('idle');
+        updatePhase('idle');
         return;
       }
       const uri = recorder.uri;
       if (!uri) {
-        setPhase('idle');
+        updatePhase('idle');
         onError?.('No recording produced');
         return;
       }
-      setPhase('transcribing');
+      updatePhase('transcribing');
       try {
         const { text } = await transcribeAudio(uri, { language: getDeviceLocale().whisperLang });
         const trimmed = (await normalizeChineseVariant(text)).trim();
@@ -191,7 +201,7 @@ export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
       } catch (e: any) {
         onError?.(String(e?.message ?? e));
       } finally {
-        setPhase('idle');
+        updatePhase('idle');
       }
       return;
     }
@@ -201,17 +211,17 @@ export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
       if (opts?.cancel) {
         await ExpoSpeechRecognitionModule.abort();
         partialRef.current = '';
-        setPhase('idle');
+        updatePhase('idle');
       } else {
         await ExpoSpeechRecognitionModule.stop();
         // Safety net: if no result/end event arrives within 2s, force-reset.
         setTimeout(() => {
-          if (partialRef.current === '') setPhase('idle');
+          if (partialRef.current === '') updatePhase('idle');
         }, 2000);
       }
     } catch (e: any) {
       onError?.(`Stop error: ${String(e?.message ?? e)}`);
-      setPhase('idle');
+      updatePhase('idle');
     }
   }
 

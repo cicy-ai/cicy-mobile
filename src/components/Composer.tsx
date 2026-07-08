@@ -160,6 +160,13 @@ export function Composer({
               onTouchMove={onHoldMove}
               onPressOut={onHoldEnd}
               disabled={disabled || isTranscribing}
+              // Keep the press alive far outside the zone: RN's default retention
+              // (~20px) fires onPressOut at ~40px of upward travel — BELOW the
+              // 60px cancel threshold — so a slide-up-to-cancel SENT the recording
+              // mid-gesture, and sliding back down re-entered the rect and started
+              // a ghost second recording. With a huge retention the release always
+              // arrives in onPressOut with the onTouchMove-tracked intent.
+              pressRetentionOffset={{ top: 1000, bottom: 200, left: 200, right: 200 }}
               style={styles.holdZone}
             >
               {isRecording ? (

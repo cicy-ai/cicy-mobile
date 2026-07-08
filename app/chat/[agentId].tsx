@@ -271,7 +271,10 @@ export default function Chat() {
         setQueue((prev) => [...prev, { id, text: trimmed }]);
         return;
       }
-      setBusy(true);
+      // Slash commands (/clear /compact) are intercepted server-side: no committed
+      // turn, no reply-in-flight — locking busy on them waits out the 15s deadlock
+      // fallback for nothing. (HistoryView likewise skips their optimistic bubble.)
+      if (!/^\/\w+(\s|$)/.test(trimmed)) setBusy(true);
       setPending({ text: trimmed, nonce: Date.now() }); // optimistic: show q now
       await api.sendToAgent(agentId, trimmed, true);
     } catch (e: any) {
@@ -332,7 +335,8 @@ export default function Chat() {
         setSending(false);
         return;
       }
-      setBusy(true); // lock immediately — don't wait for the poll to notice
+      // Slash commands don't lock busy (see submit()).
+      if (!/^\/\w+(\s|$)/.test(body)) setBusy(true); // lock immediately — don't wait for the poll to notice
       setPending({ text: body, nonce: Date.now() });
       await api.sendToAgent(agentId, body, true);
     } catch (e: any) {
@@ -346,21 +350,32 @@ export default function Chat() {
   };
 
   // Idle flush: when the reply completes and the queue is non-empty, merge the
-  // queued messages into ONE send (order preserved).
+  // queued messages into ONE send (order preserved). A failed flush restores the
+  // batch, which re-fires this effect — WITHOUT the backoff that's an unthrottled
+  // infinite retry loop while offline (error toast per network RTT, forever).
+  const flushRetryRef = useRef(0);
   useEffect(() => {
     if (busy || sending || queue.length === 0) return;
-    const batch = queue;
-    setQueue([]);
-    const body = batch.map((b) => b.text).join('\n');
-    setBusy(true);
-    setPending({ text: body, nonce: Date.now() });
-    api.sendToAgent(agentId, body, true).catch((e: any) => {
-      setPending(null);
-      setBusy(false);
-      setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
-      // put the batch back so nothing is lost
-      setQueue((prev) => [...batch, ...prev]);
-    });
+    const attempt = flushRetryRef.current;
+    const delay = attempt === 0 ? 0 : Math.min(15000, 1500 * 2 ** (attempt - 1));
+    const timer = setTimeout(() => {
+      const batch = queue;
+      setQueue([]);
+      const body = batch.map((b) => b.text).join('\n');
+      setBusy(true);
+      setPending({ text: body, nonce: Date.now() });
+      api.sendToAgent(agentId, body, true).then(() => {
+        flushRetryRef.current = 0;
+      }).catch((e: any) => {
+        flushRetryRef.current += 1;
+        setPending(null);
+        setBusy(false);
+        setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
+        // put the batch back so nothing is lost
+        setQueue((prev) => [...batch, ...prev]);
+      });
+    }, delay);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, sending, queue.length]);
 

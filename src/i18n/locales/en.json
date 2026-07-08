@@ -84,7 +84,12 @@
     "modelPickerTitle": "Choose model · CiCy Cloud",
     "modelDefault": "Platform default ({{model}})",
     "tapToPlay": "Tap to play",
-    "tapToOpen": "Tap to open"
+    "tapToOpen": "Tap to open",
+    "retry": "Retry",
+    "copied": "Copied",
+    "copyAnswer": "Copy answer",
+    "showAllSteps": "Show all {{count}} steps",
+    "jumpToLatest": "Jump to latest"
   },
   "voice": {
     "holdToTalk": "Hold to talk",
