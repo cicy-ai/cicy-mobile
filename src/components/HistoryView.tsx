@@ -141,6 +141,8 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType }: Pr
   // Real-time WS delta streaming is gated to cicy agents (the only type the AI
   // gateway pushes ai_chunk/thinking_chunk for). Others stay poll-only.
   const wsEnabled = normalizeAgentType(agentType) === 'cicy';
+  const wsEnabledRef = useRef(wsEnabled);
+  wsEnabledRef.current = wsEnabled;
 
   // ── Two-part model (faithful port of cicy-code CurrentHistoryView) ────────────
   // Part 1: committed window (current.json), single-role turns oldest→newest.
@@ -403,6 +405,18 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType }: Pr
     if (rv.shown < fullLen) typeRafRef.current = requestAnimationFrame(advanceType);
   }, []);
   const kickType = useCallback(() => {
+    // cicy streams per-token over WS — that IS the smooth stream. Render the
+    // target DIRECTLY (snap), NO global char-by-char typewriter on top. The
+    // typewriter rewrote the whole liveTurn every frame and, layered over the
+    // multi-round WS/poll updates, is what mangled/overwrote earlier rounds and
+    // the last q. Web's cicy view (CicyHistoryView) has no global typewriter
+    // either — only per-block smoothing. Keep the typewriter for non-cicy
+    // (poll-only) agents to smooth their 700ms chunks.
+    if (wsEnabledRef.current) {
+      if (typeRafRef.current != null) { cancelAnimationFrame(typeRafRef.current); typeRafRef.current = null; }
+      setLiveTurn(liveTargetRef.current);
+      return;
+    }
     if (typeRafRef.current == null) typeRafRef.current = requestAnimationFrame(advanceType);
   }, [advanceType]);
 
