@@ -25,7 +25,6 @@ import { LiveRecordBar } from '@/src/components/LiveRecordBar';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
 import { Text } from '@/src/components/Text';
-import { TypingDots } from '@/src/components/TypingDots';
 import { api } from '@/src/api/http';
 import { uploadAttachment } from '@/src/api/upload';
 import type { PendingAttachment } from '@/src/lib/attachments';
@@ -586,14 +585,12 @@ export default function Chat() {
               ))}
             </View>
           )}
-          {/* Reply in flight → one-tap stop (Esc equivalent). The send button
-              stays usable: sending while busy queues instead of interrupting. */}
+          {/* Reply in flight → one-tap stop (Esc equivalent). NO "正在回复…" dots
+              here: the sole typing indicator lives below the answer, never above
+              the composer. Just a compact, right-aligned stop affordance. The
+              send button stays usable — sending while busy queues, not interrupts. */}
           {busy && (
             <View style={styles.busyRow}>
-              <TypingDots />
-              <Text variant="caption" tone="faint" style={{ flex: 1 }}>
-                {t('chat.replying')}
-              </Text>
               <PressableScale
                 onPress={() => { void stopGeneration(); }}
                 haptic
@@ -693,6 +690,7 @@ const styles = StyleSheet.create({
   busyRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'flex-end',
     gap: spacing.sm,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
