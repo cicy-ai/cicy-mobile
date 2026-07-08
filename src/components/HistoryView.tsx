@@ -267,27 +267,38 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
       if (newMax <= maxLoadedIdRef.current) return;
       const collected: HistoryTurn[] = [];
       let before: number | undefined;
-      // 8 pages ≈ 128 ids per reconcile — runaway guard; anything bigger heals
-      // on the next poll round since maxLoadedIdRef only advances on success.
-      for (let page = 0; page < 8; page += 1) {
+      let reachedStart = false;
+      // Page backward from newest until we touch the already-loaded boundary. Cap
+      // at 12 pages (≈192 ids) as a runaway guard.
+      for (let page = 0; page < 12; page += 1) {
         const hist = await api.getCurrentHistory(agentId, {
           limit: WINDOW,
           conversationId: cid,
           ...(before ? { before } : {}),
         });
         const turns = buildTurnsFromRawItems(hist.items ?? []);
-        if (!turns.length) break;
+        if (!turns.length) { reachedStart = true; break; }
         collected.unshift(...turns);
         const pageMin = Number(turns[0].history_id ?? 0);
-        if (!hist.has_more || pageMin <= maxLoadedIdRef.current + 1) break;
+        if (!hist.has_more) { reachedStart = true; break; }
+        if (pageMin <= maxLoadedIdRef.current + 1) break; // met the loaded boundary → contiguous
         before = pageMin;
       }
-      if (collected.length) {
+      if (!collected.length) return;
+      const oldestNew = Number(collected[0].history_id ?? 0);
+      const contiguous = reachedStart || oldestNew <= maxLoadedIdRef.current + 1;
+      if (contiguous) {
         setItems((prev) => normalizeHistoryTurns([...prev, ...collected]));
         maxLoadedIdRef.current = newMax;
+      } else {
+        // A burst bigger than the page budget (e.g. after a long background) would
+        // leave a permanent HOLE between the old boundary and this tail — loadMore
+        // only pages BELOW minLoaded, never into a middle gap. Resync to a fresh
+        // contiguous window instead of stitching in a discontiguous tail.
+        await loadWindow();
       }
     } catch {}
-  }, [agentId]);
+  }, [agentId, loadWindow]);
 
   // Conversation rotation: swap the new conversation's window in place (keep old
   // turns mounted, diff by history_id, no skeleton / scroll jump). Port of softRebind.
