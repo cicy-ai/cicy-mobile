@@ -135,7 +135,8 @@
     "pickFile": "Choose file",
     "cancel": "Cancel",
     "agentNote": "[Attachments] uploaded to your working directory:",
-    "uploadFailed": "{{count}} attachment(s) failed to upload — tap send to retry"
+    "uploadFailed": "{{count}} attachment(s) failed to upload",
+    "uploading": "Uploading…"
   },
   "scan": {
     "title": "Add team",

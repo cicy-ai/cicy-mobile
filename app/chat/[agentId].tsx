@@ -6,6 +6,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  ActivityIndicator,
   Image,
   Keyboard,
   KeyboardAvoidingView,
@@ -286,62 +287,74 @@ export default function Chat() {
     }
   };
 
+  // Dispatch an already-built message body: queue if a reply is in flight, else
+  // lock busy + paint the optimistic bubble + POST. Shared by text send and the
+  // attachment auto-send.
+  const dispatchBody = async (body: string) => {
+    if (busy) {
+      const id = queueSeqRef.current;
+      queueSeqRef.current += 1;
+      setQueue((prev) => [...prev, { id, text: body }]);
+      return;
+    }
+    // Slash commands don't lock busy (see submit()).
+    if (!/^\/\w+(\s|$)/.test(body)) setBusy(true); // lock immediately — don't wait for the poll to notice
+    setPending({ text: body, nonce: Date.now() });
+    await api.sendToAgent(agentId, body, true);
+  };
+
+  // Attachments send THE MOMENT they're picked — no chip parked above the
+  // composer waiting for a manual send. While uploading they show as a loading
+  // card (spinner), then the message goes out and the card clears. Any text
+  // already typed rides along as the caption.
+  const sendAttachments = async (atts: PendingAttachment[]) => {
+    if (!atts.length || sending) return;
+    const caption = input.trim();
+    setInput('');
+    setAttachments(atts); // render as loading cards while they upload
+    setSending(true);
+    setVoiceError(null);
+    try {
+      const refs: string[] = [];
+      let failed = 0;
+      for (const a of atts) {
+        try {
+          const r = await uploadAttachment(agentId, a.uri, a.name, a.mime);
+          const isVid = a.kind === 'video' || r.contentType.startsWith('video/');
+          // Embed the ABSOLUTE host path (from file_ref) so the agent can Read it
+          // (web parity; the renderer maps it back to a preview/download URL).
+          const abs = r.fileRef
+            ? '/' + r.fileRef.replace(/^file:\/\//, '').replace(/^\/+/, '')
+            : r.url;
+          refs.push(r.isImage ? `![${r.name}](${abs})` : `[${isVid ? '🎬 ' : ''}${r.name}](${abs})`);
+        } catch {
+          failed += 1;
+        }
+      }
+      if (failed) setVoiceError(t('attach.uploadFailed', { count: failed }));
+      if (!refs.length) return; // nothing uploaded → abort (finally clears the cards)
+      const body = `${caption ? `${caption}\n\n` : ''}${refs.join('\n\n')}`;
+      await dispatchBody(body);
+    } catch (e: any) {
+      setPending(null);
+      setBusy(false);
+      setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
+    } finally {
+      setAttachments([]); // clear the loading cards
+      setSending(false);
+    }
+  };
+
   const send = async () => {
     const text = input.trim();
-    const atts = attachments;
-    if (!text && atts.length === 0) return;
+    if (!text) return;
     if (sending) return;
     setInput('');
-    setAttachments([]);
     setSending(true);
     setVoiceError(null);
 
     try {
-      let body = text;
-      if (atts.length) {
-        // Upload each attachment to the shared asset store, then reference it in
-        // the message as markdown — images inline (![](url)), video/files as a
-        // link ([name](url)). Same convention as cicy-code; HistoryView renders
-        // images as thumbnails and video/files as tappable cards.
-        const refs: string[] = [];
-        const failed: PendingAttachment[] = [];
-        for (const a of atts) {
-          try {
-            const r = await uploadAttachment(agentId, a.uri, a.name, a.mime);
-            const isVid = a.kind === 'video' || r.contentType.startsWith('video/');
-            // Embed the ABSOLUTE host path (from file_ref), NOT the servable URL —
-            // so the agent gets a real path its file tool can Read (web parity;
-            // the history renderer maps it back to a preview/download URL). The
-            // absolute path carries no token, so outbound audit won't strip it.
-            const abs = r.fileRef
-              ? '/' + r.fileRef.replace(/^file:\/\//, '').replace(/^\/+/, '')
-              : r.url;
-            refs.push(r.isImage ? `![${r.name}](${abs})` : `[${isVid ? '🎬 ' : ''}${r.name}](${abs})`);
-          } catch {
-            failed.push(a);
-          }
-        }
-        if (failed.length) {
-          setAttachments((cur) => [...failed, ...cur]); // keep for retry
-          setVoiceError(t('attach.uploadFailed', { count: failed.length }));
-        }
-        if (refs.length) {
-          body = `${text ? `${text}\n\n` : ''}${refs.join('\n\n')}`;
-        } else if (!text) {
-          setSending(false);
-          return; // nothing uploaded and no text — abort
-        }
-      }
-
-      // Reply in flight → queue (Claude-Code style): don't hit the backend,
-      // stack above the composer, auto-flush when idle.
-      if (busy) {
-        const id = queueSeqRef.current;
-        queueSeqRef.current += 1;
-        setQueue((prev) => [...prev, { id, text: body }]);
-        setSending(false);
-        return;
-      }
+      const body = text;
       // Slash commands don't lock busy (see submit()).
       if (!/^\/\w+(\s|$)/.test(body)) setBusy(true); // lock immediately — don't wait for the poll to notice
       setPending({ text: body, nonce: Date.now() });
@@ -401,9 +414,6 @@ export default function Chat() {
       setVoiceError(t('chat.stopFailed', { error: String(e?.message ?? e) }));
     }
   };
-
-  const removeAttachment = (key: string) =>
-    setAttachments((cur) => cur.filter((a) => a.key !== key));
 
   // Each finalized live-recording turn → send to the agent. The first turn of a
   // session is prefixed so the agent knows to act as a quiet meeting recorder.
@@ -597,6 +607,9 @@ export default function Chat() {
               </PressableScale>
             </View>
           )}
+          {/* Attachments auto-send on pick; while uploading they show here as
+              loading cards (spinner, dimmed thumb) — not removable chips waiting
+              for a manual send. Cleared the moment the message goes out. */}
           {attachments.length > 0 && (
             <ScrollView
               horizontal
@@ -606,24 +619,24 @@ export default function Chat() {
             >
               {attachments.map((a) => (
                 <View key={a.key} style={[styles.chip, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-                  {a.kind === 'image' ? (
-                    <Image source={{ uri: a.uri }} style={styles.chipThumb} />
-                  ) : a.kind === 'video' ? (
+                  {a.kind === 'image' || a.kind === 'video' ? (
                     <View style={styles.chipThumb}>
-                      <Image source={{ uri: a.uri }} style={StyleSheet.absoluteFill as any} />
-                      <View style={styles.videoBadge}>
-                        <Ionicons name="play" size={12} color="#fff" />
+                      <Image source={{ uri: a.uri }} style={[StyleSheet.absoluteFill as any, { opacity: 0.5 }]} />
+                      <View style={styles.chipSpinner}>
+                        <ActivityIndicator size="small" color="#fff" />
                       </View>
                     </View>
                   ) : (
-                    <Ionicons name="document-outline" size={18} color={theme.textMuted} />
+                    <View style={styles.chipThumb}>
+                      <ActivityIndicator size="small" color={theme.textMuted} />
+                    </View>
                   )}
                   <Text variant="caption" numberOfLines={1} style={styles.chipName}>
                     {a.name}
                   </Text>
-                  <PressableScale onPress={() => removeAttachment(a.key)} hitSlop={6} scaleTo={0.9}>
-                    <Ionicons name="close-circle" size={16} color={theme.textMuted} />
-                  </PressableScale>
+                  <Text variant="caption" tone="faint">
+                    {t('attach.uploading')}
+                  </Text>
                 </View>
               ))}
             </ScrollView>
@@ -637,11 +650,10 @@ export default function Chat() {
               onChangeText={setInput}
               onSubmit={() => void send()}
               onTranscript={(txt) => void submit(txt)}
-              onPickAttachments={(atts) => setAttachments((cur) => [...cur, ...atts])}
+              onPickAttachments={(atts) => void sendAttachments(atts)}
               onError={(m) => setVoiceError(m)}
               disabled={false}
               sending={sending}
-              canSendEmpty={attachments.length > 0}
             />
 
             {/* Live recording — continuous on-device dictation that auto-sends
@@ -783,6 +795,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  chipSpinner: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   videoBadge: {
     width: 18,
     height: 18,

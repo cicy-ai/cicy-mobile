@@ -135,7 +135,8 @@
     "pickFile": "选择文件",
     "cancel": "取消",
     "agentNote": "[附件] 已上传到你的工作目录，请查看：",
-    "uploadFailed": "{{count}} 个附件上传失败，可重试"
+    "uploadFailed": "{{count}} 个附件上传失败",
+    "uploading": "上传中…"
   },
   "scan": {
     "title": "扫码加入团队",
