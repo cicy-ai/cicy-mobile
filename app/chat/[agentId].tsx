@@ -154,12 +154,9 @@ export default function Chat() {
         const isNewTurn = cid !== baseline.cid || answerId > baseline.answerId;
         if (answerId > 0 && isNewTurn && !terminal) sawNewInFlight = true;
         if (answerId > 0 && isNewTurn && terminal && Date.now() - since > 800) {
-          // Cloud turns that died in generation carry cicy_outcome:'error'
-          // (per w-10122 the real cause never enters the conversation — often
-          // a zero balance). Surface it instead of a silent dead bubble.
-          if (String((r as any)?.cicy_outcome || '') === 'error' || failed) {
-            setVoiceError(t('chat.genFailed'));
-          }
+          // Just unlock the composer. A failed turn is surfaced IN THE
+          // CONVERSATION by HistoryView's OutcomeCard (red ⚠ 生成失败 + 重试),
+          // exactly like web's OutcomeNoticeCard — not a dismissable banner.
           setBusy(false);
           return;
         }

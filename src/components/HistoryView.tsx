@@ -1292,19 +1292,25 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType }: Pr
         </View>
       ) : null}
 
-      {/* Optimistic q — painted the same frame as the send so the sent message
-          shows instantly, replaced in place when the real committed q + live tail
-          arrive. NO thinking indicator here: the sole typing indicator lives with
-          the answer (the live tail's TypingDots), never above the composer.
-          MUST render AFTER the live tail: with cicy's lazy migration the previous
-          answer a1 is still the live tail when q2 is sent — q2 before it reads as
-          "q1 → q2 → a1" (a1 visually answering q2). Order is …q1, a1, q2. The
-          bubble drops the same FRAME the real committed q lands (the retire effect
-          runs post-paint → one-frame double bubble otherwise). */}
+      {/* Optimistic q + reserved answer SLOT (web parity): the sent q paints
+          instantly, and a thinking placeholder reserves the answer position right
+          below it — so the user immediately sees the turn was accepted and is
+          being worked on. Gate the placeholder on !liveStreaming (NOT !liveVisible):
+          a previous COMPLETED answer keeps liveVisible=true, and we must still show
+          the new q's thinking; once the real reply streams (thinking/streaming/…),
+          the live tail takes over and the placeholder hides → exactly one indicator.
+          MUST render AFTER the live tail (cicy lazy migration: a1 is still the live
+          tail when q2 is sent; q2 before it reads as "q1 → q2 → a1"). The block
+          drops the FRAME the real committed q lands (retire effect runs post-paint). */}
       {optimistic &&
       !displayItems.some((t) => t?.role === 'user' && Number(t?.history_id ?? 0) > optimistic.baselineId) ? (
         <View key={`opt-${optimistic.nonce}`} {...({ dataSet: { turnKey: `opt-${optimistic.nonce}` } } as any)} style={{ gap: spacing.md }}>
           <QuestionBubble text={optimistic.text} />
+          {!(liveVisible && liveTurn && isActiveAssistantStatus(String(liveTurn.status ?? ''))) ? (
+            <View style={{ paddingRight: spacing.lg }}>
+              <TypingDots />
+            </View>
+          ) : null}
         </View>
       ) : null}
 
