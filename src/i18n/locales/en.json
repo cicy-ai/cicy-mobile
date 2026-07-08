@@ -3,6 +3,7 @@
     "tryAgain": "Try again",
     "continue": "Continue",
     "cancel": "Cancel",
+    "close": "Close",
     "ok": "OK",
     "openSettings": "Open settings",
     "signOut": "Sign Out"
@@ -89,7 +90,8 @@
     "copied": "Copied",
     "copyAnswer": "Copy answer",
     "showAllSteps": "Show all {{count}} steps",
-    "jumpToLatest": "Jump to latest"
+    "jumpToLatest": "Jump to latest",
+    "openExternal": "Open in browser"
   },
   "voice": {
     "holdToTalk": "Hold to talk",

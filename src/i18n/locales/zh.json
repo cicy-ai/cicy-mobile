@@ -3,6 +3,7 @@
     "tryAgain": "重试",
     "continue": "继续",
     "cancel": "取消",
+    "close": "关闭",
     "ok": "确定",
     "openSettings": "打开设置",
     "signOut": "退出登录"
@@ -89,7 +90,8 @@
     "copied": "已复制",
     "copyAnswer": "复制回答",
     "showAllSteps": "展开全部 {{count}} 步",
-    "jumpToLatest": "回到最新"
+    "jumpToLatest": "回到最新",
+    "openExternal": "在浏览器打开"
   },
   "voice": {
     "holdToTalk": "按住说话",

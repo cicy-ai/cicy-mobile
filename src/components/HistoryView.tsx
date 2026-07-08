@@ -15,6 +15,7 @@ import type { HistoryStep, HistoryTurn } from '@/src/api/types';
 import { buildTurnsFromRawItems, normalizeHistoryTurns, replyItemsToSteps, splitLeadingHarnessBlocks, stripHarnessNoise } from '@/src/lib/historyParse';
 import { historyCache } from '@/src/lib/historyCache';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
+import { ImageLightbox } from './ImageLightbox';
 import { InlineVideo } from './InlineVideo';
 import { PressableScale } from './PressableScale';
 import { Text } from './Text';
@@ -64,14 +65,6 @@ function cssEsc(s: string): string {
 }
 function findTurnEl(node: any, turnKey: string): any {
   return node && typeof node.querySelector === 'function' ? node.querySelector(`[data-turn-key="${cssEsc(turnKey)}"]`) : null;
-}
-// Pin a turn's top to ~8px below the container top (= q anchored to viewport top).
-function pinTurnTop(node: any, turnKey: string): boolean {
-  const target = findTurnEl(node, turnKey);
-  if (!target || typeof target.getBoundingClientRect !== 'function' || typeof node.getBoundingClientRect !== 'function') return false;
-  const top = node.scrollTop + (target.getBoundingClientRect().top - node.getBoundingClientRect().top) - 8;
-  node.scrollTop = Math.max(0, top);
-  return true;
 }
 // q's top in content coordinates (for the spacer's belowQ measure).
 function turnTopInContent(node: any, turnKey: string): number | null {
@@ -1689,10 +1682,64 @@ function renderInline(text: string, theme: ReturnType<typeof useTheme>, kp: stri
   return out;
 }
 
+// "| a | b |" → ['a','b'] (outer pipes optional, cells trimmed).
+function splitTableRow(s: string): string[] {
+  let t = s.trim();
+  if (!t.includes('|')) return [];
+  if (t.startsWith('|')) t = t.slice(1);
+  if (t.endsWith('|')) t = t.slice(0, -1);
+  return t.split('|').map((c) => c.trim());
+}
+
+// GFM table → horizontally-scrollable grid. Column widths estimated from cell
+// content (CJK counted double) since RN can't measure text pre-layout; capped so
+// one verbose column can't push the rest off-screen — its text wraps instead.
+function MdTable({ head, rows, theme }: { head: string[]; rows: string[][]; theme: ReturnType<typeof useTheme> }) {
+  const cols = head.length;
+  const widths = Array.from({ length: cols }, (_, ci) => {
+    let m = 3;
+    for (const r of [head, ...rows]) {
+      const s = r[ci] ?? '';
+      let w = 0;
+      for (const ch of s) w += ch.charCodeAt(0) > 0x2e7f ? 2 : 1;
+      m = Math.max(m, w);
+    }
+    return Math.min(240, Math.max(56, m * 7 + 22));
+  });
+  const cell = (textVal: string, ci: number, kp: string, header?: boolean) => (
+    <View
+      key={ci}
+      style={[
+        styles.mdTableCell,
+        { width: widths[ci], borderColor: theme.border },
+        header ? { backgroundColor: theme.surfaceMuted } : null,
+        ci === cols - 1 ? { borderRightWidth: 0 } : null,
+      ]}
+    >
+      <Text variant="caption" selectable style={header ? { fontWeight: '700' } : undefined}>
+        {renderInline(textVal, theme, kp)}
+      </Text>
+    </View>
+  );
+  return (
+    <ScrollView horizontal style={{ maxWidth: '100%' }} contentContainerStyle={{ flexDirection: 'column' }}>
+      <View style={[styles.mdTable, { borderColor: theme.border }]}>
+        <View style={{ flexDirection: 'row' }}>{head.map((c, ci) => cell(c, ci, `th${ci}`, true))}</View>
+        {rows.map((r, ri) => (
+          <View key={ri} style={[{ flexDirection: 'row' }, ri === rows.length - 1 ? styles.mdTableLastRow : null]}>
+            {Array.from({ length: cols }, (_, ci) => cell(r[ci] ?? '', ci, `t${ri}c${ci}`))}
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
+
 // Block-level markdown for a non-code text segment: headings, bullet / numbered
-// lists, blockquotes, horizontal rules, and paragraphs (consecutive plain lines
-// kept together). No new deps — react-native-markdown-display doesn't play well
-// with RN 0.83 / React 19, so this is a small purpose-built renderer.
+// lists, blockquotes, horizontal rules, tables, and paragraphs (consecutive
+// plain lines kept together). No new deps — react-native-markdown-display
+// doesn't play well with RN 0.83 / React 19, so this is a small purpose-built
+// renderer.
 function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeof useTheme> }) {
   const blocks: React.ReactNode[] = [];
   let para: string[] = [];
@@ -1706,7 +1753,29 @@ function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeo
     );
     para = [];
   };
-  for (const line of text.split('\n')) {
+  const lines = text.split('\n');
+  for (let li = 0; li < lines.length; li += 1) {
+    const line = lines[li];
+    // GFM table: a header row + |---| separator + body rows. Agents emit these
+    // freely (web renders them via remark-gfm); without this they showed as raw
+    // pipe soup. Consumes the whole table block, then continues the line loop.
+    if (line.includes('|')) {
+      const headCells = splitTableRow(line);
+      const sepCells = splitTableRow(lines[li + 1] ?? '');
+      const isSep = sepCells.length >= 2 && sepCells.every((c) => /^:?-{3,}:?$/.test(c));
+      if (headCells.length >= 2 && isSep) {
+        flushPara();
+        const rows: string[][] = [];
+        let rj = li + 2;
+        while (rj < lines.length && lines[rj].includes('|') && lines[rj].trim() !== '') {
+          rows.push(splitTableRow(lines[rj]));
+          rj += 1;
+        }
+        blocks.push(<MdTable key={`tb${blocks.length}`} head={headCells} rows={rows} theme={theme} />);
+        li = rj - 1;
+        continue;
+      }
+    }
     // Standalone media reference on its own line:
     //   ![name](url)      → inline image thumbnail (tap → full)
     //   [🎬 name](url)     → video card (tap → system player)
@@ -1796,13 +1865,30 @@ function MediaBlock({
   url, name, isImage, isVideo, theme,
 }: { url: string; name: string; isImage: boolean; isVideo: boolean; theme: ReturnType<typeof useTheme> }) {
   const src = useMemo(() => assetUri(url), [url]);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  // Real aspect ratio once the thumbnail loads (was a hard 200×200 crop);
+  // clamped so extreme panoramas/scrolls don't take over the list.
+  const [ratio, setRatio] = useState(0);
   const open = () => Linking.openURL(src.uri).catch(() => {});
 
   if (isImage) {
     return (
-      <PressableScale onPress={open} scaleTo={0.98} style={styles.mediaImageWrap}>
-        <Image source={src as any} style={styles.mediaImage} resizeMode="cover" />
-      </PressableScale>
+      <>
+        {/* Tap → in-app lightbox (NOT the browser: cloud assets need the Bearer
+            header, which an external browser doesn't have → 401 dead-end). */}
+        <PressableScale onPress={() => setViewerOpen(true)} scaleTo={0.98} style={styles.mediaImageWrap}>
+          <Image
+            source={src as any}
+            style={[styles.mediaImage, ratio ? { height: undefined, aspectRatio: ratio } : null]}
+            resizeMode="cover"
+            onLoad={(e: any) => {
+              const s = e?.nativeEvent?.source;
+              if (s?.width > 0 && s?.height > 0) setRatio(Math.max(0.6, Math.min(2.2, s.width / s.height)));
+            }}
+          />
+        </PressableScale>
+        {viewerOpen ? <ImageLightbox src={src} name={name} onClose={() => setViewerOpen(false)} /> : null}
+      </>
     );
   }
   if (isVideo) {
@@ -1958,8 +2044,10 @@ const styles = StyleSheet.create({
     marginVertical: 2,
   },
   mediaImage: {
-    width: 200,
-    height: 200,
+    // 240×180 placeholder until onLoad swaps in the real (clamped) aspectRatio —
+    // the old hard 200×200 crop mangled every non-square image.
+    width: 240,
+    height: 180,
     maxWidth: '100%',
     backgroundColor: '#000',
   },
@@ -1997,4 +2085,17 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   loadMoreRow: { alignItems: 'center', paddingVertical: spacing.md },
+  mdTable: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.sm,
+    overflow: 'hidden',
+    alignSelf: 'flex-start',
+  },
+  mdTableCell: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  mdTableLastRow: { marginBottom: -StyleSheet.hairlineWidth }, // outer border owns the bottom edge
 });
