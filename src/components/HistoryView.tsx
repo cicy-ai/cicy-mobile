@@ -109,7 +109,10 @@ function animateScrollTop(node: any, target: number, ms: number) {
 }
 function isActiveAssistantStatus(s: string): boolean {
   const v = (s || '').toLowerCase();
-  return v === 'streaming' || v === 'pending' || v === 'tool_use' || v === 'running' || v === 'in_progress';
+  // NB: 'thinking' MUST be here. Omitting it meant the reply's initial thinking
+  // phase read as "not active", so the answer showed no typing indicator while
+  // a stray one appeared elsewhere.
+  return v === 'thinking' || v === 'streaming' || v === 'pending' || v === 'tool_use' || v === 'running' || v === 'in_progress';
 }
 
 // Does this reply answer a REAL user question? The framework makes its own internal
@@ -1156,25 +1159,19 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
         </View>
       ) : null}
 
-      {/* Optimistic q + reserved answer slot — painted the same frame as the
-          send, replaced in place when the real committed q + live tail arrive.
+      {/* Optimistic q — painted the same frame as the send so the sent message
+          shows instantly, replaced in place when the real committed q + live tail
+          arrive. NO thinking indicator here: the sole typing indicator lives with
+          the answer (the live tail's TypingDots), never above the composer.
           MUST render AFTER the live tail: with cicy's lazy migration the previous
           answer a1 is still the live tail when q2 is sent — q2 before it reads as
-          "q1 → q2 → a1" (a1 visually answering q2). Order is …q1, a1, q2, dots.
-          `optimisticStale` drops the bubble the same FRAME the real committed q
-          paints (the retire effect runs post-paint → one-frame double bubble).
-          Dots gate on "live tail not actively streaming", NOT !liveVisible: the
-          previous COMPLETED answer keeps liveVisible=true, which starved the new
-          q of its thinking indicator until the next turn polled in. */}
+          "q1 → q2 → a1" (a1 visually answering q2). Order is …q1, a1, q2. The
+          bubble drops the same FRAME the real committed q lands (the retire effect
+          runs post-paint → one-frame double bubble otherwise). */}
       {optimistic &&
       !displayItems.some((t) => t?.role === 'user' && Number(t?.history_id ?? 0) > optimistic.baselineId) ? (
         <View key={`opt-${optimistic.nonce}`} {...({ dataSet: { turnKey: `opt-${optimistic.nonce}` } } as any)} style={{ gap: spacing.md }}>
           <QuestionBubble text={optimistic.text} />
-          {!(liveVisible && liveTurn && isActiveAssistantStatus(String(liveTurn.status ?? ''))) ? (
-            <View>
-              <TypingDots />
-            </View>
-          ) : null}
         </View>
       ) : null}
 
@@ -1326,32 +1323,6 @@ function OutcomeCard({ turn, onRetry }: { turn: HistoryTurn; onRetry?: (() => Pr
   );
 }
 
-// Faint copy-answer affordance at the end of a completed assistant turn.
-function CopyAnswerRow({ text }: { text: string }) {
-  const theme = useTheme();
-  const [copied, setCopied] = useState(false);
-  return (
-    <PressableScale
-      onPress={() => {
-        copyToClipboard(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }}
-      hitSlop={8}
-      scaleTo={0.9}
-      accessibilityLabel={i18n.t('chat.copyAnswer')}
-      style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 2 }}
-    >
-      <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={13} color={theme.textFaint} />
-      {copied ? (
-        <Text variant="caption" tone="faint">
-          {i18n.t('chat.copied')}
-        </Text>
-      ) : null}
-    </PressableScale>
-  );
-}
-
 function Turn({
   turn,
   isLast,
@@ -1374,7 +1345,10 @@ function Turn({
     );
   }
   const status = (turn.status ?? '').toLowerCase();
-  const streaming = isLast && (status === 'streaming' || status === 'pending' || status === 'tool_use');
+  // Single source of truth for "reply still running" — includes 'thinking'
+  // (see isActiveAssistantStatus). The typing indicator lives ONLY here, below
+  // the answer; there is no separate optimistic-slot indicator.
+  const streaming = isLast && isActiveAssistantStatus(status);
 
   // A pure-question turn (no answer yet) must NOT render the empty answer block —
   // its leading gap left a large blank between the q and the next (answer) turn
@@ -1386,13 +1360,6 @@ function Turn({
   // doesn't remount every Step each poll.
   const offset = capped ? steps.length - STEP_RENDER_CAP : 0;
   const visibleSteps = capped ? steps.slice(offset) : steps;
-  // Copyable answer = the text steps joined (or flat `a`); only once settled.
-  const copySource = !streaming
-    ? steps
-        .filter((s) => s.type === 'text' && typeof (s as any).text === 'string')
-        .map((s) => (s as any).text as string)
-        .join('\n\n') || String(turn.a ?? '')
-    : '';
   return (
     <View style={{ gap: spacing.md }}>
       {turn.q ? <QuestionBubble text={turn.q} /> : null}
@@ -1428,8 +1395,6 @@ function Turn({
               <TypingDots />
             </View>
           ) : null}
-
-          {copySource ? <CopyAnswerRow text={copySource} /> : null}
         </View>
       ) : null}
     </View>
