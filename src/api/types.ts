@@ -28,10 +28,22 @@ export type PollData = {
 };
 
 // Server → client WS envelope. We only narrow the types we react to.
+// Streaming delta payload (cicy AI gateway). Backend shape, verified against
+// api/mgr/ai_gateway_audit.go: { delta, agent_id, turn_id, history_id,
+// conversation_id }. ai_chunk = answer text; thinking_chunk = reasoning text.
+export type StreamDelta = {
+  agent_id?: string;
+  delta?: string;
+  turn_id?: string;
+  history_id?: number;
+  conversation_id?: string;
+};
+
 export type WsServerMessage =
   | { type: 'poll_data'; data: PollData }
-  | { type: 'status_change'; data: { agent_id?: string; status: string } }
-  | { type: 'ai_chunk'; data: { agent_id?: string; text?: string; chunk?: string; done?: boolean } }
+  | { type: 'status_change'; data: { agent_id?: string; status: string; turn_id?: string } }
+  | { type: 'ai_chunk'; data: StreamDelta }
+  | { type: 'thinking_chunk'; data: StreamDelta }
   | { type: 'current_updated'; data: { agent_id?: string } }
   | { type: 'user_q'; data: { agent_id?: string; text: string } }
   | { type: 'ping'; data?: unknown }

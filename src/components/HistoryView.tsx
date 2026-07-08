@@ -9,11 +9,14 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, type AppStateStatus, Image, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
 
 import { api } from '@/src/api/http';
+import { ChatWsClient } from '@/src/api/chatws';
 import { assetBrowserUrl, assetUri, isAssetRef } from '@/src/api/upload';
 import i18n from '@/src/i18n';
-import type { HistoryStep, HistoryTurn } from '@/src/api/types';
+import type { HistoryStep, HistoryTurn, StreamDelta } from '@/src/api/types';
 import { buildTurnsFromRawItems, normalizeHistoryTurns, replyItemsToSteps, splitLeadingHarnessBlocks, stripHarnessNoise } from '@/src/lib/historyParse';
 import { historyCache } from '@/src/lib/historyCache';
+import { normalizeAgentType } from '@/src/lib/agentType';
+import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 import { ImageLightbox } from './ImageLightbox';
 import { InlineVideo } from './InlineVideo';
@@ -32,6 +35,9 @@ type Props = {
   // in-flight reply (turn started here or from any other channel). Clearing
   // busy is owned solely by the composer's baseline hysteresis poll.
   onReplyInFlight?: () => void;
+  // Agent type — gates real-time WS delta streaming to cicy (the only type the
+  // AI gateway pushes ai_chunk/thinking_chunk for). Others rely on the poll.
+  agentType?: string;
 };
 
 // Two-part history (ported from desktop CurrentHistoryView):
@@ -130,8 +136,11 @@ function replyAnswersRealQuestion(question?: string): boolean {
   return !!splitLeadingHarnessBlocks(s).remaining.trim();
 }
 
-export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
+export function HistoryView({ agentId, pending, onReplyInFlight, agentType }: Props) {
   const theme = useTheme();
+  // Real-time WS delta streaming is gated to cicy agents (the only type the AI
+  // gateway pushes ai_chunk/thinking_chunk for). Others stay poll-only.
+  const wsEnabled = normalizeAgentType(agentType) === 'cicy';
 
   // ── Two-part model (faithful port of cicy-code CurrentHistoryView) ────────────
   // Part 1: committed window (current.json), single-role turns oldest→newest.
@@ -539,6 +548,82 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
     }
     if (aliveRef.current) pollReply();
   }, [pollReply]);
+
+  // ── WS delta streaming (cicy only) — zero-latency token push on top of the
+  // poll. The poll stays the correction ANCHOR: the backend writes reply.json
+  // BEFORE publishing each delta, so a poll snapshot always ⊇ the pushed deltas
+  // (it replaces liveTarget wholesale every ~700ms without ever regressing).
+  // WS just fills the gaps between polls so text appears as it's generated. ──────
+  const wsNudgeAtRef = useRef(0);
+  // Debounced poll nudge — a fast delta stream before the baseline is attached
+  // would otherwise kickPoll() every chunk, each bumping the poll gen and
+  // cancelling the prior in-flight poll before it can attach the tail (livelock).
+  const nudgePoll = useCallback(() => {
+    const now = Date.now();
+    if (now - wsNudgeAtRef.current < 200) return;
+    wsNudgeAtRef.current = now;
+    kickPoll();
+  }, [kickPoll]);
+  const appendStreamDelta = useCallback(
+    (kind: 'text' | 'thinking', delta: string, turnId: string) => {
+      if (!delta) return;
+      const lt = liveTargetRef.current;
+      // No poll baseline yet (just opened / just sent) → let the poll attach the
+      // tail first, else we'd stitch a fragment from mid-stream. Nudge it. (The
+      // dropped pre-baseline deltas aren't lost: reply.json is written before the
+      // delta is published, so the poll snapshot already contains them.)
+      if (!lt) { nudgePoll(); return; }
+      // A delta for a different turn than the one we're showing → the slot is
+      // stale; defer to the poll to re-anchor rather than corrupt the tail.
+      if (turnId && liveTurnIdRef.current && turnId !== liveTurnIdRef.current) { nudgePoll(); return; }
+      const steps = Array.isArray(lt.steps) ? [...lt.steps] : [];
+      const last: any = steps[steps.length - 1];
+      if (last && last.type === kind && typeof last.text === 'string') {
+        // Dedup a delta the poll already folded in (poll vs WS race): a long
+        // delta that is exactly the current suffix is a duplicate — drop it.
+        if (delta.length >= 6 && String(last.text).endsWith(delta)) return;
+        steps[steps.length - 1] = { ...last, text: `${last.text}${delta}` };
+      } else {
+        steps.push({ type: kind, text: delta } as HistoryStep);
+      }
+      liveTargetRef.current = { ...lt, steps, status: kind === 'thinking' ? 'thinking' : 'streaming' };
+      onReplyInFlightRef.current?.();
+      kickType();
+    },
+    [nudgePoll, kickType],
+  );
+
+  // Open one WS per focused cicy chat; consume ai_chunk / thinking_chunk deltas.
+  // Focus-scoped (close on blur, fresh client on return) — same lifecycle as the
+  // poll, so a blurred/backgrounded chat doesn't hold a socket streaming into a
+  // hidden screen.
+  const clientIdRef = useRef<string>('');
+  if (!clientIdRef.current) {
+    // Uniqueness only needs to avoid colliding with other clients of the same
+    // agent. (Date.now/Math.random are fine in app code.)
+    clientIdRef.current = `mobile-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+  }
+  useFocusEffect(
+    useCallback(() => {
+      if (!wsEnabled) return;
+      const { serverUrl, token } = useAuthStore.getState();
+      if (!serverUrl || !token) return;
+      const client = new ChatWsClient({ serverUrl, token, clientId: clientIdRef.current, agentId });
+      const off = client.on((msg) => {
+        if (msg.type !== 'ai_chunk' && msg.type !== 'thinking_chunk') return;
+        const d = (msg.data ?? {}) as StreamDelta;
+        const aid = String(d.agent_id ?? '').trim();
+        // Only this agent's stream (agent_id may be short or prefixed).
+        if (aid && aid !== agentId && !agentId.endsWith(aid) && !aid.endsWith(agentId)) return;
+        appendStreamDelta(msg.type === 'thinking_chunk' ? 'thinking' : 'text', String(d.delta ?? ''), String(d.turn_id ?? ''));
+      });
+      client.connect();
+      return () => {
+        off();
+        client.close();
+      };
+    }, [agentId, wsEnabled, appendStreamDelta]),
+  );
 
   // Full-screen error → Try again: re-run the initial committed load in place
   // (backing out and re-entering was the only recovery before) + restart polling.
