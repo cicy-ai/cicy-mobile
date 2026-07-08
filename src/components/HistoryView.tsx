@@ -9,7 +9,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, type AppStateStatus, Image, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
 
 import { api } from '@/src/api/http';
-import { assetUri } from '@/src/api/upload';
+import { assetUri, isAssetRef } from '@/src/api/upload';
 import i18n from '@/src/i18n';
 import type { HistoryStep, HistoryTurn } from '@/src/api/types';
 import { buildTurnsFromRawItems, normalizeHistoryTurns, replyItemsToSteps, splitLeadingHarnessBlocks, stripHarnessNoise } from '@/src/lib/historyParse';
@@ -1207,6 +1207,30 @@ function copyToClipboard(text: string) {
   if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
 }
 
+type QMedia = { url: string; name: string; isImage: boolean; isVideo: boolean };
+
+// Pull standalone attachment lines (uploaded images/files, embedded as
+// `![name](abs)` / `[name](abs)`) out of the question so they render as
+// thumbnails / download cards — same as web's MarkdownBlock in CollapsibleQ —
+// instead of showing raw markdown text. The leftover prose stays in the bubble.
+function splitQuestionMedia(text: string): { body: string; media: QMedia[] } {
+  const media: QMedia[] = [];
+  const kept: string[] = [];
+  for (const line of text.split('\n')) {
+    const m = /^\s*(!?)\[([^\]]*)\]\(([^)]+)\)\s*$/.exec(line);
+    if (m) {
+      const url = m[3];
+      const isVideo = /\.(mp4|mov|m4v|webm|3gp|mkv)(\?|$)/i.test(url) || m[2].startsWith('🎬');
+      if (isAssetRef(url) || (/^https?:/.test(url) && (m[1] === '!' || isVideo))) {
+        media.push({ url, name: m[2].replace(/^🎬\s*/, ''), isImage: m[1] === '!' && !isVideo, isVideo });
+        continue;
+      }
+    }
+    kept.push(line);
+  }
+  return { body: kept.join('\n').trim(), media };
+}
+
 function QuestionBubble({ text }: { text: string }) {
   const theme = useTheme();
   const [copied, setCopied] = useState(false);
@@ -1214,23 +1238,32 @@ function QuestionBubble({ text }: { text: string }) {
   // continuation) are stripped wherever they appear — leading, embedded, or
   // trailing — so the display layer never shows system content.
   const remaining = useMemo(() => stripHarnessNoise(text), [text]);
+  const { body, media } = useMemo(() => splitQuestionMedia(remaining), [remaining]);
   if (!remaining) return null;
   // Long-press → copy (RN text selection is fiddly per-block; ChatGPT/Claude
   // mobile treat long-press copy as table stakes).
   const onCopy = () => {
-    copyToClipboard(remaining);
+    copyToClipboard(body || remaining);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
   return (
     <View style={{ gap: spacing.sm }}>
-      <View style={styles.qRow}>
-        <PressableScale onLongPress={onCopy} scaleTo={0.98} style={[styles.qBubble, { backgroundColor: theme.accent }]}>
-          <Text style={{ color: theme.accentText, fontSize: 15, lineHeight: 22 }} selectable>
-            {remaining}
-          </Text>
-        </PressableScale>
-      </View>
+      {body ? (
+        <View style={styles.qRow}>
+          <PressableScale onLongPress={onCopy} scaleTo={0.98} style={[styles.qBubble, { backgroundColor: theme.accent }]}>
+            <Text style={{ color: theme.accentText, fontSize: 15, lineHeight: 22 }} selectable>
+              {body}
+            </Text>
+          </PressableScale>
+        </View>
+      ) : null}
+      {/* User's own uploaded attachments — right-aligned to sit under their bubble. */}
+      {media.map((mm, i) => (
+        <View key={`qm${i}`} style={{ alignSelf: 'flex-end', maxWidth: '82%' }}>
+          <MediaBlock url={mm.url} name={mm.name} isImage={mm.isImage} isVideo={mm.isVideo} theme={theme} />
+        </View>
+      ))}
       {copied ? (
         <Text variant="caption" tone="faint" style={{ alignSelf: 'flex-end' }}>
           {i18n.t('chat.copied')}
@@ -1785,9 +1818,13 @@ function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeo
       const isImage = media[1] === '!';
       const label = media[2].replace(/^🎬\s*/, '');
       const url = media[3];
-      const looksAsset = /\/assets\/files\//.test(url) || /^https?:/.test(url) || url.startsWith('/');
       const isVideo = /\.(mp4|mov|m4v|webm|3gp|mkv)(\?|$)/i.test(url) || media[2].startsWith('🎬');
-      if (looksAsset && (isImage || isVideo || /\/assets\/files\//.test(url))) {
+      // Render as an attachment block when it targets one of our uploaded assets
+      // (servable /assets/files/ URL OR an absolute /…/cicy-ai/assets/ host path,
+      // which is what a file attachment is now embedded as — agent-readable), or
+      // an external image/video. A plain markdown link stays an inline link.
+      const asset = isAssetRef(url);
+      if (asset || (/^https?:/.test(url) && (isImage || isVideo))) {
         flushPara();
         const k2 = blocks.length + 1;
         blocks.push(

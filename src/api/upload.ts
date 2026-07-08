@@ -65,13 +65,38 @@ export async function uploadAttachment(
   };
 }
 
+// Uploaded attachments are embedded in the message as the ABSOLUTE host path
+// (from file_ref) so the agent can Read them with a file tool — same as
+// cicy-code web. To DISPLAY/download one, map that absolute path back to the
+// servable, token-free URL: `.../cicy-ai/assets/<rel>` → `/assets/files/<rel>`.
+// Already-servable `/assets/files/…` URLs (older mobile sends) and external
+// URLs pass through untouched. (Port of web's assetAbsPathToURL.)
+export function assetAbsPathToURL(src: string): string {
+  const s = String(src || '');
+  const marker = '/cicy-ai/assets/';
+  const i = s.indexOf(marker);
+  if (i >= 0) {
+    const rel = s.slice(i + marker.length);
+    if (rel) return `/assets/files/${rel}`;
+  }
+  return s;
+}
+
+// True when a markdown target is one of our uploaded assets (either the servable
+// URL form or an absolute host path into the shared store) — vs an ordinary link.
+export function isAssetRef(src: string): boolean {
+  const s = String(src || '');
+  return s.includes('/assets/files/') || s.includes('/cicy-ai/assets/');
+}
+
 // Absolute servable URL for an asset ref returned by uploadAttachment. The
 // Bearer header is attached ONLY when the URL points at the team server itself
 // (cloud's /assets/files/ is session-guarded) — never leaked to an external
 // host like the OSS bucket the cloud default team may return a public URL for.
 export function assetUri(pathOrUrl: string): { uri: string; headers?: Record<string, string> } {
   const { serverUrl, token } = useAuthStore.getState();
-  let p = String(pathOrUrl || '');
+  // Absolute host path (agent-readable form) → servable URL before resolving.
+  let p = assetAbsPathToURL(String(pathOrUrl || ''));
   const isAbsolute = /^https?:\/\//i.test(p);
   let full = isAbsolute ? p : `${serverUrl ?? ''}${p.startsWith('/') ? '' : '/'}${p}`;
   const sameOrigin = !isAbsolute || (!!serverUrl && full.startsWith(serverUrl));

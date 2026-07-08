@@ -309,7 +309,14 @@ export default function Chat() {
           try {
             const r = await uploadAttachment(agentId, a.uri, a.name, a.mime);
             const isVid = a.kind === 'video' || r.contentType.startsWith('video/');
-            refs.push(r.isImage ? `![${r.name}](${r.url})` : `[${isVid ? '🎬 ' : ''}${r.name}](${r.url})`);
+            // Embed the ABSOLUTE host path (from file_ref), NOT the servable URL —
+            // so the agent gets a real path its file tool can Read (web parity;
+            // the history renderer maps it back to a preview/download URL). The
+            // absolute path carries no token, so outbound audit won't strip it.
+            const abs = r.fileRef
+              ? '/' + r.fileRef.replace(/^file:\/\//, '').replace(/^\/+/, '')
+              : r.url;
+            refs.push(r.isImage ? `![${r.name}](${abs})` : `[${isVid ? '🎬 ' : ''}${r.name}](${abs})`);
           } catch {
             failed.push(a);
           }
