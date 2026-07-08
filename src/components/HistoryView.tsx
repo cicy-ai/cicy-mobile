@@ -118,6 +118,18 @@ function animateScrollTop(node: any, target: number, ms: number) {
   };
   __scrollAnim = requestAnimationFrame(step);
 }
+// Content size of a live turn's steps — used by the poll's regress guard to tell
+// whether a poll snapshot is BEHIND the (WS-ahead) tail we're already showing.
+function liveStepsContentSize(steps: HistoryStep[] | undefined): { textLen: number; toolCount: number } {
+  let textLen = 0;
+  let toolCount = 0;
+  for (const s of steps ?? []) {
+    if ((s as any).type === 'tool') toolCount += Array.isArray((s as any).tools) ? (s as any).tools.length : 0;
+    else textLen += String((s as any).text ?? '').length;
+  }
+  return { textLen, toolCount };
+}
+
 function isActiveAssistantStatus(s: string): boolean {
   const v = (s || '').toLowerCase();
   // NB: 'thinking' MUST be here. Omitting it meant the reply's initial thinking
@@ -169,6 +181,8 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
   const maxLoadedIdRef = useRef(0); // largest committed history_id (== q_last id)
   const minLoadedIdRef = useRef(0); // smallest committed id (paging)
   const lastSigRef = useRef(''); // last rendered live-tail signature (skip no-op re-renders)
+  const regressStreakRef = useRef(0); // consecutive polls the snapshot lagged the WS-ahead tail
+  const clearedConvIdRef = useRef(''); // /clear: reject this (soon-rotated) conversation's data
   const liveTurnIdRef = useRef(''); // backend turn_id of the live tail
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollGenRef = useRef(0); // bump to invalidate a stale poll loop's reschedule
@@ -275,13 +289,20 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
   // WINDOW of ids, and a one-page fetch would leave a GAP that loadMore can never
   // fill (it pages below the OLD min, not into the gap) — the turn then renders
   // with its earlier steps missing until a full reload.
-  const reconcileTail = useCallback(async () => {
+  // Returns the new committed tail to append ({turns,newMax}) — it does NOT call
+  // setItems itself. The caller applies setItems AND the live-tail update in ONE
+  // synchronous block so React batches them into a single render; otherwise the
+  // boundary grows a frame before the tail re-attaches and the list flips
+  // collapsed/expanded once per tool round ("每轮跳"). A too-big burst resyncs the
+  // whole window in place (a full replace — its own render, rare) and returns null.
+  const reconcileTail = useCallback(async (): Promise<{ turns: HistoryTurn[]; newMax: number } | null> => {
     try {
       const ids = await api.getHistoryIds(agentId);
       const cid = String(ids.conversation_id ?? '');
       const newMax = Number(ids.id ?? 0);
-      if (cid && convRef.current && cid !== convRef.current) return; // rotation → softRebind
-      if (newMax <= maxLoadedIdRef.current) return;
+      if (clearedConvIdRef.current && cid === clearedConvIdRef.current) return null; // /clear: reject stale conv
+      if (cid && convRef.current && cid !== convRef.current) return null; // rotation → softRebind
+      if (newMax <= maxLoadedIdRef.current) return null;
       const collected: HistoryTurn[] = [];
       let before: number | undefined;
       let reachedStart = false;
@@ -301,20 +322,19 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
         if (pageMin <= maxLoadedIdRef.current + 1) break; // met the loaded boundary → contiguous
         before = pageMin;
       }
-      if (!collected.length) return;
+      if (!collected.length) return null;
       const oldestNew = Number(collected[0].history_id ?? 0);
       const contiguous = reachedStart || oldestNew <= maxLoadedIdRef.current + 1;
-      if (contiguous) {
-        setItems((prev) => normalizeHistoryTurns([...prev, ...collected]));
-        maxLoadedIdRef.current = newMax;
-      } else {
-        // A burst bigger than the page budget (e.g. after a long background) would
-        // leave a permanent HOLE between the old boundary and this tail — loadMore
-        // only pages BELOW minLoaded, never into a middle gap. Resync to a fresh
-        // contiguous window instead of stitching in a discontiguous tail.
-        await loadWindow();
-      }
-    } catch {}
+      if (contiguous) return { turns: collected, newMax };
+      // A burst bigger than the page budget (e.g. after a long background) would
+      // leave a permanent HOLE between the old boundary and this tail — loadMore
+      // only pages BELOW minLoaded, never into a middle gap. Resync to a fresh
+      // contiguous window instead of stitching in a discontiguous tail.
+      await loadWindow();
+      return null;
+    } catch {
+      return null;
+    }
   }, [agentId, loadWindow]);
 
   // Conversation rotation: swap the new conversation's window in place (keep old
@@ -466,6 +486,17 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
       if (!aliveRef.current || gen !== pollGenRef.current) return;
       complete = !!r.complete;
       const cid = String(r.conversation_id ?? '').trim();
+      // /clear in flight → the backend hasn't rotated yet. Reject the cleared
+      // conversation's data (it'd flash the old turns back), poll fast for the
+      // rotation; once a genuinely NEW cid appears, drop the guard and proceed.
+      if (clearedConvIdRef.current) {
+        if (cid && cid === clearedConvIdRef.current) {
+          revealOnce();
+          if (aliveRef.current && gen === pollGenRef.current) pollTimer.current = setTimeout(pollReply, POLL_ACTIVE_MS);
+          return;
+        }
+        clearedConvIdRef.current = '';
+      }
       // Agent rotated to a different conversation than committed shows → rebind.
       if (convRef.current && cid && cid !== convRef.current) {
         revealOnce();
@@ -488,14 +519,25 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
         if (answerId <= 0) {
           if (liveTargetRef.current) clearLiveTurn();
         } else {
-          // A newer turn committed → pull ONLY the new tail (never below).
+          // A newer turn committed → pull ONLY the new tail (never below). Hold it
+          // (don't setItems yet) so it lands in the SAME render as the live-tail
+          // update below — one batch, no per-round flip.
+          let pendingTail: { turns: HistoryTurn[]; newMax: number } | null = null;
           if (replyMaxId > maxLoadedIdRef.current && !reconcilingRef.current) {
             reconcilingRef.current = true;
-            await reconcileTail();
+            pendingTail = await reconcileTail();
             reconcilingRef.current = false;
             if (!aliveRef.current || gen !== pollGenRef.current) return;
           }
-          const boundary = maxLoadedIdRef.current;
+          const boundary = pendingTail ? pendingTail.newMax : maxLoadedIdRef.current;
+          // Apply the committed tail NOW — everything below is synchronous (no
+          // await), so this setItems batches with the setLiveTurn/clearLiveTurn
+          // that follows into ONE render (no per-round collapsed/expanded flip).
+          if (pendingTail) {
+            const t = pendingTail;
+            setItems((prev) => normalizeHistoryTurns([...prev, ...t.turns]));
+            maxLoadedIdRef.current = t.newMax;
+          }
           // cicy reseeds current.json every tool round, so mid-turn the boundary
           // can advance PAST the answer slot this poll snapshotted (answerId is
           // one round stale). The reply is still THIS in-flight turn — keep the
@@ -526,10 +568,37 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
             const sig = `${turnId}:${effectiveAnswerId}:${status}:${String(r.updated_at ?? '')}:${thinking.length}:${answer.length}:${itemsSig}`;
             if (sig !== lastSigRef.current) {
               lastSigRef.current = sig;
+              const prevTurnId = liveTurnIdRef.current;
               liveTurnIdRef.current = turnId;
-              // Set the typewriter's TARGET (full text); it reveals char-by-char so
-              // the answer reads as continuous typing instead of 700ms chunks.
               if (!complete && !replyFailed) onReplyInFlightRef.current?.();
+              const nextSteps = replyItemsToSteps(liveItems, thinking, answer);
+              // Regress guard: WS deltas can lead the poll snapshot (delta lands
+              // before the poll that read reply.json is applied). If the snapshot
+              // is SHORTER than the tail we're already showing (same turn, fewer
+              // chars, no new tool), keep the ahead WS version and only move the
+              // slot id — else the answer visibly shrinks and the next delta glues
+              // onto the shortened text (a dropped chunk). Self-heals: forced after
+              // 3 consecutive regressions (~a couple polls). (web parity)
+              const prevLive = liveTargetRef.current;
+              let regressed = false;
+              if (!complete && prevLive && prevTurnId && turnId === prevTurnId) {
+                const prev = liveStepsContentSize(prevLive.steps);
+                const next = liveStepsContentSize(nextSteps);
+                regressed = next.textLen < prev.textLen && next.toolCount <= prev.toolCount;
+              }
+              if (regressed) {
+                regressStreakRef.current += 1;
+                if (regressStreakRef.current >= 3) regressed = false;
+              } else {
+                regressStreakRef.current = 0;
+              }
+              if (regressed && prevLive) {
+                // Keep the ahead WS content; just re-slot the id if the boundary moved.
+                if (Number(prevLive.history_id ?? 0) !== effectiveAnswerId) {
+                  liveTargetRef.current = { ...prevLive, history_id: effectiveAnswerId };
+                  kickType();
+                }
+              } else {
               liveTargetRef.current = {
                 history_id: effectiveAnswerId,
                 conversation_id: cid || convRef.current,
@@ -537,11 +606,12 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
                 q: '',
                 text: '',
                 a: answer,
-                steps: replyItemsToSteps(liveItems, thinking, answer),
+                steps: nextSteps,
                 status: complete ? '' : status,
                 model: String(r.model ?? '') || undefined,
               };
               kickType();
+              }
             }
           } else if (liveTargetRef.current) {
             clearLiveTurn();
@@ -771,6 +841,8 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
       liveTargetRef.current = null;
       revealRef.current = { key: '', shown: 0, frac: 0 };
       typeSeededRef.current = false; // first tail attach after focus reveals instantly
+      clearedConvIdRef.current = '';
+      regressStreakRef.current = 0;
       if (typeRafRef.current != null) { cancelAnimationFrame(typeRafRef.current); typeRafRef.current = null; }
       // On a cache hit the committed window is already painted, so the poll loop
       // may attach the live tail immediately; on a miss it waits for loadWindow.
@@ -856,6 +928,20 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
     // teardown signal and would sit there until the 60s timeout. Skip it; the
     // command's ack arrives via the reply.json poll. (web onNudge invariant)
     if (/^\/\w+(\s|$)/.test(pending.text.trim())) {
+      // /clear → blank the view NOW (don't wait for the backend to rotate + a
+      // poll round-trip), and remember the cleared conversation id so any poll /
+      // reconcile / rebind that races the rotation REJECTS its (soon-stale) data
+      // — otherwise the old turns flash back for a frame. Guard clears once a
+      // genuinely new conversation id shows up. (web /clear invariant)
+      if (/^\/clear(\s|$)/.test(pending.text.trim())) {
+        clearedConvIdRef.current = convRef.current;
+        maxLoadedIdRef.current = 0;
+        minLoadedIdRef.current = 0;
+        clearLiveTurn();
+        setOptimistic(null);
+        setItems([]);
+        setHasMore(false);
+      }
       kickPoll();
       return;
     }

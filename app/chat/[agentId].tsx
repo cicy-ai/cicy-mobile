@@ -375,10 +375,21 @@ export default function Chat() {
     const attempt = flushRetryRef.current;
     const delay = attempt === 0 ? 0 : Math.min(15000, 1500 * 2 ** (attempt - 1));
     const timer = setTimeout(() => {
-      const batch = queue;
-      setQueue([]);
+      // Isolate slash commands (web parity): a leading /clear or /compact is sent
+      // ALONE (one round), otherwise merge only the leading run of consecutive
+      // NON-slash messages, breaking at the first slash. A slash that isn't the
+      // first token of its own message is sent as literal text (not intercepted),
+      // so never fold it into a combined body.
+      const isSlash = (s: string) => /^\/\w+(\s|$)/.test(s.trim());
+      let take = 1;
+      if (!isSlash(queue[0].text)) {
+        while (take < queue.length && !isSlash(queue[take].text)) take += 1;
+      }
+      const batch = queue.slice(0, take);
+      setQueue((prev) => prev.slice(take));
       const body = batch.map((b) => b.text).join('\n');
-      setBusy(true);
+      // Slash commands don't lock busy (no committed turn / reply-in-flight).
+      if (!isSlash(body)) setBusy(true);
       setPending({ text: body, nonce: Date.now() });
       api.sendToAgent(agentId, body, true).then(() => {
         flushRetryRef.current = 0;
