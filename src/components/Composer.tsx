@@ -20,7 +20,7 @@ import { PressableScale } from './PressableScale';
 import { Text } from './Text';
 import { useVoiceRecorder } from '@/src/hooks/useVoiceRecorder';
 import {
-  captureMedia, pickDocuments, pickImages, takePhoto, type PendingAttachment,
+  captureMedia, pickDocuments, pickImages, type PendingAttachment,
 } from '@/src/lib/attachments';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 
@@ -228,8 +228,9 @@ export function Composer({
               { backgroundColor: theme.bg, borderColor: theme.border, paddingBottom: insets.bottom + spacing.md },
             ]}
           >
+            {/* No 拍照 here — the dedicated camera button already opens the
+                camera directly. ⊕ is only 相册 + 文件, so 拍照 isn't duplicated. */}
             {([
-              ['camera-outline', t('attach.takePhoto'), takePhoto],
               ['image-outline', t('attach.pickImage'), pickImages],
               ['document-outline', t('attach.pickFile'), pickDocuments],
             ] as const).map(([icon, label, fn]) => (
