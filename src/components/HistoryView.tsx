@@ -344,7 +344,17 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
     const fullLen = revealing ? (last.text as string).length : 0;
     const key = `${target.history_id}:${steps.length}:${last?.type ?? ''}`;
     const rv = revealRef.current;
-    if (rv.key !== key) { rv.key = key; rv.shown = 0; rv.frac = 0; }
+    if (rv.key !== key) {
+      // First attach after mount/clear (key '') = pre-existing content (entering a
+      // chat whose last reply is done or mid-flight) — show it in full instantly;
+      // replaying it char-by-char would be a fake typewriter over history. Only
+      // text that arrives AFTER we're watching gets typed. Mid-stream key changes
+      // (a new step starting) still reveal from 0 as before.
+      const preExisting = rv.key === '';
+      rv.key = key;
+      rv.shown = preExisting ? fullLen : 0;
+      rv.frac = 0;
+    }
     if (!revealing) { setLiveTurn(target); return; } // nothing to type → show as-is
     if (rv.shown < fullLen) {
       // Drain the backlog over ~24 frames (~400ms) so each 700ms chunk finishes about
