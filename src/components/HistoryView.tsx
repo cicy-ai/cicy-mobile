@@ -898,9 +898,17 @@ export function HistoryView({ agentId, pending, onReplyInFlight }: Props) {
         showJumpRef.current = jump;
         setShowJump(jump);
       }
-      // load-earlier is NOT triggered here. Auto-loading on every scroll near the top
-      // fired on open and paged in the WHOLE history ("一打开全打开了"). Like web, it's
-      // an IntersectionObserver on a top sentinel that only fires when scrolled into view.
+      // Auto-load older history when the user scrolls near the top — no tap
+      // needed (native has no IntersectionObserver; web's still fires too, and
+      // loadMore self-guards a double trigger). Gated on didInitialScrollRef so
+      // opening a chat — which lands at the BOTTOM — never auto-pages the whole
+      // history at once ("一打开全打开了"). After a page loads,
+      // maintainVisibleContentPosition (native) / the scrollTop compensation
+      // (web) keeps the view put, pushing y back down, so it won't re-fire until
+      // the user scrolls up again → clean incremental paging.
+      if (didInitialScrollRef.current && y <= 80) {
+        loadMoreFnRef.current();
+      }
     },
     [],
   );
