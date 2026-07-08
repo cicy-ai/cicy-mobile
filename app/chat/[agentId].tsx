@@ -585,25 +585,6 @@ export default function Chat() {
               ))}
             </View>
           )}
-          {/* Reply in flight → one-tap stop (Esc equivalent). NO "正在回复…" dots
-              here: the sole typing indicator lives below the answer, never above
-              the composer. Just a compact, right-aligned stop affordance. The
-              send button stays usable — sending while busy queues, not interrupts. */}
-          {busy && (
-            <View style={styles.busyRow}>
-              <PressableScale
-                onPress={() => { void stopGeneration(); }}
-                haptic
-                scaleTo={0.94}
-                style={[styles.stopBtn, { borderColor: theme.border, backgroundColor: theme.surface }]}
-              >
-                <Ionicons name="square" size={10} color={theme.danger} />
-                <Text variant="caption" style={{ color: theme.danger }}>
-                  {t('chat.stop')}
-                </Text>
-              </PressableScale>
-            </View>
-          )}
           {/* Attachments auto-send on pick; while uploading they show here as
               loading cards (spinner, dimmed thumb) — not removable chips waiting
               for a manual send. Cleared the moment the message goes out. */}
@@ -651,6 +632,8 @@ export default function Chat() {
               onError={(m) => setVoiceError(m)}
               disabled={false}
               sending={sending}
+              busy={busy}
+              onStop={() => { void stopGeneration(); }}
             />
 
             {/* Live recording — continuous on-device dictation that auto-sends

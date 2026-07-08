@@ -41,6 +41,9 @@ type Props = {
   sending?: boolean;
   /** Allow send with empty text (e.g. attachments staged above). */
   canSendEmpty?: boolean;
+  /** Reply in flight → the ⊕ attach button becomes a stop (icon-only). */
+  busy?: boolean;
+  onStop?: () => void;
 };
 
 // One-pill composer, modeled on the reference shots:
@@ -58,6 +61,8 @@ export function Composer({
   disabled,
   sending,
   canSendEmpty,
+  busy,
+  onStop,
 }: Props) {
   const { t } = useTranslation();
   const theme = useTheme();
@@ -126,6 +131,26 @@ export function Composer({
     </PressableScale>
   );
 
+  // While a reply is streaming, the ⊕ attach slot becomes a stop button
+  // (icon-only) — no separate row above the composer. Idle → the ⊕ attach.
+  const attachOrStop = () => {
+    if (busy && onStop) {
+      return (
+        <PressableScale
+          onPress={onStop}
+          haptic
+          scaleTo={0.9}
+          hitSlop={6}
+          style={styles.iconBtn}
+          accessibilityLabel={t('chat.stop')}
+        >
+          <Ionicons name="stop-circle" size={26} color={theme.danger} />
+        </PressableScale>
+      );
+    }
+    return canAttach ? iconBtn('add-circle-outline', () => setSheetOpen(true)) : null;
+  };
+
   const recordingBg = cancelIntent ? theme.danger : theme.accent;
 
   return (
@@ -180,7 +205,7 @@ export function Composer({
             {!isRecording && !isTranscribing && (
               <>
                 {iconBtn('keypad-outline', () => setMode('text'), { size: 22 })}
-                {canAttach && iconBtn('add-circle-outline', () => setSheetOpen(true))}
+                {attachOrStop()}
               </>
             )}
           </>
@@ -212,7 +237,7 @@ export function Composer({
               <>
                 {showVoice &&
                   iconBtn('account-voice', () => setMode('voice'), { mc: true, size: 22 })}
-                {canAttach && iconBtn('add-circle-outline', () => setSheetOpen(true))}
+                {attachOrStop()}
               </>
             )}
           </>
