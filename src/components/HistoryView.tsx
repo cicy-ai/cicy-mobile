@@ -38,6 +38,11 @@ type Props = {
   // Agent type — gates real-time WS delta streaming to cicy (the only type the
   // AI gateway pushes ai_chunk/thinking_chunk for). Others rely on the poll.
   agentType?: string;
+  // Reply-in-flight (owned by the composer's hysteresis — set on send, cleared
+  // ONLY on a terminal turn). Drives the persistent thinking indicator so it
+  // shows continuously from send until cancel/failure/success, never flickering
+  // off on a transient per-poll status gap.
+  busy?: boolean;
 };
 
 // Two-part history (ported from desktop CurrentHistoryView):
@@ -136,7 +141,7 @@ function replyAnswersRealQuestion(question?: string): boolean {
   return !!splitLeadingHarnessBlocks(s).remaining.trim();
 }
 
-export function HistoryView({ agentId, pending, onReplyInFlight, agentType }: Props) {
+export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy }: Props) {
   const theme = useTheme();
   // Real-time WS delta streaming is gated to cicy agents (the only type the AI
   // gateway pushes ai_chunk/thinking_chunk for). Others stay poll-only.
@@ -190,6 +195,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType }: Pr
   const didInitialScrollRef = useRef(false);
   const shouldStickBottomRef = useRef(true);
   const preserveScrollOffsetRef = useRef(false); // loadMore prepend → keep position
+  const autoLoadArmedRef = useRef(true); // scroll-to-top auto-load: one per approach
   // Metrics sampled RIGHT BEFORE the prepend's setItems (web invariant: sampling
   // earlier lets an interleaved poll render consume them mid-fetch → 翻页跳屏).
   const preserveScrollMetricsRef = useRef<{ h: number; top: number } | null>(null);
@@ -1023,15 +1029,17 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType }: Pr
         showJumpRef.current = jump;
         setShowJump(jump);
       }
-      // Auto-load older history when the user scrolls near the top — no tap
-      // needed (native has no IntersectionObserver; web's still fires too, and
-      // loadMore self-guards a double trigger). Gated on didInitialScrollRef so
-      // opening a chat — which lands at the BOTTOM — never auto-pages the whole
-      // history at once ("一打开全打开了"). After a page loads,
-      // maintainVisibleContentPosition (native) / the scrollTop compensation
-      // (web) keeps the view put, pushing y back down, so it won't re-fire until
-      // the user scrolls up again → clean incremental paging.
-      if (didInitialScrollRef.current && y <= 80) {
+      // Auto-load older history when the user scrolls near the top — no tap.
+      // ONE load per approach to the top: fire when armed + near top, then DISARM
+      // until the user scrolls back down (y > 300) and re-approaches. Without this
+      // the load could re-fire while still at y≈0 (if the platform didn't
+      // compensate the prepend) and page the WHOLE history in a runaway loop
+      // ("一打开全打开了"). Gated on didInitialScrollRef so opening a chat (lands at
+      // the bottom) never auto-pages.
+      if (!didInitialScrollRef.current) return;
+      if (y > 300) autoLoadArmedRef.current = true;
+      if (y <= 80 && autoLoadArmedRef.current) {
+        autoLoadArmedRef.current = false;
         loadMoreFnRef.current();
       }
     },
@@ -1306,11 +1314,19 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType }: Pr
       !displayItems.some((t) => t?.role === 'user' && Number(t?.history_id ?? 0) > optimistic.baselineId) ? (
         <View key={`opt-${optimistic.nonce}`} {...({ dataSet: { turnKey: `opt-${optimistic.nonce}` } } as any)} style={{ gap: spacing.md }}>
           <QuestionBubble text={optimistic.text} />
-          {!(liveVisible && liveTurn && isActiveAssistantStatus(String(liveTurn.status ?? ''))) ? (
-            <View style={{ paddingRight: spacing.lg }}>
-              <TypingDots />
-            </View>
-          ) : null}
+        </View>
+      ) : null}
+
+      {/* Persistent thinking indicator: shown CONTINUOUSLY from send until the
+          turn resolves. `busy` is the composer's hysteresis — set on send,
+          cleared ONLY on a terminal turn (cancel / failure / success) — so this
+          never blinks off in the gap between the optimistic q retiring and the
+          live tail attaching, nor on a transient per-poll status wobble (the old
+          bug). It trails whatever's showing: the q (before any answer), the live
+          answer (as a "still generating" tick), or a thinking block. */}
+      {busy ? (
+        <View {...({ dataSet: { turnKey: 'thinking' } } as any)} style={{ paddingRight: spacing.lg }}>
+          <TypingDots />
         </View>
       ) : null}
 
@@ -1528,12 +1544,8 @@ function Turn({
 
           {/* If the API only sent a flat `a` and no steps, render it as a text block. */}
           {(!turn.steps || turn.steps.length === 0) && turn.a ? <RichText text={turn.a} /> : null}
-
-          {streaming ? (
-            <View>
-              <TypingDots />
-            </View>
-          ) : null}
+          {/* No trailing dots here — the persistent busy-gated thinking indicator
+              (rendered once, after the live tail) is the single source. */}
         </View>
       ) : null}
     </View>

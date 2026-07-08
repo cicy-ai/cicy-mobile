@@ -517,7 +517,7 @@ export default function Chat() {
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
         <View style={{ flex: 1, backgroundColor: theme.bg }}>
-          <HistoryView agentId={agentId} pending={pending} onReplyInFlight={() => setBusy(true)} agentType={agentMeta.agentType} />
+          <HistoryView agentId={agentId} pending={pending} onReplyInFlight={() => setBusy(true)} agentType={agentMeta.agentType} busy={busy} />
           {/* Telegram hides our header (native back bar instead) — the terminal
               entry floats over the top-right corner of the history there. */}
           {inTg && hasTerminal && (
