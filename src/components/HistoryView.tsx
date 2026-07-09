@@ -187,6 +187,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
   const minLoadedIdRef = useRef(0); // smallest committed id (paging)
   const lastSigRef = useRef(''); // last rendered live-tail signature (skip no-op re-renders)
   const regressStreakRef = useRef(0); // consecutive polls the snapshot lagged the WS-ahead tail
+  const lastDeltaAtRef = useRef(0); // last WS delta arrival — gates the regress self-heal
   const clearedConvIdRef = useRef(''); // /clear: reject this (soon-rotated) conversation's data
   const liveTurnIdRef = useRef(''); // backend turn_id of the live tail
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -592,8 +593,20 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
                 regressed = next.textLen < prev.textLen && next.toolCount <= prev.toolCount;
               }
               if (regressed) {
-                regressStreakRef.current += 1;
-                if (regressStreakRef.current >= 3) regressed = false;
+                // The streak self-heal exists for a silently-dead WS (tail stuck
+                // ahead on stale content, polls must eventually win). While the
+                // WS is ACTIVELY feeding deltas, a lagging snapshot is the
+                // EXPECTED state on a tunneled connection (reply.json read lags
+                // the push by the RTT) — force-accepting every 3rd poll here is
+                // what visibly kept overwriting the last round. Only count the
+                // streak when the WS has been quiet.
+                const wsFeeding = Date.now() - lastDeltaAtRef.current < 3000;
+                if (wsFeeding) {
+                  regressStreakRef.current = 0;
+                } else {
+                  regressStreakRef.current += 1;
+                  if (regressStreakRef.current >= 3) regressed = false;
+                }
               } else {
                 regressStreakRef.current = 0;
               }
@@ -667,6 +680,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
   const appendStreamDelta = useCallback(
     (kind: 'text' | 'thinking', delta: string, turnId: string) => {
       if (!delta) return;
+      lastDeltaAtRef.current = Date.now(); // WS is actively feeding the tail
       const lt = liveTargetRef.current;
       // No poll baseline yet (just opened / just sent) → let the poll attach the
       // tail first, else we'd stitch a fragment from mid-stream. Nudge it. (The
