@@ -102,6 +102,9 @@ export type CloudTeam = {
   kind?: string; // cloud | private | custom
   host_url?: string;
   workspace_url?: string;
+  // zero-trust gateway address (<slug>.gw.cicy-ai.com) — preferred serverUrl when
+  // present (the team's node is reached through the gateway). Empty otherwise.
+  gateway_url?: string;
   api_key?: string;
 };
 

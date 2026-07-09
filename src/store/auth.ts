@@ -114,7 +114,7 @@ function buildCloudTeams(session: string, now: number, fetched: any[], prev: Tea
   const seen = new Set<string>();
   for (const ct of Array.isArray(fetched) ? fetched : []) {
     if (String(ct?.kind || 'cloud') === 'custom') continue;
-    const url = String(ct?.workspace_url || ct?.host_url || CLOUD_BASE).replace(/\/+$/, '');
+    const url = String(ct?.gateway_url || ct?.workspace_url || ct?.host_url || CLOUD_BASE).replace(/\/+$/, '');
     if (seen.has(url)) continue;
     seen.add(url);
     const id = `cloud-${ct?.id ?? url}`;
