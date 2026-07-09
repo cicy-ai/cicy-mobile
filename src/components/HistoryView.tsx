@@ -34,6 +34,8 @@ type Props = {
   // in-flight reply (turn started here or from any other channel). Clearing
   // busy is owned solely by the composer's baseline hysteresis poll.
   onReplyInFlight?: () => void;
+  /** A reply reached a terminal state (complete/failed) — unlock the composer. */
+  onReplyDone?: () => void;
   // Agent type — gates real-time WS delta streaming to cicy (the only type the
   // AI gateway pushes ai_chunk/thinking_chunk for). Others rely on the poll.
   agentType?: string;
@@ -160,7 +162,7 @@ function replyAnswersRealQuestion(question?: string): boolean {
   return !!splitLeadingHarnessBlocks(s).remaining.trim();
 }
 
-export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy }: Props) {
+export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, agentType, busy }: Props) {
   const theme = useTheme();
   // Real-time WS delta streaming. The AI gateway publishes ai_chunk /
   // thinking_chunk / status_change per AGENT ID from its audited-capture path
@@ -198,7 +200,11 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
   const clearedConvIdRef = useRef(''); // /clear: reject this (soon-rotated) conversation's data
   const liveTurnIdRef = useRef(''); // backend turn_id of the live tail
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const wsUpRef = useRef(false); // live WS status → stretches the idle poll
+  const wsUpRef = useRef(false); // live WS status → WS up = no HTTP reply fetching
+  // Latest current_updated event payload, queued for the apply pipeline. The
+  // event carries the FULL reply snapshot (answer/thinking/items/complete/…) so
+  // the pipeline consumes it in place of a current-reply API response.
+  const pendingSnapshotRef = useRef<any>(null);
   const pollGenRef = useRef(0); // bump to invalidate a stale poll loop's reschedule
   const aliveRef = useRef(false);
   const focusedRef = useRef(false); // screen focused (useFocusEffect) — gates AppState resume
@@ -211,6 +217,8 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
   const suppressNextAnchorRef = useRef(false); // failed/timed-out send → don't re-anchor the OLD q
   const onReplyInFlightRef = useRef<typeof onReplyInFlight>(undefined);
   onReplyInFlightRef.current = onReplyInFlight;
+  const onReplyDoneRef = useRef<typeof onReplyDone>(undefined);
+  onReplyDoneRef.current = onReplyDone;
   itemsRef.current = items;
   const committedReadyRef = useRef(false); // Part 1 loaded → poll may attach tail
   const firstReplyDoneRef = useRef(false); // Part 2's first poll resolved → reveal
@@ -486,12 +494,25 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
       return;
     }
     try {
-      // Do NOT pin to the committed conversationId: the backend echoes a pinned
-      // cid back even after the agent rotated (returning maxID=0 for it), so a
-      // rotation could never be observed — the view froze until re-entry and the
-      // whole softRebind path was dead code. Poll the agent's CURRENT reply. (web
-      // useCurrentHistory has the same invariant, commented.)
-      const r = await api.getCurrentReply(agentId);
+      // SNAPSHOT SOURCE. WS healthy → the current_updated event IS the snapshot
+      // (the server now packs answer/thinking/items/complete/usage into it):
+      // consume the queued event payload, NEVER the current-reply API. The HTTP
+      // fetch survives ONLY as the WS-down disaster path — with a live socket
+      // this function runs exclusively on pushed data.
+      // (When parked with nothing queued there is nothing to apply — return.)
+      let r: any = null;
+      if (pendingSnapshotRef.current) {
+        r = pendingSnapshotRef.current;
+        pendingSnapshotRef.current = null;
+      } else if (!wsUpRef.current) {
+        // Do NOT pin to the committed conversationId: the backend echoes a pinned
+        // cid back even after the agent rotated (returning maxID=0 for it), so a
+        // rotation could never be observed. Poll the agent's CURRENT reply.
+        r = await api.getCurrentReply(agentId);
+      } else {
+        revealOnce();
+        return;
+      }
       // A stop path (blur/background) or kickPoll invalidated this loop while the
       // request was in flight → drop the response. Without this, resuming forks a
       // SECOND poll loop (both reschedule), and a stale out-of-order snapshot can
@@ -524,10 +545,14 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
           convRef.current = cid;
           setConversationId((p) => p || cid);
         }
-        const replyCid = String(r.reply_conversation_id ?? '').trim();
+        // Event snapshots carry conversation_id only (it IS the reply's cid);
+        // HTTP responses carry the explicit reply_conversation_id.
+        const replyCid = String(r.reply_conversation_id ?? r.conversation_id ?? '').trim();
         const answerId = Number(r.history_id ?? 0); // == committedMax + 1
         const replyMaxId = answerId > 0 ? answerId - 1 : 0; // current.json maxID (q_last)
-        const status = String(r.status ?? 'thinking').trim() || 'thinking';
+        // reply_status = reply.json's own lifecycle (event snapshots); HTTP
+        // responses expose it as `status` directly.
+        const status = String(r.reply_status ?? r.status ?? 'thinking').trim() || 'thinking';
         const replyFailed = /^(failed|fail|error)$/.test(status.toLowerCase());
         if (answerId <= 0) {
           if (liveTargetRef.current) clearLiveTurn();
@@ -584,7 +609,22 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
               const prevTurnId = liveTurnIdRef.current;
               liveTurnIdRef.current = turnId;
               if (!complete && !replyFailed) onReplyInFlightRef.current?.();
-              const nextSteps = replyItemsToSteps(liveItems, thinking, answer);
+              else onReplyDoneRef.current?.(); // terminal → composer unlock (event-driven)
+              // Event snapshots carry RAW reply items (the HTTP handler strips
+              // text already committed to current.json mid-turn; the push does
+              // not). Drop live steps that exactly duplicate a recent committed
+              // assistant text, or a mid-turn commit shows the same round twice.
+              const committedTexts = new Set<string>();
+              for (const ct of itemsRef.current.slice(-4)) {
+                if (ct.a) committedTexts.add(String(ct.a));
+                for (const st of ct.steps ?? []) {
+                  const sTxt = (st as any)?.text;
+                  if (sTxt) committedTexts.add(String(sTxt));
+                }
+              }
+              const nextSteps = replyItemsToSteps(liveItems, thinking, answer).filter(
+                (st: any) => !(st?.text && st.type !== 'tool' && committedTexts.has(String(st.text))),
+              );
               // Regress guard: WS deltas can lead the poll snapshot (delta lands
               // before the poll that read reply.json is applied). If the snapshot
               // is SHORTER than the tail we're already showing (same turn, fewer
@@ -765,8 +805,14 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
           else if (!liveTargetRef.current) nudgePoll();
           return;
         }
-        // A turn committed / its item updated → reconcile via the poll.
-        if (msg.type === 'current_updated') nudgePoll();
+        // The full reply snapshot rides this event (answer/thinking/items/
+        // complete/usage — server-side enrichment). Queue it for the apply
+        // pipeline: SAME battle-tested code path as a poll response, but fed
+        // from the push channel — zero current-reply requests while WS is up.
+        if (msg.type === 'current_updated') {
+          pendingSnapshotRef.current = d;
+          nudgePoll();
+        }
       });
       // Track WS health: while up, the poll loop PARKS (event-driven fetches
       // only). Both transitions need a nudge: on DROP the parked loop must

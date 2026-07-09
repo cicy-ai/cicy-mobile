@@ -143,65 +143,25 @@ export default function Chat() {
     setQueue([]);
   }, [agentId]);
 
-  // Entering a chat whose reply is ALREADY streaming → show the stop button.
+  // busy 的解锁完全事件驱动(不再有任何 current-reply 轮询):
+  //   · 上锁:send() 时,或 HistoryView 应用到 in-flight 快照(onReplyInFlight)。
+  //   · 解锁:HistoryView 应用到终态快照(onReplyDone —— WS current_updated
+  //     携带 complete/failed)。失败在会话里以 OutcomeCard 呈现(web 同款)。
+  //   · 死锁兜底:60s 没有任何终态事件(/clear 空会话、发送被吞、WS 长断),
+  //     强制解锁 —— 用户永远不会被永久锁住。
+  const busyGuardRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    let alive = true;
-    api.getCurrentReply(agentId).then((r: any) => {
-      if (!alive) return;
-      const answerId = Number(r?.history_id || 0);
-      const st = String(r?.status || '').trim().toLowerCase();
-      if (answerId > 0 && !r?.complete && st !== 'failed' && st !== 'error') setBusy(true);
-    }).catch(() => {});
-    return () => { alive = false; };
-  }, [agentId]);
-
-  // busy 的唯一解锁权(比 DispatcherChat 更严的基线版):第一拍先记「基线」——
-  // 上一轮已完结回复的 answerId/cid。之后**只认新回合的终态**(answerId > 基线,
-  // 或会话已轮换)才解锁;上一轮残留的 complete 永远不算(stdin 路径新 turn 注册
-  // 要 1~3s,web 的 800ms 宽限在这里不够,实测会把第二条消息从队列漏成直发)。
-  // 死锁兜底:15s 内从没见过新回合(/clear 空会话、发送被吞),解锁。
-  useEffect(() => {
-    if (!busy) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const since = Date.now();
-    let baseline: { answerId: number; cid: string } | null = null;
-    let sawNewInFlight = false;
-    const tick = async () => {
-      if (cancelled) return;
-      try {
-        const r: any = await api.getCurrentReply(agentId);
-        if (cancelled) return;
-        const answerId = Number(r?.history_id || 0);
-        const cid = String(r?.conversation_id || '');
-        const complete = !!r?.complete;
-        const st = String(r?.status || '').trim().toLowerCase();
-        const failed = st === 'failed' || st === 'fail' || st === 'error';
-        const terminal = complete || failed;
-        if (!baseline) {
-          // First read. A terminal reply here is the PREVIOUS turn's leftovers →
-          // it becomes the baseline. An in-flight one is already the new turn.
-          baseline = terminal ? { answerId, cid } : { answerId: answerId - 1, cid };
-        }
-        const isNewTurn = cid !== baseline.cid || answerId > baseline.answerId;
-        if (answerId > 0 && isNewTurn && !terminal) sawNewInFlight = true;
-        if (answerId > 0 && isNewTurn && terminal && Date.now() - since > 800) {
-          // Just unlock the composer. A failed turn is surfaced IN THE
-          // CONVERSATION by HistoryView's OutcomeCard (red ⚠ 生成失败 + 重试),
-          // exactly like web's OutcomeNoticeCard — not a dismissable banner.
-          setBusy(false);
-          return;
-        }
-        if (!sawNewInFlight && Date.now() - since > 15000) { setBusy(false); return; }
-      } catch {}
-      // 2.5s: this loop only flips the composer's busy lock on a terminal
-      // state — HistoryView owns the live stream (WS + its own anchor poll),
-      // so a tighter cadence here just doubles the current-reply traffic.
-      timer = setTimeout(tick, 2500);
+    if (!busy) {
+      if (busyGuardRef.current) { clearTimeout(busyGuardRef.current); busyGuardRef.current = null; }
+      return;
+    }
+    busyGuardRef.current = setTimeout(() => setBusy(false), 60000);
+    return () => {
+      if (busyGuardRef.current) { clearTimeout(busyGuardRef.current); busyGuardRef.current = null; }
     };
-    tick();
-    return () => { cancelled = true; if (timer != null) clearTimeout(timer); };
-  }, [busy, agentId]);
+  }, [busy]);
+  // Send 之后的极早期(事件还没来)按下 stop 也要可用 —— busy 由 send() 直接置位,
+  // 与事件无关;这里不需要任何入场 seed 请求。
 
   // Agent metadata — from /api/panes, fetched once on entry.
   const [agentMeta, setAgentMeta] = useState<{
@@ -653,7 +613,7 @@ export default function Chat() {
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
         <View style={{ flex: 1, backgroundColor: theme.bg }}>
-          <HistoryView agentId={agentId} pending={pending} onReplyInFlight={() => setBusy(true)} agentType={agentMeta.agentType} busy={busy} />
+          <HistoryView agentId={agentId} pending={pending} onReplyInFlight={() => setBusy(true)} onReplyDone={() => setBusy(false)} agentType={agentMeta.agentType} busy={busy} />
           {/* Telegram hides our header (native back bar instead) — the terminal
               entry floats over the top-right corner of the history there. */}
           {inTg && hasTerminal && (
