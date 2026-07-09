@@ -194,7 +194,10 @@ export default function Chat() {
         }
         if (!sawNewInFlight && Date.now() - since > 15000) { setBusy(false); return; }
       } catch {}
-      timer = setTimeout(tick, 1000);
+      // 2.5s: this loop only flips the composer's busy lock on a terminal
+      // state — HistoryView owns the live stream (WS + its own anchor poll),
+      // so a tighter cadence here just doubles the current-reply traffic.
+      timer = setTimeout(tick, 2500);
     };
     tick();
     return () => { cancelled = true; if (timer != null) clearTimeout(timer); };

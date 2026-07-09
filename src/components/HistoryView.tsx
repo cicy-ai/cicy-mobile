@@ -61,7 +61,10 @@ type Props = {
 // AND reply_conversation_id matches the committed conversation (cross-session
 // guard). See docs/history-view-two-part-architecture.md.
 const WINDOW = 16; // committed items fetched per page ("a screenful + a bit")
-const POLL_ACTIVE_MS = 500; // while a reply is streaming (correction anchor; web parity)
+const POLL_ACTIVE_MS = 500; // streaming with NO live WS — poll is the only feed
+const POLL_ACTIVE_WS_MS = 2500; // streaming WITH WS deltas flowing — poll only syncs
+// tool cards / multi-round structure, and status_change nudges it the moment a
+// tool round starts, so 2.5s is structure-sync, not text latency (text is WS).
 const POLL_IDLE_MS = 2500; // complete / no active turn — watch for the next q (WS down)
 const POLL_IDLE_WS_MS = 15000; // idle + WS healthy — WS events announce the next turn
 const CURRENT_HISTORY_POLL_WAIT_MS = 150; // re-check until Part 1 (committed) is ready
@@ -644,9 +647,13 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
         // Idle + WS healthy → stretch way out: a new turn (from any client, or
         // the agent itself) announces over the WS (ai_chunk / status_change /
         // current_updated → nudgePoll), so the idle poll is only a WS-loss
-        // safety net. WS down → keep web's 2.5s idle watch.
+        // safety net. WS down → keep web's 2.5s idle watch. While STREAMING,
+        // a live delta feed demotes the poll to structure-sync cadence — the
+        // text itself rides the WS, and tool rounds nudge an immediate poll.
+        const wsFeeding = wsUpRef.current && Date.now() - lastDeltaAtRef.current < 3000;
         const idleMs = wsUpRef.current ? POLL_IDLE_WS_MS : POLL_IDLE_MS;
-        pollTimer.current = setTimeout(pollReply, complete ? idleMs : POLL_ACTIVE_MS);
+        const activeMs = wsFeeding ? POLL_ACTIVE_WS_MS : POLL_ACTIVE_MS;
+        pollTimer.current = setTimeout(pollReply, complete ? idleMs : activeMs);
       }
     }
   }, [agentId, reconcileTail, softRebind, clearLiveTurn, kickType]);
