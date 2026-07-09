@@ -4,7 +4,7 @@
 import { create } from 'zustand';
 
 import i18n from '@/src/i18n';
-import { CLOUD_BASE, fetchCloudTeams, type CloudSession } from '@/src/api/cloudAuth';
+import { fetchCloudTeams, type CloudSession } from '@/src/api/cloudAuth';
 import { storage } from './storage';
 
 const TEAMS_KEY = 'cicy_teams_v1';
@@ -29,6 +29,13 @@ export type Team = {
   addedAt: number;
   /** cloud = came from cicy-cloud (token is the session); custom = QR-scanned. */
   kind?: 'cloud' | 'custom';
+  /**
+   * The server-side team_kind of a mirrored row ('cloud' | 'custom' | 'private'
+   * | 'local'). Only true cloud-hosted tenants ('cloud') use the panes-only
+   * roster; self-host nodes behave like QR-scanned teams. Absent on
+   * locally-scanned rows.
+   */
+  serverKind?: string;
   /** The built-in default team — pinned on top, not removable. */
   builtin?: boolean;
 };
@@ -134,8 +141,12 @@ function selectCurrent(teams: Team[], currentTeamId: string | null) {
 }
 
 // Map the server's cloud team list into local Team rows (the cloud is the source
-// of truth). `custom` entries are skipped — those need their own QR-scanned token
-// and are kept as locally-scanned rows, never mirrored from here. Dedupe by URL.
+// of truth). Only rows with a reachable address become teams — /api/teams also
+// returns dead "local" registration residue (host_url empty); those must NOT
+// fall back to CLOUD_BASE (cicy-ai.com is not a cicy-code API), they're skipped.
+// Self-host rows (custom/private) embed the node's token in host_url (?token=…):
+// split it out so serverUrl is the bare origin and token is the node credential;
+// cloud-hosted rows authenticate with the login session. Dedupe by URL.
 // addedAt is preserved from an existing row of the same id so re-syncs don't
 // reshuffle the drawer order.
 function buildCloudTeams(session: string, now: number, fetched: any[], prev: Team[]): Team[] {
@@ -143,8 +154,18 @@ function buildCloudTeams(session: string, now: number, fetched: any[], prev: Tea
   const out: Team[] = [];
   const seen = new Set<string>();
   for (const ct of Array.isArray(fetched) ? fetched : []) {
-    if (String(ct?.kind || 'cloud') === 'custom') continue;
-    const url = String(ct?.gateway_url || ct?.workspace_url || ct?.host_url || CLOUD_BASE).replace(/\/+$/, '');
+    const raw = String(ct?.gateway_url || ct?.workspace_url || ct?.host_url || '').trim();
+    if (!raw) continue; // dead registration row — no address, not a team
+    let url: string;
+    let token = session;
+    try {
+      const u = new URL(raw);
+      const embedded = u.searchParams.get('token');
+      if (embedded) token = embedded;
+      url = `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, '')}`;
+    } catch {
+      continue;
+    }
     if (seen.has(url)) continue;
     seen.add(url);
     const id = `cloud-${ct?.id ?? url}`;
@@ -152,9 +173,10 @@ function buildCloudTeams(session: string, now: number, fetched: any[], prev: Tea
       id,
       title: String(ct?.title || url.replace(/^https?:\/\//, '')),
       serverUrl: url,
-      token: session,
+      token,
       addedAt: prevById.get(id)?.addedAt ?? now,
       kind: 'cloud',
+      serverKind: String(ct?.team_kind || ct?.kind || 'cloud'),
     });
   }
   return out;
@@ -310,7 +332,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch {
       // leave cloudTeams empty — the drawer shows customs only until a resync
     }
-    const teams = [...cloudTeams, ...customs];
+    // A locally QR-scanned row for a node the cloud also mirrors would duplicate
+    // it — the mirrored row wins (cloud is the source of truth).
+    const mirrored = new Set(cloudTeams.map((tm) => tm.serverUrl));
+    const teams = [...cloudTeams, ...customs.filter((tm) => !mirrored.has(tm.serverUrl))];
     const currentTeamId = teams[0]?.id ?? null;
     await persist(teams, currentTeamId);
     const sel = selectCurrent(teams, currentTeamId);
@@ -329,7 +354,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const now = Date.now();
     const cloudTeams = buildCloudTeams(session, now, fetched, get().teams);
     const customs = get().teams.filter((tm) => tm.kind !== 'cloud');
-    const teams = [...cloudTeams, ...customs];
+    // Mirrored row wins over a locally-scanned duplicate of the same node.
+    const mirrored = new Set(cloudTeams.map((tm) => tm.serverUrl));
+    const teams = [...cloudTeams, ...customs.filter((tm) => !mirrored.has(tm.serverUrl))];
     let currentTeamId = get().currentTeamId;
     if (!teams.some((tm) => tm.id === currentTeamId)) currentTeamId = teams[0]?.id ?? null;
     await persist(teams, currentTeamId);

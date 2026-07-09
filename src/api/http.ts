@@ -160,4 +160,13 @@ export const api = {
       `/api/agents/current-reply/${encodeURIComponent(paneId)}` +
         (conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : ''),
     ),
+
+  // Lite header metrics (status / model / context / cost) for MANY agents in ONE
+  // request — the roster's batched fallback so the list never fires N×
+  // /current-reply (the fan-out storm). Returns { metrics: { <id>: liteMetrics } };
+  // each value has the same shape metricsFromCurrentReply consumes.
+  getCurrentReplyBatch: (ids: string[]) =>
+    request<{ success?: boolean; metrics?: Record<string, any> }>(
+      `/api/agents/current-reply-batch?ids=${encodeURIComponent(ids.join(','))}`,
+    ),
 };

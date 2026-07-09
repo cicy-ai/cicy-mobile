@@ -49,6 +49,38 @@ function modelLabel(model?: string): string {
     .replace(/-/g, ' ');
 }
 
+// A model id can drive a chat completion — mirrors cicy-code's isChatModel.
+// Speech-to-text (whisper) and text-to-speech (orpheus / *-tts) share the
+// provider catalog but must never appear in the chat model picker.
+function isChatModel(raw?: string): boolean {
+  const m = String(raw || '').toLowerCase();
+  if (!m) return false;
+  if (m.includes('whisper')) return false;
+  if (m.includes('orpheus')) return false;
+  if (/(^|[/_-])tts([/_-]|$)/.test(m)) return false;
+  return true;
+}
+
+type ProviderGroup = { key: string; label: string; protocol: string; models: string[] };
+
+// The same provider label can appear twice under different API protocols
+// (CiCyAi/DeepSeek each expose an anthropic AND an openai endpoint) — without
+// the protocol the two groups are indistinguishable. Render it as a badge.
+function protocolLabel(p?: string): string {
+  const s = String(p || '').toLowerCase();
+  if (s === 'anthropic') return 'Claude';
+  if (s === 'openai') return 'OpenAI';
+  return s ? s.toUpperCase() : '';
+}
+
+// Deep-link / notification entry lands directly on this screen with no history
+// to pop — router.back() then warns "GO_BACK was not handled". Fall back to the
+// agents list so the back arrow always does something sensible.
+function goBack() {
+  if (router.canGoBack()) router.back();
+  else router.replace('/agents');
+}
+
 export default function Chat() {
   const { t } = useTranslation();
   const theme = useTheme();
@@ -74,7 +106,7 @@ export default function Chat() {
   const inTg = isTelegram();
   useEffect(() => {
     if (!inTg) return;
-    return showBackButton(() => router.back());
+    return showBackButton(goBack);
   }, [inTg]);
 
   const [input, setInput] = useState('');
@@ -184,12 +216,17 @@ export default function Chat() {
     useCustomGateway: null,
   });
 
-  // Model picker (cloud tenants): catalog + current choice from the pane
-  // detail. models empty → no picker (self-hosted agents without the field).
+  // Model picker: the pane's provider catalog + current choice. Grouped BY
+  // PROVIDER (matches cicy-code) — the same model id appears under several
+  // providers, so a flat list is ambiguous ("供应商和模型分不清"). Empty
+  // catalog → no picker (self-hosted agents without the field).
   const [modelInfo, setModelInfo] = useState<{
-    models: string[];
-    current: string; // '' = platform default
+    providers: ProviderGroup[];
+    current: string; // default_model ('' = platform default)
+    currentProvider: string; // runtime_ai.provider_name (key) or ''
     effective: string; // what '' resolves to
+    effectiveProviderLabel: string; // provider that '' resolves through
+    useCustomGateway: boolean; // gateway override → provider is selectable
   } | null>(null);
   const [modelSheetOpen, setModelSheetOpen] = useState(false);
   const [modelSaving, setModelSaving] = useState(false);
@@ -197,24 +234,54 @@ export default function Chat() {
     let alive = true;
     api.getPane(agentId).then((p: any) => {
       if (!alive || !p) return;
+      // Model selection only makes sense for agents whose traffic runs through a
+      // gateway we control: a cicy (headless gateway) agent, or any agent with a
+      // custom local gateway. A plain official-login agent (claude-code direct,
+      // no custom gateway) has no model catalog to switch — hide the picker.
+      const isCicy = String(p.agent_type || seedType || '') === 'cicy';
+      if (p.use_custom_gateway !== true && !isCicy) return;
       const opts = Array.isArray(p.runtime_ai_provider_options) ? p.runtime_ai_provider_options : [];
-      const models: string[] = opts.flatMap((o: any) => (Array.isArray(o?.models) ? o.models : []));
-      if (!models.length) return;
+      // Dedupe providers by key (the catalog lists some twice) and drop
+      // non-chat models (whisper/tts) from each provider's list.
+      const byKey = new Map<string, ProviderGroup>();
+      for (const o of opts) {
+        const key = String(o?.key || '');
+        if (!key) continue;
+        // Set-dedupe: a provider's own list can repeat a model (stored config
+        // was editable free text) — dupes here mean duplicate React keys.
+        const models = Array.from(new Set<string>((Array.isArray(o?.models) ? o.models : []).map(String).filter(isChatModel)));
+        if (!models.length) continue;
+        const g = byKey.get(key);
+        if (g) { for (const m of models) if (!g.models.includes(m)) g.models.push(m); }
+        else byKey.set(key, { key, label: String(o?.label || key), protocol: String(o?.protocol || ''), models });
+      }
+      const providers = Array.from(byKey.values());
+      if (!providers.length) return;
       setModelInfo({
-        models,
+        providers,
         current: String(p.default_model || ''),
+        currentProvider: String(p.runtime_ai?.provider_name || p.runtime_ai_default?.provider_name || ''),
         effective: String(p.runtime_ai_default?.model || ''),
+        effectiveProviderLabel: String(p.runtime_ai_default?.provider_label || ''),
+        useCustomGateway: p.use_custom_gateway === true,
       });
     }).catch(() => {});
     return () => { alive = false; };
   }, [agentId]);
 
-  const pickModel = async (model: string) => {
+  // Pick a (provider, model) pair. On a gateway-override node the provider is
+  // part of the choice (write runtime_ai.provider_name too); cloud tenants have
+  // one provider, so just the model. providerKey '' + model '' = platform default.
+  const pickModel = async (providerKey: string, model: string) => {
     if (modelSaving) return;
     setModelSaving(true);
     try {
-      await api.updatePane(agentId, { default_model: model });
-      setModelInfo((m) => (m ? { ...m, current: model } : m));
+      const patch =
+        modelInfo?.useCustomGateway && providerKey
+          ? { use_custom_gateway: true, runtime_ai: { provider_name: providerKey }, default_model: model }
+          : { default_model: model };
+      await api.updatePane(agentId, patch);
+      setModelInfo((m) => (m ? { ...m, current: model, currentProvider: providerKey } : m));
       setModelSheetOpen(false);
     } catch (e: any) {
       setVoiceError(t('chat.modelSaveFailed', { error: String(e?.message ?? e) }));
@@ -459,7 +526,7 @@ export default function Chat() {
           provides its own back button + title bar. ─── */}
       {!inTg && (
       <View style={[styles.navRow, { borderBottomColor: theme.border }]}>
-        <PressableScale onPress={() => router.back()} haptic scaleTo={0.94} style={styles.backBtn} hitSlop={6}>
+        <PressableScale onPress={goBack} haptic scaleTo={0.94} style={styles.backBtn} hitSlop={6}>
           <Ionicons name="chevron-back" size={26} color={theme.text} />
         </PressableScale>
         <AgentAvatar agentType={agentMeta.agentType} title={displayTitle} size={36} />
@@ -497,31 +564,86 @@ export default function Chat() {
       </View>
       )}
 
-      {/* Model picker — one CiCy Cloud provider, model dropdown only. */}
+      {/* Model picker — grouped by provider so the供应商 (section header) and the
+          模型 (rows) read as two distinct levels, not one flat mixed list. */}
       <Modal visible={modelSheetOpen} transparent animationType="fade" onRequestClose={() => setModelSheetOpen(false)}>
         <Pressable style={styles.modelBackdrop} onPress={() => setModelSheetOpen(false)}>
           <View style={[styles.modelSheet, { backgroundColor: theme.bg, borderColor: theme.border }]}>
             <Text variant="caption" tone="faint" style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.xs }}>
               {t('chat.modelPickerTitle')}
             </Text>
-            {(['', ...(modelInfo?.models ?? [])]).map((m) => {
-              const active = (modelInfo?.current ?? '') === m;
-              const label = m ? modelLabel(m) : t('chat.modelDefault', { model: modelLabel(modelInfo?.effective || '') });
-              return (
-                <PressableScale
-                  key={m || '__default'}
-                  onPress={() => void pickModel(m)}
-                  scaleTo={0.98}
-                  disabled={modelSaving}
-                  style={styles.modelRow}
-                >
-                  <Text variant="body" style={{ flex: 1, color: active ? theme.accent : theme.text }}>
-                    {label}
-                  </Text>
-                  {active ? <Ionicons name="checkmark" size={18} color={theme.accent} /> : null}
-                </PressableScale>
-              );
-            })}
+            {/* Self-host catalogs can be dozens of models — scroll inside the
+                sheet instead of overflowing the screen. */}
+            <ScrollView style={styles.modelList} bounces={false}>
+              {/* Platform default — clears the override. */}
+              {(() => {
+                const active = !(modelInfo?.current ?? '');
+                return (
+                  <PressableScale
+                    onPress={() => void pickModel('', '')}
+                    scaleTo={0.98}
+                    disabled={modelSaving}
+                    style={styles.modelRow}
+                  >
+                    <Text variant="body" style={{ flex: 1, color: active ? theme.accent : theme.text }}>
+                      {t('chat.modelDefault', { model: modelLabel(modelInfo?.effective || '') })}
+                    </Text>
+                    {active ? <Ionicons name="checkmark" size={18} color={theme.accent} /> : null}
+                  </PressableScale>
+                );
+              })()}
+              {(modelInfo?.providers ?? []).map((prov) => (
+                <View key={prov.key} style={styles.modelGroup}>
+                  {/* 供应商 header — a filled band so the section anchor reads
+                      LOUDER than its model rows. label + protocol badge
+                      (Claude/OpenAI) disambiguates two same-label providers.
+                      Mirrors cicy-code's provider select "label · key · protocol". */}
+                  <View style={[styles.modelProviderHeader, { backgroundColor: theme.surface }]}>
+                    <Ionicons name="cube-outline" size={13} color={theme.textMuted} />
+                    <Text variant="caption" style={{ color: theme.text, fontWeight: '600', letterSpacing: 0.6 }}>
+                      {prov.label.toUpperCase()}
+                    </Text>
+                    {protocolLabel(prov.protocol) ? (
+                      <View style={[styles.modelProtoBadge, { borderColor: theme.border, backgroundColor: theme.bg }]}>
+                        <Text variant="caption" style={{ color: theme.textMuted, fontSize: 10, fontWeight: '600' }}>
+                          {protocolLabel(prov.protocol)}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  {/* model rows — indented under a left rail so they read as
+                      children of the provider band above. */}
+                  <View style={[styles.modelGroupBody, { borderLeftColor: theme.border }]}>
+                    {prov.models.map((m) => {
+                      // With a gateway override, a model is "active" only under its
+                      // selected provider; cloud tenants match on model alone.
+                      const active =
+                        (modelInfo?.current ?? '') === m &&
+                        (!modelInfo?.useCustomGateway || (modelInfo?.currentProvider ?? '') === prov.key);
+                      return (
+                        <PressableScale
+                          key={`${prov.key}:${m}`}
+                          onPress={() => void pickModel(prov.key, m)}
+                          scaleTo={0.98}
+                          disabled={modelSaving}
+                          style={styles.modelRow}
+                        >
+                          {active ? (
+                            <View style={[styles.modelActiveDot, { backgroundColor: theme.accent }]} />
+                          ) : (
+                            <View style={styles.modelActiveDot} />
+                          )}
+                          <Text variant="body" style={{ flex: 1, color: active ? theme.accent : theme.text }}>
+                            {modelLabel(m)}
+                          </Text>
+                          {active ? <Ionicons name="checkmark" size={18} color={theme.accent} /> : null}
+                        </PressableScale>
+                      );
+                    })}
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
           </View>
         </Pressable>
       </Modal>
@@ -822,10 +944,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingBottom: spacing['2xl'],
   },
+  modelGroup: { marginTop: spacing.sm },
+  modelProviderHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.sm,
+    marginHorizontal: spacing.xs,
+  },
+  modelProtoBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  modelGroupBody: {
+    marginLeft: spacing.lg,
+    borderLeftWidth: 2,
+    paddingLeft: spacing.xs,
+  },
   modelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: spacing.md,
+    gap: spacing.xs,
+    paddingVertical: spacing.sm + 2,
     paddingHorizontal: spacing.md,
   },
+  // Small leading dot column keeps model labels aligned whether active or not.
+  modelActiveDot: { width: 6, height: 6, borderRadius: 3 },
+  // Cap the picker so big self-host catalogs scroll instead of covering the screen.
+  modelList: { maxHeight: 380 },
 });

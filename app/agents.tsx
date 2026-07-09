@@ -3,6 +3,7 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -32,6 +33,7 @@ import { TeamDrawer } from '@/src/components/TeamDrawer';
 import { TeamTitleModal } from '@/src/components/TeamTitleModal';
 import { Text } from '@/src/components/Text';
 import { api } from '@/src/api/http';
+import { ChatWsClient } from '@/src/api/chatws';
 import { checkApkUpdate, type ApkUpdate } from '@/src/lib/appUpdate';
 import { useOtaReady } from '@/src/lib/otaInfo';
 import type { Agent } from '@/src/api/types';
@@ -62,35 +64,69 @@ const DEFAULT_MASTER = 'w-1001';
 // Background-aware refresh cadence. 5s feels live without hammering the API.
 const POLL_INTERVAL_MS = 5000;
 
-// Live per-agent metrics (model / context / cost) from /api/agents/current-reply,
-// polled at 3s — same pipe as cicy-code's TeamPanel. sig-compare keeps unchanged
-// agents referentially stable so their rows don't re-render every tick.
-function useTeamLiveMetrics(ids: string[]): Record<string, AgentLiveMetrics> {
+// Live per-agent metrics (model / context / cost) — DUAL CHANNEL, push-first,
+// the exact port of cicy-code TeamPanel's useTeamLiveMetrics:
+//   PRIMARY  — the chat WS poll_data push: `pushed` is the statuses map off the
+//              broadcast; the server packs full header metrics into each entry,
+//              so one push updates the whole team with ZERO requests.
+//   FALLBACK — only when the WS is down OR its push has gone stale, a SINGLE
+//              batched /current-reply-batch call (never N× /current-reply).
+// sig-compare keeps unchanged agents referentially stable so rows don't churn.
+const TEAM_METRICS_PUSH_STALE_MS = 12000; // push older than this ⇒ allow a fallback poll
+const TEAM_METRICS_FALLBACK_MS = 5000; // fallback batch-poll cadence (1 request)
+
+function useTeamLiveMetrics(
+  ids: string[],
+  active: boolean,
+  pushed: Record<string, any>,
+  wsConnected: boolean,
+): Record<string, AgentLiveMetrics> {
   const [metrics, setMetrics] = useState<Record<string, AgentLiveMetrics>>({});
   const key = ids.join(',');
+  const lastPushRef = useRef(0);
+
+  const fold = useCallback((lookup: (wid: string) => any) => {
+    setMetrics((prev) => {
+      let changed = false;
+      const next: Record<string, AgentLiveMetrics> = { ...prev };
+      for (const wid of key.split(',').filter(Boolean)) {
+        const d = lookup(wid);
+        if (!d) continue; // no reply snapshot yet → keep last-known
+        const m = metricsFromCurrentReply(d, prev[wid]);
+        if (prev[wid]?.sig !== m.sig || prev[wid]?.model !== m.model) { next[wid] = m; changed = true; }
+      }
+      return changed ? next : prev;
+    });
+  }, [key]);
+
+  // PRIMARY: fold the WS-pushed statuses whenever they change. Keys arrive as
+  // full pane ids (`<wid>:main.0`) — tolerate either form.
   useEffect(() => {
-    if (!key) return;
+    if (!pushed || !key || !Object.keys(pushed).length) return;
+    fold((wid) => pushed[`${wid}:main.0`] || pushed[wid]);
+    lastPushRef.current = Date.now();
+  }, [pushed, key, fold]);
+
+  // FALLBACK: ONE batched request, ONLY while on-screen AND the push channel is
+  // down/stale. WS alive & fresh → zero polling.
+  useEffect(() => {
+    if (!key || !active) return;
     let cancelled = false;
-    const list = key.split(',').filter(Boolean);
-    const poll = async () => {
-      await Promise.all(
-        list.map(async (wid) => {
-          const res: any = await api.getCurrentReply(wid).catch(() => null);
-          if (cancelled || !res) return;
-          setMetrics((prev) => {
-            const next = metricsFromCurrentReply(res, prev[wid]);
-            return prev[wid]?.sig === next.sig ? prev : { ...prev, [wid]: next };
-          });
-        }),
-      );
+    const tick = async () => {
+      const stale = Date.now() - lastPushRef.current > TEAM_METRICS_PUSH_STALE_MS;
+      if (wsConnected && !stale) return;
+      const res = await api.getCurrentReplyBatch(key.split(',').filter(Boolean)).catch(() => null);
+      if (cancelled || !res?.metrics) return;
+      const m = res.metrics;
+      fold((wid) => m[wid]);
     };
-    poll();
-    const t = setInterval(poll, 3000);
+    tick(); // immediate seed when the push channel is cold at mount
+    const t = setInterval(tick, TEAM_METRICS_FALLBACK_MS);
     return () => {
       cancelled = true;
       clearInterval(t);
     };
-  }, [key]);
+  }, [key, active, wsConnected, fold]);
   return metrics;
 }
 
@@ -129,9 +165,59 @@ export default function Agents() {
     return () => { alive = false; };
   }, []);
 
+  // Only poll while this screen is the focused route — navigating into a chat
+  // pauses ALL roster/metric requests (they resume on return).
+  const isFocused = useIsFocused();
   const agentId = useCallback((a: Agent) => String(a.name || a.id || a.pane_id || ''), []);
   const agentIds = useMemo(() => agents.map(agentId).filter(Boolean), [agents, agentId]);
-  const liveMetrics = useTeamLiveMetrics(agentIds);
+
+  // ── Team WS (push-first roster + metrics) ─────────────────────────────────
+  // One socket registered on the team's master: the server broadcasts poll_data
+  // every 5s (roster + full header metrics in one frame), so the steady state is
+  // ZERO HTTP requests. HTTP (load()/batch) remains only as seed + fallback.
+  const { serverUrl, token, clientId } = useAuthStore();
+  const [pushedStatuses, setPushedStatuses] = useState<Record<string, any>>({});
+  const [wsUp, setWsUp] = useState(false);
+  const lastPollPushRef = useRef(0);
+  // Self-host roster recompose needs the latest panes snapshot (masters /
+  // workspace / gateway flags) without refetching — load() keeps it fresh.
+  const panesRef = useRef<any[] | null>(null);
+  const composeFromWorkersRef = useRef<((workerRows: any[]) => void) | null>(null);
+
+  useEffect(() => {
+    if (!currentTeam || !isFocused || !hostPaneId || !serverUrl || !token) return;
+    const ws = new ChatWsClient({ serverUrl, token, clientId, agentId: hostPaneId });
+    const offMsg = ws.on((msg: any) => {
+      if (msg?.type !== 'poll_data' || !msg.data) return;
+      lastPollPushRef.current = Date.now();
+      const statuses = msg.data.statuses;
+      if (statuses && typeof statuses === 'object') setPushedStatuses(statuses);
+      // Roster rides the same frame (self-host teams; cloud tenants keep their
+      // panes-derived roster — poll_data carries no rows for configOnly roles).
+      const rows = Array.isArray(msg.data.agents) ? msg.data.agents : [];
+      if (rows.length) composeFromWorkersRef.current?.(rows);
+    });
+    const offStatus = ws.onStatus((s) => {
+      setWsUp(s === 'open');
+      if (s === 'open') ws.send({ type: 'poll_request', data: {} } as any); // instant seed
+    });
+    ws.connect();
+    // Cadence: ONE tiny WS frame every 5s asks the server for a fresh poll_data
+    // (mirrors Workspace's sendPollRequest interval). Server replies on the same
+    // socket → roster + all metrics with zero HTTP requests.
+    const pollTimer = setInterval(() => {
+      ws.send({ type: 'poll_request', data: {} } as any);
+    }, 5000);
+    return () => {
+      clearInterval(pollTimer);
+      offMsg();
+      offStatus();
+      ws.close();
+      setWsUp(false);
+    };
+  }, [currentTeam?.id, isFocused, hostPaneId, serverUrl, token, clientId]);
+
+  const liveMetrics = useTeamLiveMetrics(agentIds, isFocused, pushedStatuses, wsUp);
 
   const load = useCallback(async () => {
     if (!currentTeam) {
@@ -144,11 +230,14 @@ export default function Agents() {
     // the error screen flash to empty and back every tick on a persistently-
     // failing team (e.g. 502). Clear the error only once a fetch SUCCEEDS.
     try {
-      // Cloud teams (default team included): roster comes from /api/panes
-      // ONLY. The tenant's cicy roles are configOnly (no pane_agents binding),
-      // so /api/poll returns nothing for them — per w-10122, /api/poll is for
-      // bound self-hosted/custom teams.
-      if (currentTeam.kind === 'cloud') {
+      // True cloud-hosted tenants: roster comes from /api/panes ONLY. The
+      // tenant's cicy roles are configOnly (no pane_agents binding), so
+      // /api/poll returns nothing for them — per w-10122, /api/poll is for
+      // bound self-hosted/custom teams. Mirrored SELF-HOST teams (serverKind
+      // custom/private/local) are real cicy-code nodes: they must use the
+      // poll+panes roster below, or the list fills with config-only role rows
+      // the web UI never shows.
+      if (currentTeam.kind === 'cloud' && (currentTeam.serverKind ?? 'cloud') === 'cloud') {
         const cloudPanes = await api.getPanes();
         const valid = cloudPanes.filter((p) => typeof p.pane_id === 'string' && p.pane_id);
         const masterPane = valid.find((p) => p.role === 'master');
@@ -170,18 +259,28 @@ export default function Agents() {
         });
         // master pinned first, everyone else in server order
         rows.sort((a, b) => (a.name === masterShort ? -1 : 0) - (b.name === masterShort ? -1 : 0));
+        // Cloud tenants keep the panes-derived roster; the WS poll_data frame
+        // carries no rows for configOnly roles, so never recompose from it.
+        composeFromWorkersRef.current = null;
         setAgents(rows);
         setError(null);
         return;
       }
 
-      // poll() returns workers (and statuses); panes() lets us pull the
-      // master row because /api/poll omits role=master rows.
+      // Self-host teams — cicy-code web's pipeline with ONE mobile-only extra:
+      //   · SEED: poll+panes ONCE on entry. /api/poll is unavoidable here — the
+      //     panes list can carry SEVERAL role=master rows (every locally created
+      //     master pane), and only the worker rows' pane_id says which master
+      //     this team actually centres on. web sidesteps this because its URL /
+      //     selection already names the pane; mobile has no such context.
+      //   · STEADY STATE: workers + statuses ride the WS poll_data frames, zero
+      //     HTTP (web-identical). This loader re-runs only as the WS-stale
+      //     fallback (web just lets the roster freeze; mobile networks are too
+      //     flaky for that).
       const [poll, panes] = await Promise.all([api.poll(), api.getPanes()]);
 
-      // Derive the master/dispatcher this team centres on: every worker row from
-      // /api/poll carries its master in `pane_id` (e.g. "w-1001"). Fall back to
-      // DEFAULT_MASTER when there are no workers to derive from.
+      // The master this team centres on: every worker row from /api/poll
+      // carries it in `pane_id` (e.g. "w-1001"). DEFAULT_MASTER when empty.
       const workerRows = poll.agents ?? [];
       const hostPane =
         workerRows.find((a) => typeof a.pane_id === 'string' && a.pane_id)?.pane_id ||
@@ -204,10 +303,9 @@ export default function Agents() {
           workspace: p.workspace,
         }));
 
-      // Build lookups from /api/panes (which /api/poll lacks), keyed by the
-      // worker name ("w-10036") = prefix of pane_id ("w-10036:main.0"):
-      // workspace per worker, and the gateway flag (use_custom_gateway —
-      // solid dot = local AI gateway, hollow = official login direct).
+      // Lookups from /api/panes, keyed by the worker name ("w-10036") = prefix
+      // of pane_id ("w-10036:main.0"): workspace per worker, and the gateway
+      // flag (solid dot = local AI gateway, hollow = official login direct).
       const workspaceByName = new Map<string, string>();
       const gwByName: Record<string, boolean> = {};
       for (const p of panes) {
@@ -219,14 +317,20 @@ export default function Agents() {
       }
       setGatewayByName(gwByName);
 
-      const workers = workerRows
-        .filter((a) => a.pane_id === hostPane)
-        .map((a) => ({
-          ...a,
-          workspace: a.name ? workspaceByName.get(a.name) : undefined,
-        }));
-
-      setAgents([...masters, ...workers]);
+      // Shared composer: build [masters, ...workers] from a worker-row list.
+      // Fed by every WS poll_data frame (primary) and by the HTTP fallback.
+      panesRef.current = panes;
+      const compose = (rows: any[]) => {
+        const workers = rows
+          .filter((a) => a.pane_id === hostPane)
+          .map((a) => ({
+            ...a,
+            workspace: a.name ? workspaceByName.get(a.name) : undefined,
+          }));
+        setAgents([...masters, ...workers]);
+      };
+      composeFromWorkersRef.current = compose;
+      compose(workerRows);
       setError(null);
     } catch (e: any) {
       setError(String(e?.message ?? e));
@@ -261,12 +365,17 @@ export default function Agents() {
   // when the user has the app off-screen, then immediately refresh on return.
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   useEffect(() => {
-    if (!currentTeam) return;
+    // Gate on BOTH focus (this route on-screen) and foreground. Leaving the
+    // list for a chat, or backgrounding the app, stops the roster poll entirely.
+    if (!currentTeam || !isFocused) return;
     let timer: ReturnType<typeof setInterval> | null = null;
 
     const start = () => {
       if (timer) return;
       timer = setInterval(() => {
+        // WS poll_data is fresh → the push channel is driving roster+metrics,
+        // skip the HTTP tick entirely (steady state: zero requests).
+        if (Date.now() - lastPollPushRef.current < TEAM_METRICS_PUSH_STALE_MS) return;
         // Don't show the spinner — silent background refresh.
         load();
       }, POLL_INTERVAL_MS);
@@ -296,7 +405,7 @@ export default function Agents() {
       stop();
       sub.remove();
     };
-  }, [currentTeam, load]);
+  }, [currentTeam, load, isFocused]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);

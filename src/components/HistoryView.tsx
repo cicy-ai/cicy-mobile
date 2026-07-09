@@ -15,7 +15,6 @@ import i18n from '@/src/i18n';
 import type { HistoryStep, HistoryTurn, StreamDelta } from '@/src/api/types';
 import { buildTurnsFromRawItems, normalizeHistoryTurns, replyItemsToSteps, splitLeadingHarnessBlocks, stripHarnessNoise } from '@/src/lib/historyParse';
 import { historyCache } from '@/src/lib/historyCache';
-import { normalizeAgentType } from '@/src/lib/agentType';
 import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 import { ImageLightbox } from './ImageLightbox';
@@ -62,7 +61,7 @@ type Props = {
 // AND reply_conversation_id matches the committed conversation (cross-session
 // guard). See docs/history-view-two-part-architecture.md.
 const WINDOW = 16; // committed items fetched per page ("a screenful + a bit")
-const POLL_ACTIVE_MS = 700; // while a reply is streaming
+const POLL_ACTIVE_MS = 500; // while a reply is streaming (correction anchor; web parity)
 const POLL_IDLE_MS = 2500; // complete / no active turn — watch for the next q
 const CURRENT_HISTORY_POLL_WAIT_MS = 150; // re-check until Part 1 (committed) is ready
 
@@ -155,9 +154,15 @@ function replyAnswersRealQuestion(question?: string): boolean {
 
 export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy }: Props) {
   const theme = useTheme();
-  // Real-time WS delta streaming is gated to cicy agents (the only type the AI
-  // gateway pushes ai_chunk/thinking_chunk for). Others stay poll-only.
-  const wsEnabled = normalizeAgentType(agentType) === 'cicy';
+  // Real-time WS delta streaming. The AI gateway publishes ai_chunk /
+  // thinking_chunk / status_change per AGENT ID from its audited-capture path
+  // (ai_gateway_audit.go hub.publishAgent) — NOT gated on agent_type. So every
+  // agent whose traffic runs through the gateway (cicy AND claude, once audit
+  // is on) streams over WS. Gating this on 'cicy' dropped claude's stream and
+  // forced idle polling (2.5s heartbeat forever). Subscribe for all agents; the
+  // poll stays as the correction anchor, and an agent that never pushes simply
+  // gets no deltas (harmless).
+  const wsEnabled = true;
   const wsEnabledRef = useRef(wsEnabled);
   wsEnabledRef.current = wsEnabled;
 
@@ -173,7 +178,6 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [, setConversationId] = useState('');
-  const [anchorSpacerHeight, setAnchorSpacerHeight] = useState(0);
 
   const scrollRef = useRef<ScrollView>(null);
   // Poll/data refs (read by the loop without re-subscribing).
@@ -201,11 +205,13 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
   const committedReadyRef = useRef(false); // Part 1 loaded → poll may attach tail
   const firstReplyDoneRef = useRef(false); // Part 2's first poll resolved → reveal
 
-  // Anchor refs (port of web's "new q to top").
-  const anchorSpacerHeightRef = useRef(0);
+  // Anchor refs (port of web's "new q to top"). The bottom SPACER scheme was
+  // removed — the new q glides to the top by scrolling only; when the reply is
+  // too short to reach the very top it just lands as high as the content allows
+  // (no artificial blank below).
   const anchoredQKeyRef = useRef(''); // q key already pinned to top (re-pins on a NEW q)
-  const activeSpacerTurnKeyRef = useRef(''); // q whose reply is in flight → spacer alive
-  const replySeenActiveRef = useRef(false); // reply streamed once → only then may spacer shrink
+  const activeSpacerTurnKeyRef = useRef(''); // q whose reply is in flight → hold it at top
+  const replySeenActiveRef = useRef(false); // reply streamed once (kept for hold bookkeeping)
   const didInitialScrollRef = useRef(false);
   const shouldStickBottomRef = useRef(true);
   const preserveScrollOffsetRef = useRef(false); // loadMore prepend → keep position
@@ -225,12 +231,9 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
     // helper no-op on native, exactly as the anchor logic intends.
     return n && typeof n === 'object' && typeof n.scrollTop === 'number' ? n : null;
   }, []);
-  const applyAnchorSpacerHeight = useCallback((h: number) => {
-    const n = Math.max(0, Math.round(h));
-    if (anchorSpacerHeightRef.current === n) return;
-    anchorSpacerHeightRef.current = n;
-    setAnchorSpacerHeight(n);
-  }, []);
+  // Spacer scheme removed — kept as a no-op so the anchor callers/deps stay
+  // intact without the artificial bottom blank.
+  const applyAnchorSpacerHeight = useCallback((_h: number) => {}, []);
   const clearScheduledScrolls = useCallback(() => {
     const s = scheduledScrollRef.current;
     if (!s) return;
@@ -717,6 +720,9 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
           // lives only in reply.json — WS never carries it.
           const st = String(d.status ?? '').toLowerCase();
           if (st === 'tool_use' || st === 'tool_call' || st === 'working') nudgePoll();
+          // Any other status while the tail hasn't attached yet (just sent /
+          // just opened): nudge once so the baseline lands ASAP (web parity).
+          else if (!liveTargetRef.current) nudgePoll();
           return;
         }
         // A turn committed / its item updated → reconcile via the poll.
@@ -1218,23 +1224,15 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
         return;
       }
 
-      // A NEW question appeared → pin it to the TOP + open the bottom spacer. Use an
-      // INSTANT pin (scheduleTurnTop = pinTurnTop now + rAF + retry timers), NOT a
-      // smooth scrollTo: RN-Web's ScrollView doesn't honor a programmatic smooth
-      // scrollTo reliably (it drifted to 0 → top sentinel showed → loadMore looped →
-      // the list exploded). Instant pin lands q at a large scrollTop, so the sentinel
-      // never shows. The spacer is set imperatively first so there's room to reach top.
+      // A NEW question appeared → GLIDE it toward the TOP (no spacer). When the
+      // reply is short the scroll clamps at content end, so q lands as high as
+      // the content allows instead of forcing a viewport-sized blank below it.
       if (lastUserKey && lastUserKey !== anchoredQKeyRef.current) {
         const target = findTurnEl(node, lastUserKey);
         if (target) {
           anchoredQKeyRef.current = lastUserKey;
           activeSpacerTurnKeyRef.current = lastUserKey;
           replySeenActiveRef.current = false;
-          const spacerH = Math.max(0, node.clientHeight - target.offsetHeight - 16);
-          const spacerEl = typeof node.querySelector === 'function' ? node.querySelector('[data-anchor-spacer]') : null;
-          if (spacerEl && spacerEl.style) spacerEl.style.height = `${spacerH}px`; // sync → room to pin
-          applyAnchorSpacerHeight(spacerH);
-          // GLIDE q to the top (custom smooth — RN-Web ignores native smooth scrollTo).
           const tgt = node.scrollTop + (target.getBoundingClientRect().top - node.getBoundingClientRect().top) - 8;
           animateScrollTop(node, tgt, 320);
           shouldStickBottomRef.current = false;
@@ -1242,36 +1240,25 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
         }
       }
 
-      // A q with its reply settling. While the reply is IN FLIGHT do nothing — the q
-      // stays at the top because the reply grows BELOW it (scrollTop unchanged); any
-      // reflow is re-pinned idempotently by onContentSizeChange. Resizing the spacer
-      // per frame is what made it jitter ("一直在跳").
+      // A q with its reply settling. While the reply is IN FLIGHT keep q at the
+      // top as the reply grows below it (idempotent — only correct real drift so
+      // streaming reads smooth). Once it settles, release the anchor.
       if (activeSpacerTurnKeyRef.current) {
         const key = activeSpacerTurnKeyRef.current;
         const qTop = turnTopInContent(node, key);
         if (qTop == null) {
-          // The anchored element vanished (e.g. optimistic dropped) — close the
-          // spacer too, or a viewport-sized blank persists with no owner.
-          activeSpacerTurnKeyRef.current = '';
-          applyAnchorSpacerHeight(0);
+          activeSpacerTurnKeyRef.current = ''; // anchored element vanished → release
           return;
         }
         const lastCommitted = displayItems[displayItems.length - 1];
         const replyInFlight = !!liveSig || isActiveAssistantStatus(String(lastCommitted?.status ?? ''));
         if (replyInFlight) {
           replySeenActiveRef.current = true;
-          // Keep q at the top as the reply grows below it. IDEMPOTENT: only correct if
-          // it actually drifted (>6px), and GLIDE the correction (not a hard snap) so
-          // streaming following reads smooth. Runs per poll (~700ms), so no jitter.
           if (Math.abs(qTop - 8) > 6) animateScrollTop(node, node.scrollTop + (qTop - 8), 220);
           return;
         }
-        if (!replySeenActiveRef.current) return; // first-token gap: don't shrink → no 回落
-        // Reply settled: shrink the spacer once to remove blank below, then release.
-        const belowQ = node.scrollHeight - anchorSpacerHeightRef.current - qTop;
-        const measured = Math.max(0, node.clientHeight - belowQ - 16);
-        applyAnchorSpacerHeight(measured);
-        if (measured <= 0) activeSpacerTurnKeyRef.current = '';
+        // Reply settled → release the anchor (no spacer to shrink anymore).
+        activeSpacerTurnKeyRef.current = '';
         return;
       }
     });
@@ -1415,10 +1402,6 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
           <TypingDots />
         </View>
       ) : null}
-
-      {/* Dynamic bottom spacer: room so a short q+reply can sit at the top; sized
-          once when the q appears, shrunk once after the reply settles. */}
-      <View {...({ dataSet: { anchorSpacer: '1' } } as any)} style={{ height: anchorSpacerHeight }} />
     </ScrollView>
 
     {/* ↓ chip — parked above the composer, only when scrolled well off the bottom. */}
@@ -1463,6 +1446,16 @@ function splitQuestionMedia(text: string): { body: string; media: QMedia[] } {
         media.push({ url, name: m[2].replace(/^🎬\s*/, ''), isImage: m[1] === '!' && !isVideo, isVideo });
         continue;
       }
+    }
+    // Bare attachment line (no markdown wrapper) — e.g. an `image://…` scheme or
+    // a raw absolute asset path pasted into the composer. Render it as a
+    // thumbnail/card too instead of leaking the raw path into the bubble.
+    const bare = line.trim();
+    if (bare && (isAssetRef(bare) || /^(image|file):\/\//i.test(bare))) {
+      const isVideo = /\.(mp4|mov|m4v|webm|3gp|mkv)(\?|$)/i.test(bare);
+      const isImage = /^image:\/\//i.test(bare) || /\.(png|jpe?g|gif|webp|heic|heif|bmp|svg)(\?|$)/i.test(bare);
+      media.push({ url: bare, name: (bare.split(/[/\\]/).pop() || 'attachment').replace(/\?.*$/, ''), isImage: isImage && !isVideo, isVideo });
+      continue;
     }
     kept.push(line);
   }
