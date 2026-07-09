@@ -62,7 +62,8 @@ type Props = {
 // guard). See docs/history-view-two-part-architecture.md.
 const WINDOW = 16; // committed items fetched per page ("a screenful + a bit")
 const POLL_ACTIVE_MS = 500; // while a reply is streaming (correction anchor; web parity)
-const POLL_IDLE_MS = 2500; // complete / no active turn — watch for the next q
+const POLL_IDLE_MS = 2500; // complete / no active turn — watch for the next q (WS down)
+const POLL_IDLE_WS_MS = 15000; // idle + WS healthy — WS events announce the next turn
 const CURRENT_HISTORY_POLL_WAIT_MS = 150; // re-check until Part 1 (committed) is ready
 
 // ── Top-anchor scroll helpers (ported from cicy-code CurrentHistoryView) ────────
@@ -189,6 +190,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
   const clearedConvIdRef = useRef(''); // /clear: reject this (soon-rotated) conversation's data
   const liveTurnIdRef = useRef(''); // backend turn_id of the live tail
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsUpRef = useRef(false); // live WS status → stretches the idle poll
   const pollGenRef = useRef(0); // bump to invalidate a stale poll loop's reschedule
   const aliveRef = useRef(false);
   const focusedRef = useRef(false); // screen focused (useFocusEffect) — gates AppState resume
@@ -626,7 +628,12 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
       revealOnce();
     } finally {
       if (aliveRef.current && gen === pollGenRef.current) {
-        pollTimer.current = setTimeout(pollReply, complete ? POLL_IDLE_MS : POLL_ACTIVE_MS);
+        // Idle + WS healthy → stretch way out: a new turn (from any client, or
+        // the agent itself) announces over the WS (ai_chunk / status_change /
+        // current_updated → nudgePoll), so the idle poll is only a WS-loss
+        // safety net. WS down → keep web's 2.5s idle watch.
+        const idleMs = wsUpRef.current ? POLL_IDLE_WS_MS : POLL_IDLE_MS;
+        pollTimer.current = setTimeout(pollReply, complete ? idleMs : POLL_ACTIVE_MS);
       }
     }
   }, [agentId, reconcileTail, softRebind, clearLiveTurn, kickType]);
@@ -728,8 +735,19 @@ export function HistoryView({ agentId, pending, onReplyInFlight, agentType, busy
         // A turn committed / its item updated → reconcile via the poll.
         if (msg.type === 'current_updated') nudgePoll();
       });
+      // Track WS health: while up, the idle poll stretches to POLL_IDLE_WS_MS
+      // (WS events announce the next turn). On drop, nudge immediately so the
+      // stretched timer collapses back to the 2.5s watch without waiting 15s.
+      const offStatus = client.onStatus((s) => {
+        const up = s === 'open';
+        const was = wsUpRef.current;
+        wsUpRef.current = up;
+        if (was && !up) nudgePoll();
+      });
       client.connect();
       return () => {
+        offStatus();
+        wsUpRef.current = false;
         off();
         client.close();
       };
