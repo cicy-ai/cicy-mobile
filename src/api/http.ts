@@ -20,22 +20,37 @@ function requireAuth() {
   return { serverUrl, token };
 }
 
+// Hard cap on any API request. Without it, a request the tunnel stalls hangs
+// FOREVER: it pins one of the browser's 6 per-host connections, the awaiting
+// poll loop stalls with it, and once six hang every request to the team server
+// queues behind them — the whole app reads as an ocean of "pending". Aborting
+// turns a stuck socket into a normal error the poll loops already retry past.
+const REQUEST_TIMEOUT_MS = 15000;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const { serverUrl, token } = requireAuth();
-  const res = await fetch(`${serverUrl}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      // X-Cicy-Token is a non-safelisted custom header. On web it forces a CORS
-      // preflight, and cicy-code's allow-list doesn't include it, so the browser
-      // blocks the request ("Failed to fetch"). The server authenticates via
-      // Authorization: Bearer anyway (X-Cicy-Token on its own returns 401), so we
-      // only send it on native, where there's no CORS to satisfy.
-      ...(Platform.OS === 'web' ? {} : { 'X-Cicy-Token': token }),
-      Authorization: `Bearer ${token}`,
-      ...(init?.headers ?? {}),
-    },
-  });
+  const ctrl = new AbortController();
+  const killer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${serverUrl}${path}`, {
+      ...init,
+      signal: ctrl.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        // X-Cicy-Token is a non-safelisted custom header. On web it forces a CORS
+        // preflight, and cicy-code's allow-list doesn't include it, so the browser
+        // blocks the request ("Failed to fetch"). The server authenticates via
+        // Authorization: Bearer anyway (X-Cicy-Token on its own returns 401), so we
+        // only send it on native, where there's no CORS to satisfy.
+        ...(Platform.OS === 'web' ? {} : { 'X-Cicy-Token': token }),
+        Authorization: `Bearer ${token}`,
+        ...(init?.headers ?? {}),
+      },
+    });
+  } finally {
+    clearTimeout(killer);
+  }
   if (!res.ok) {
     let text = await res.text().catch(() => '');
     // Gateway error pages (Cloudflare 5xx etc.) are full HTML documents —
