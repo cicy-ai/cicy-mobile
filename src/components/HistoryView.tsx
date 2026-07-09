@@ -501,9 +501,11 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
       // this function runs exclusively on pushed data.
       // (When parked with nothing queued there is nothing to apply — return.)
       let r: any = null;
+      let fromEvent = false;
       if (pendingSnapshotRef.current) {
         r = pendingSnapshotRef.current;
         pendingSnapshotRef.current = null;
+        fromEvent = true;
       } else if (!wsUpRef.current) {
         // Do NOT pin to the committed conversationId: the backend echoes a pinned
         // cid back even after the agent rotated (returning maxID=0 for it), so a
@@ -632,27 +634,24 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
               // slot id — else the answer visibly shrinks and the next delta glues
               // onto the shortened text (a dropped chunk). Self-heals: forced after
               // 3 consecutive regressions (~a couple polls). (web parity)
+              // Regress guard applies ONLY to HTTP poll snapshots (WS-down path):
+              // a poll reads reply.json, which can momentarily lag an ai_chunk
+              // that already landed, so a shorter snapshot there must not shrink
+              // the tail. A current_updated EVENT is the authoritative snapshot
+              // itself (it IS the push) — trust it verbatim, or a legit mid-turn
+              // shrink (round N's text commits, round N+1 opens with fewer items)
+              // gets rejected and the last round appears to overwrite/flicker.
               const prevLive = liveTargetRef.current;
               let regressed = false;
-              if (!complete && prevLive && prevTurnId && turnId === prevTurnId) {
+              if (!fromEvent && !complete && prevLive && prevTurnId && turnId === prevTurnId) {
                 const prev = liveStepsContentSize(prevLive.steps);
                 const next = liveStepsContentSize(nextSteps);
                 regressed = next.textLen < prev.textLen && next.toolCount <= prev.toolCount;
-              }
-              if (regressed) {
-                // The streak self-heal exists for a silently-dead WS (tail stuck
-                // ahead on stale content, polls must eventually win). While the
-                // WS is ACTIVELY feeding deltas, a lagging snapshot is the
-                // EXPECTED state on a tunneled connection (reply.json read lags
-                // the push by the RTT) — force-accepting every 3rd poll here is
-                // what visibly kept overwriting the last round. Only count the
-                // streak when the WS has been quiet.
-                const wsFeeding = Date.now() - lastDeltaAtRef.current < 3000;
-                if (wsFeeding) {
-                  regressStreakRef.current = 0;
-                } else {
+                if (regressed) {
                   regressStreakRef.current += 1;
                   if (regressStreakRef.current >= 3) regressed = false;
+                } else {
+                  regressStreakRef.current = 0;
                 }
               } else {
                 regressStreakRef.current = 0;
@@ -1772,21 +1771,16 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }
       scaleTo={0.99}
       style={[styles.thinking, { borderLeftColor: theme.borderStrong }]}
     >
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-        <Text variant="caption" tone="faint" style={{ textTransform: 'uppercase' }}>
-          {i18n.t('chat.thinkingLabel')}
+      {/* No header label — the left rail + muted tone already read as
+          "thinking"; the row is just the tap-to-expand affordance. */}
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 6 }}>
+        <Text variant="callout" tone="muted" style={{ flex: 1 }}>
+          {expanded ? text : preview}
         </Text>
-        <Text variant="caption" tone="faint">
-          · {text.length}
-        </Text>
-        <View style={{ flex: 1 }} />
         <Text variant="caption" tone="faint">
           {expanded ? '▲' : '▼'}
         </Text>
       </View>
-      <Text variant="callout" tone="muted">
-        {expanded ? text : preview}
-      </Text>
     </PressableScale>
   );
 }
