@@ -8,6 +8,10 @@ import { CLOUD_BASE, fetchCloudTeams, type CloudSession } from '@/src/api/cloudA
 import { storage } from './storage';
 
 const TEAMS_KEY = 'cicy_teams_v1';
+// QR-scanned custom teams, isolated PER ACCOUNT: { [email]: Team[] }. A team a
+// user adds on this device belongs to that account only — a different account
+// logging in must never inherit it.
+const CUSTOMS_KEY = 'cicy_customs_by_account_v1';
 const CLIENT_ID_KEY = 'cicy_client_id';
 const SESSION_KEY = 'cicy_session';
 const USER_EMAIL_KEY = 'cicy_user_email';
@@ -93,6 +97,32 @@ function normalizeServerUrl(s: string): string {
 async function persist(teams: Team[], currentTeamId: string | null) {
   const payload: Persisted = { teams, currentTeamId };
   await storage.setItem(TEAMS_KEY, JSON.stringify(payload));
+}
+
+// ── per-account custom-team store ─────────────────────────────────────────────
+function accountKey(email: string | null | undefined): string {
+  return String(email || '').toLowerCase();
+}
+async function loadAccountCustoms(email: string | null | undefined): Promise<Team[]> {
+  try {
+    const raw = await storage.getItem(CUSTOMS_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    const list = map[accountKey(email)];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+// Persist the custom (non-cloud) subset of `teams` under the given account.
+async function saveAccountCustoms(email: string | null | undefined, teams: Team[]) {
+  try {
+    const raw = await storage.getItem(CUSTOMS_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    map[accountKey(email)] = teams.filter((tm) => tm.kind !== 'cloud');
+    await storage.setItem(CUSTOMS_KEY, JSON.stringify(map));
+  } catch {
+    /* best-effort */
+  }
 }
 
 function selectCurrent(teams: Team[], currentTeamId: string | null) {
@@ -230,6 +260,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     };
     const teams = [...get().teams, team];
     await persist(teams, team.id);
+    await saveAccountCustoms(get().userEmail, teams); // scope the new custom to this account
     const sel = selectCurrent(teams, team.id);
     set({ teams, currentTeamId: team.id, ...sel });
     return team.id;
@@ -240,6 +271,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     let next = get().currentTeamId;
     if (next === id) next = remaining[0]?.id ?? null;
     await persist(remaining, next);
+    await saveAccountCustoms(get().userEmail, remaining); // keep this account's custom store in sync
     const sel = selectCurrent(remaining, next);
     set({ teams: remaining, currentTeamId: next, ...sel });
   },
@@ -267,10 +299,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     // The cloud is the source of truth: mirror exactly the teams the server
     // returns (NO client-fabricated default team — the retired default team no
-    // longer exists cloud-side, so it must not be synthesized locally). Keep
-    // QR-scanned customs. A fetch failure → no cloud teams this login (retry).
+    // longer exists cloud-side, so it must not be synthesized locally). Custom
+    // (QR-scanned) teams are isolated PER ACCOUNT — load only THIS account's, so a
+    // different user never inherits them and switching back restores your own.
     const now = Date.now();
-    const customs = get().teams.filter((tm) => tm.kind !== 'cloud');
+    const customs = await loadAccountCustoms(s.email);
     let cloudTeams: Team[] = [];
     try {
       cloudTeams = buildCloudTeams(s.token, now, await fetchCloudTeams(s.token), get().teams);
