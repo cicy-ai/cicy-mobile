@@ -3,16 +3,17 @@
 
 // The Hub screen. A Hub is parallel to teams: one scanned WS connection
 // (HubWsClient) reaches the hub. To the user it IS a single agent — tapping Hub
-// opens ONE big chat: history in the middle, a single prompt at the bottom. No
-// agent picker; the chat is pointed at the hub's master (the dispatcher you
-// talk to), which fans work out to its team behind the scenes.
+// opens ONE big chat: history in the middle, a single prompt PINNED at the
+// bottom (always present). No agent picker; the chat is pointed at the hub's
+// master (the dispatcher you talk to), which fans work out to its team behind
+// the scenes.
 //
 // The chat reuses the SAME two-part engine the team chat uses (HistoryView +
 // useCurrentHistory), pointed at the master's `reach_url` + node `token` from
 // the hub directory via the endpoint override — so the hub chat gets the exact
 // committed-window + reply-tail behavior, zero duplication. The hub WS is the
 // "one channel" that carries the directory (so we learn the master + its
-// reach_url/token); history/reply correctness rides the node HTTP that transparent
+// reach_url/token); history/reply correctness rides the node HTTP the transparent
 // proxy exposes, per cicy-hub/docs/mobile-integration.md.
 
 import { Ionicons } from '@expo/vector-icons';
@@ -86,11 +87,65 @@ export default function HubScreen() {
     return () => client.unsubscribe(primary.addr);
   }, [primary?.addr]);
 
+  // ── The single chat, bound to the primary agent (may be null while the hub
+  // directory is still loading — the composer stays visible but disabled). ──
+  const shortWid = primary ? primary.wid.split(':')[0] : '';
+  const endpoint = useMemo<Endpoint | null>(
+    () => (primary ? { serverUrl: primary.reach_url, token: primary.token } : null),
+    [primary?.reach_url, primary?.token],
+  );
+  const agentApi = useMemo(() => (endpoint ? createApi(endpoint) : null), [endpoint]);
+
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<{ text: string; nonce: number } | null>(null);
+
+  // Switching primary agent → clear the previous chat's transient state.
+  useEffect(() => {
+    setPending(null);
+    setBusy(false);
+  }, [primary?.addr]);
+
+  async function submit(text: string) {
+    const body = text.trim();
+    if (!body || sending || !agentApi || !primary) return;
+    setSending(true);
+    setInput('');
+    try {
+      setPending({ text: body, nonce: Date.now() }); // optimistic q
+      await agentApi.sendToAgent(shortWid, body, true);
+    } catch {
+      setPending(null); // failed → drop the optimistic q
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function stopGeneration() {
+    if (!agentApi || !primary) return;
+    try {
+      if (isHeadlessCicyAgent(primary.agent_type)) await agentApi.cancelCicyReply(shortWid);
+      else await agentApi.sendKeys(shortWid, 'Escape');
+    } catch {
+      /* best-effort */
+    }
+  }
+
   if (!hub) return null;
+
+  const subtitle =
+    status === 'open'
+      ? primary
+        ? primary.title || shortWid
+        : t('hub.empty')
+      : status === 'connecting'
+        ? t('hub.connecting')
+        : t('hub.offline');
 
   return (
     <Screen edges={['top', 'left', 'right']}>
-      {/* Header — back + Hub title + live status dot. */}
+      {/* Header — back + Hub identity + live status dot. */}
       <View style={[styles.header, { borderBottomColor: theme.border }]}>
         <PressableScale onPress={() => router.back()} haptic scaleTo={0.94} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={26} color={theme.text} />
@@ -107,22 +162,26 @@ export default function HubScreen() {
             {t('hub.title')}
           </Text>
           <Text variant="caption" tone="faint" numberOfLines={1}>
-            {status === 'open'
-              ? primary
-                ? primary.title || primary.wid.split(':')[0]
-                : t('hub.empty')
-              : status === 'connecting'
-                ? t('hub.connecting')
-                : t('hub.offline')}
+            {subtitle}
           </Text>
         </View>
         <View style={[styles.statusDot, { backgroundColor: status === 'open' ? theme.accent : theme.textFaint }]} />
       </View>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
+        {/* History (or a placeholder while the hub resolves its primary). */}
         <View style={{ flex: 1, backgroundColor: theme.bg }}>
-          {primary ? (
-            <HubChatBody key={primary.addr} agent={primary} />
+          {primary && endpoint ? (
+            <HistoryView
+              key={primary.addr}
+              agentId={shortWid}
+              endpoint={endpoint}
+              pending={pending}
+              onReplyInFlight={() => setBusy(true)}
+              onReplyDone={() => setBusy(false)}
+              agentType={primary.agent_type}
+              busy={busy}
+            />
           ) : (
             <View style={styles.empty}>
               <Ionicons name="git-network-outline" size={48} color={theme.textFaint} />
@@ -132,80 +191,23 @@ export default function HubScreen() {
             </View>
           )}
         </View>
+
+        {/* Prompt — ALWAYS pinned at the bottom. Disabled until the hub has a
+            reachable agent to talk to, but the input box is always visible. */}
+        <View style={[styles.composer, { backgroundColor: theme.bg, borderTopColor: theme.border }]}>
+          <Composer
+            value={input}
+            onChangeText={setInput}
+            onSubmit={() => void submit(input)}
+            onTranscript={(txt) => void submit(txt)}
+            disabled={!primary}
+            sending={sending}
+            busy={busy}
+            onStop={() => void stopGeneration()}
+          />
+        </View>
       </KeyboardAvoidingView>
     </Screen>
-  );
-}
-
-// The chat body + single bottom prompt for the hub's primary agent. Endpoint =
-// its node reach_url + token, so the shared HistoryView engine polls the node
-// exactly like a team agent.
-function HubChatBody({ agent }: { agent: HubAgent }) {
-  const theme = useTheme();
-
-  const shortWid = agent.wid.split(':')[0];
-  const endpoint: Endpoint = useMemo(
-    () => ({ serverUrl: agent.reach_url, token: agent.token }),
-    [agent.reach_url, agent.token],
-  );
-  const agentApi = useMemo(() => createApi(endpoint), [endpoint]);
-
-  const [input, setInput] = useState('');
-  const [sending, setSending] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [pending, setPending] = useState<{ text: string; nonce: number } | null>(null);
-
-  async function submit(text: string) {
-    const body = text.trim();
-    if (!body || sending) return;
-    setSending(true);
-    setInput('');
-    try {
-      setPending({ text: body, nonce: Date.now() }); // optimistic q
-      await agentApi.sendToAgent(shortWid, body, true);
-    } catch {
-      setPending(null); // failed → drop the optimistic q
-    } finally {
-      setSending(false);
-    }
-  }
-
-  async function stopGeneration() {
-    try {
-      if (isHeadlessCicyAgent(agent.agent_type)) await agentApi.cancelCicyReply(shortWid);
-      else await agentApi.sendKeys(shortWid, 'Escape');
-    } catch {
-      /* best-effort */
-    }
-  }
-
-  return (
-    <>
-      <View style={{ flex: 1 }}>
-        <HistoryView
-          agentId={shortWid}
-          endpoint={endpoint}
-          pending={pending}
-          onReplyInFlight={() => setBusy(true)}
-          onReplyDone={() => setBusy(false)}
-          agentType={agent.agent_type}
-          busy={busy}
-        />
-      </View>
-
-      <View style={[styles.composer, { backgroundColor: theme.bg, borderTopColor: theme.border }]}>
-        <Composer
-          value={input}
-          onChangeText={setInput}
-          onSubmit={() => void submit(input)}
-          onTranscript={(txt) => void submit(txt)}
-          disabled={false}
-          sending={sending}
-          busy={busy}
-          onStop={() => void stopGeneration()}
-        />
-      </View>
-    </>
   );
 }
 
