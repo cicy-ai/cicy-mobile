@@ -21,7 +21,6 @@ import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Keyboard,
   Linking,
   Platform,
   StyleSheet,
@@ -61,17 +60,6 @@ export default function HubScreen() {
   const { t } = useTranslation();
   const theme = useTheme();
   const hub = useAuthStore((s) => s.hub);
-
-  // Track keyboard visibility for the bottom-padding bump while typing — the
-  // exact recipe the team chat uses so the composer never gets clipped.
-  const [keyboardShown, setKeyboardShown] = useState(false);
-  useEffect(() => {
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvent, () => setKeyboardShown(true));
-    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardShown(false));
-    return () => { showSub.remove(); hideSub.remove(); };
-  }, []);
 
   // Measured composer height → reserve it under the history so the absolutely
   // pinned composer never overlaps the last message.
@@ -296,9 +284,11 @@ export default function HubScreen() {
               bottom: 0,
               backgroundColor: theme.bg,
               borderTopColor: theme.border,
-              paddingBottom: keyboardShown
-                ? (Platform.OS === 'ios' ? 45 : spacing.lg + 18)
-                : spacing.lg,
+              // Constant padding: there's no KeyboardAvoidingView anymore, so
+              // Android's adjustResize alone lifts the pinned composer over the
+              // keyboard. Bumping padding on keyboardShown here double-counts and
+              // shoves the input up too far ("顶上去").
+              paddingBottom: spacing.lg,
             },
           ]}
         >
