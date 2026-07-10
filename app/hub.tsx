@@ -196,7 +196,14 @@ export default function HubScreen() {
         ) : null}
       </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
+      {/* padding behaviour is an iOS thing; on Android it mis-sizes the flex
+          column and shoves the composer off-screen (the system already
+          adjustResizes), so leave behaviour undefined there. */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={0}
+      >
         {/* History, or — before a hub is connected — a scan-to-connect prompt. */}
         <View style={{ flex: 1, backgroundColor: theme.bg }}>
           {!hub ? (
