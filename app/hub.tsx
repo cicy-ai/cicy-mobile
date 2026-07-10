@@ -21,12 +21,12 @@ import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { createApi, type Endpoint } from '@/src/api/http';
 import { HubWsClient, type HubAgent, type HubWsStatus } from '@/src/api/hubws';
@@ -58,8 +58,18 @@ function pickPrimary(dir: HubAgent[]): HubAgent | null {
 export default function HubScreen() {
   const { t } = useTranslation();
   const theme = useTheme();
-  const insets = useSafeAreaInsets();
   const hub = useAuthStore((s) => s.hub);
+
+  // Track keyboard visibility for the bottom-padding bump while typing — the
+  // exact recipe the team chat uses so the composer never gets clipped.
+  const [keyboardShown, setKeyboardShown] = useState(false);
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, () => setKeyboardShown(true));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardShown(false));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
 
   const [status, setStatus] = useState<HubWsStatus>('idle');
   const [directory, setDirectory] = useState<HubAgent[]>([]);
@@ -228,7 +238,9 @@ export default function HubScreen() {
             {
               backgroundColor: theme.bg,
               borderTopColor: theme.border,
-              paddingBottom: (Platform.OS === 'ios' ? spacing.xl : spacing.lg) + insets.bottom,
+              paddingBottom: keyboardShown
+                ? (Platform.OS === 'ios' ? 45 : spacing.lg + 18)
+                : spacing.lg,
             },
           ]}
         >
