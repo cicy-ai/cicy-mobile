@@ -21,12 +21,13 @@ import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  KeyboardAvoidingView,
+  Keyboard,
   Linking,
   Platform,
   StyleSheet,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { createApi, type Endpoint } from '@/src/api/http';
 import { HubWsClient, type HubAgent, type HubWsStatus } from '@/src/api/hubws';
@@ -60,7 +61,26 @@ function pickPrimary(dir: HubAgent[]): HubAgent | null {
 export default function HubScreen() {
   const { t } = useTranslation();
   const theme = useTheme();
+  const insets = useSafeAreaInsets();
   const hub = useAuthStore((s) => s.hub);
+
+  // Keyboard height — edge-to-edge (Android) + no KeyboardAvoidingView means the
+  // window does NOT resize when the keyboard opens; it just overlays. So we lift
+  // the absolutely-pinned composer by the keyboard height ourselves (works the
+  // same on iOS, which also doesn't resize without a KAV). No double-count since
+  // nothing resizes underneath.
+  const [kbH, setKbH] = useState(0);
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const show = Keyboard.addListener(showEvt, (e) => setKbH(e.endCoordinates?.height ?? 0));
+    const hide = Keyboard.addListener(hideEvt, () => setKbH(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+
+  // Measured composer height → reserve it under the history so the absolutely
+  // pinned composer never overlaps the last message.
+  const [composerH, setComposerH] = useState(96);
 
   // Update banners — the Hub is the home now, so it (not the teams screen) must
   // surface the OTA-ready "tap to apply" prompt, else downloaded updates never
@@ -233,18 +253,12 @@ export default function HubScreen() {
         </PressableScale>
       ) : null}
 
-      {/* Chat area — mirrors the team chat exactly (it keyboard-lifts fine on
-          this same Android): KeyboardAvoidingView(padding) wraps a flex:1
-          history + the composer as the last flex child (so it pins to the
-          bottom and the KAV raises it over the keyboard). The one addition is
-          minHeight:0 on the history, without which its scroll content overflowed
-          and shoved the composer off-screen. */}
-      <KeyboardAvoidingView
-        style={{ flex: 1, minHeight: 0 }}
-        behavior="padding"
-        keyboardVerticalOffset={0}
-      >
-        <View style={{ flex: 1, minHeight: 0, backgroundColor: theme.bg }}>
+      {/* Chat area. The composer is ABSOLUTELY pinned to the bottom of this box
+          (per request) so no flex/KAV quirk can push it off-screen on native;
+          the history reserves `composerH` of bottom padding so the last message
+          never hides behind it. */}
+      <View style={{ flex: 1, minHeight: 0, backgroundColor: theme.bg }}>
+        <View style={{ flex: 1, minHeight: 0, paddingBottom: composerH + kbH }}>
           {!hub ? (
             <View style={styles.empty}>
               <Ionicons name="qr-code-outline" size={48} color={theme.textFaint} />
@@ -275,9 +289,26 @@ export default function HubScreen() {
           )}
         </View>
 
-        {/* Prompt — the last flex child, so it sits at the bottom and rides up
-            with the keyboard via the KeyboardAvoidingView. Voice-first native. */}
-        <View style={[styles.composer, { backgroundColor: theme.bg, borderTopColor: theme.border }]}>
+        {/* Prompt — absolutely pinned to the bottom, voice-first on native. */}
+        <View
+          onLayout={(e) => setComposerH(e.nativeEvent.layout.height)}
+          style={[
+            styles.composer,
+            {
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              // Lift by the keyboard height so the composer sits right above it
+              // (nothing resizes underneath, so this is the only lift).
+              bottom: kbH,
+              backgroundColor: theme.bg,
+              borderTopColor: theme.border,
+              // At rest, clear the gesture bar with the bottom safe-area inset;
+              // while the keyboard is up there's no home indicator to clear.
+              paddingBottom: kbH > 0 ? spacing.sm : spacing.lg + insets.bottom,
+            },
+          ]}
+        >
           <Composer
             value={input}
             onChangeText={setInput}
@@ -288,7 +319,7 @@ export default function HubScreen() {
             onStop={() => void stopGeneration()}
           />
         </View>
-      </KeyboardAvoidingView>
+      </View>
 
       {/* The org / teams drawer — teams are the secondary stack, opened here. */}
       <TeamDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
