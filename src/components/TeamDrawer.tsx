@@ -182,7 +182,9 @@ export function TeamDrawer({ open, onClose }: Props) {
             <PressableScale
               onPress={() => {
                 onClose();
-                setTimeout(() => router.push(hub ? '/hub' : '/scan'), 80);
+                // Hub is the app home — navigate() pops back to it instead of
+                // stacking a second /hub on top of the teams screen.
+                setTimeout(() => (hub ? router.navigate('/hub') : router.push('/scan')), 80);
               }}
               onLongPress={hub ? () => setConfirmHub(true) : undefined}
               haptic

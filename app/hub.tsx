@@ -151,10 +151,17 @@ export default function HubScreen() {
 
   return (
     <Screen edges={['top', 'left', 'right']}>
-      {/* Header — back + Hub identity + live status dot. */}
+      {/* Header — teams entry (Hub is the home; teams are the secondary stack)
+          + Hub identity + live status dot. */}
       <View style={[styles.header, { borderBottomColor: theme.border }]}>
-        <PressableScale onPress={() => router.back()} haptic scaleTo={0.94} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={26} color={theme.text} />
+        <PressableScale
+          onPress={() => router.navigate('/agents')}
+          haptic
+          scaleTo={0.94}
+          hitSlop={8}
+          style={styles.iconBtn}
+        >
+          <Ionicons name="people-outline" size={24} color={theme.text} />
         </PressableScale>
         {primary ? (
           <AgentAvatar agentType={primary.agent_type} title={primary.title} size={32} bordered />

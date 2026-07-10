@@ -89,7 +89,8 @@ export default function Scan() {
       try {
         await connectHub(parsed.hub);
         setDone(true);
-        setTimeout(() => router.replace('/agents'), 600);
+        // Hub is the home — land straight in the coordinator conversation.
+        setTimeout(() => router.replace('/hub'), 600);
       } catch (e: any) {
         Alert.alert(t('scan.invalidTitle'), String(e?.message ?? e), [
           { text: t('common.tryAgain'), onPress: () => { handledRef.current = false; } },
