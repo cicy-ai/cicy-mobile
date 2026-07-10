@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Image, Keyboard, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
 
 import { assetBrowserUrl, assetUri, isAssetRef } from '@/src/api/upload';
 import i18n from '@/src/i18n';
@@ -256,6 +256,19 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
     shouldStickBottomRef.current = true;
     scrollRef.current?.scrollToEnd({ animated: true });
   }, [shouldStickBottomRef]);
+
+  // Sending a prompt → snap to the bottom (a fresh nonce means a new send).
+  useEffect(() => {
+    if (pending) jumpToLatest();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending?.nonce]);
+
+  // Keyboard opening → snap to the bottom so the latest turn stays in view above it.
+  useEffect(() => {
+    const evt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const sub = Keyboard.addListener(evt, () => jumpToLatest());
+    return () => sub.remove();
+  }, [jumpToLatest]);
 
   if (loading) {
     return (

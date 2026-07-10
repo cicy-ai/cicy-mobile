@@ -214,7 +214,7 @@ export function Composer({
               style={styles.holdZone}
             >
               {isRecording ? (
-                <Waveform color={theme.accentText} />
+                <Waveform color={theme.accentText} paused={cancelIntent} />
               ) : (
                 <Text variant="bodyMedium" tone={isTranscribing ? 'muted' : 'default'}>
                   {isTranscribing ? t('voice.transcribing') : t('voice.holdToTalk')}
@@ -304,12 +304,13 @@ export function Composer({
 // heights re-randomize on a short interval. Real mic metering isn't exposed
 // uniformly by both speech backends, and the visual is what matters here.
 const WAVE_BARS = 34;
-function Waveform({ color }: { color: string }) {
+function Waveform({ color, paused }: { color: string; paused?: boolean }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
+    if (paused) return; // slide-up-to-cancel → freeze the bars (stop the pulse)
     const iv = setInterval(() => setTick((n) => n + 1), 120);
     return () => clearInterval(iv);
-  }, []);
+  }, [paused]);
   const bars = [];
   for (let i = 0; i < WAVE_BARS; i += 1) {
     // center-weighted pseudo-random heights, reshuffled by `tick`
