@@ -11,6 +11,7 @@ import {
   RecordingPresets,
   setAudioModeAsync,
   useAudioRecorder,
+  type RecordingOptions,
 } from 'expo-audio';
 import { useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
@@ -43,6 +44,17 @@ type Options = {
 //   iOS → native Apple Speech (good quality, zero latency), whisper fallback.
 const FORCE_WHISPER = Platform.OS === 'android';
 
+// Whisper only needs 16 kHz mono — the default HIGH_QUALITY preset (44.1 kHz
+// stereo 128 kbps) makes the upload 4-5× larger for zero accuracy gain, and on
+// Android every voice message rides the tunnel to /api/stt. ~24 kbps AAC mono
+// keeps a 10 s clip around 30 KB.
+const WHISPER_RECORDING: RecordingOptions = {
+  ...RecordingPresets.HIGH_QUALITY,
+  sampleRate: 16000,
+  numberOfChannels: 1,
+  bitRate: 24000,
+};
+
 export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
   const [phase, setPhase] = useState<VoicePhase>('idle');
   // Phase mirror for async paths. The queued-stop in start() fires a `stop`
@@ -65,7 +77,7 @@ export function useVoiceRecorder({ onTranscript, onError, language }: Options) {
   const lang = language || getDeviceLocale().nativeSpeechLang || 'zh-CN';
 
   // expo-audio recorder (only used when in whisper mode).
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorder = useAudioRecorder(WHISPER_RECORDING);
 
   useEffect(() => {
     if (IS_WEB) { permittedRef.current = true; return; }
