@@ -31,6 +31,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { createApi, type Endpoint } from '@/src/api/http';
 import { HubWsClient, type HubAgent, type HubWsStatus } from '@/src/api/hubws';
+import { uploadAttachment } from '@/src/api/upload';
+import type { PendingAttachment } from '@/src/lib/attachments';
 import { AgentAvatar } from '@/src/components/AgentAvatar';
 import { Button } from '@/src/components/Button';
 import { Composer } from '@/src/components/Composer';
@@ -155,6 +157,38 @@ export default function HubScreen() {
       await agentApi.sendToAgent(shortWid, body, true);
     } catch {
       setPending(null); // failed → drop the optimistic q
+    } finally {
+      setSending(false);
+    }
+  }
+
+  // Attachments — same as the team chat: pick/capture → upload to the agent's
+  // node (via the hub endpoint) → send the message with file refs + any caption.
+  async function sendAttachments(atts: PendingAttachment[]) {
+    if (!atts.length || sending || !agentApi || !primary || !endpoint) return;
+    const caption = input.trim();
+    setInput('');
+    setSending(true);
+    try {
+      const refs: string[] = [];
+      for (const a of atts) {
+        try {
+          const r = await uploadAttachment(shortWid, a.uri, a.name, a.mime, endpoint);
+          const isVid = a.kind === 'video' || r.contentType.startsWith('video/');
+          const abs = r.fileRef
+            ? '/' + r.fileRef.replace(/^file:\/\//, '').replace(/^\/+/, '')
+            : r.url;
+          refs.push(r.isImage ? `![${r.name}](${abs})` : `[${isVid ? '🎬 ' : ''}${r.name}](${abs})`);
+        } catch {
+          /* skip the failed one */
+        }
+      }
+      if (!refs.length) return;
+      const body = `${caption ? `${caption}\n\n` : ''}${refs.join('\n\n')}`;
+      setPending({ text: body, nonce: Date.now() });
+      await agentApi.sendToAgent(shortWid, body, true);
+    } catch {
+      setPending(null);
     } finally {
       setSending(false);
     }
@@ -305,7 +339,13 @@ export default function HubScreen() {
               borderTopColor: theme.border,
               // At rest, clear the gesture bar with the bottom safe-area inset;
               // while the keyboard is up there's no home indicator to clear.
-              paddingBottom: kbH > 0 ? spacing.sm : spacing.lg + insets.bottom,
+              // iOS reports a real bottom inset (home indicator) so the pill
+              // clears it; this Android edge-to-edge device reports ~0, leaving
+              // the composer crushed behind the gesture bar — floor it so it
+              // always lifts clear of the nav bar.
+              paddingBottom: kbH > 0
+                ? spacing.sm
+                : spacing.lg + Math.max(insets.bottom, Platform.OS === 'android' ? 28 : 0),
             },
           ]}
         >
@@ -314,6 +354,7 @@ export default function HubScreen() {
             onChangeText={setInput}
             onSubmit={() => void submit(input)}
             onTranscript={(txt) => void submit(txt)}
+            onPickAttachments={(atts) => void sendAttachments(atts)}
             sending={sending}
             busy={busy}
             onStop={() => void stopGeneration()}

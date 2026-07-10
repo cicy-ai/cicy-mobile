@@ -27,8 +27,9 @@ export async function uploadAttachment(
   fileUri: string,
   name: string,
   mime: string,
+  endpoint?: { serverUrl: string; token: string } | null,
 ): Promise<UploadResult> {
-  const { serverUrl, token } = useAuthStore.getState();
+  const { serverUrl, token } = endpoint ?? useAuthStore.getState();
   if (!serverUrl || !token) throw new Error('not authenticated');
 
   const safeName = sanitizeName(name);
