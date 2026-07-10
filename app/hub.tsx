@@ -39,11 +39,17 @@ import { isHeadlessCicyAgent } from '@/src/lib/agentType';
 import { useAuthStore } from '@/src/store/auth';
 import { spacing, useTheme } from '@/src/theme';
 
-// The hub's primary agent — the one the single chat talks to. Prefer the team
-// master (dispatcher); fall back to the first reachable agent.
+// The hub's primary agent — the ONE agent the single chat talks to. A Hub reads
+// to the user as one conversation with the fleet's coordinator (协调官): it
+// fans work out to the team via cicy-agent behind the scenes. Lock onto it by
+// identity so we never hardcode a wid (demo teams change): prefer an explicit
+// coordinator role, then a coordinator-titled agent, then the team master, then
+// the first reachable agent.
 function pickPrimary(dir: HubAgent[]): HubAgent | null {
   if (dir.length === 0) return null;
-  return dir.find((a) => a.role === 'master') ?? dir[0];
+  const isCoordinator = (a: HubAgent) =>
+    /coordinator/i.test(a.role || '') || /协调官|coordinator/i.test(a.title || '');
+  return dir.find(isCoordinator) ?? dir.find((a) => a.role === 'master') ?? dir[0];
 }
 
 export default function HubScreen() {
