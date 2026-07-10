@@ -2,15 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The Hub big-chat screen. A Hub is parallel to teams: one scanned WS
-// connection (HubWsClient) fans out to every reachable agent across teams.
-// Landing = the directory (reachable agents); tap one → the big chat.
+// connection (HubWsClient) reaches every agent across teams. Tapping Hub lands
+// you DIRECTLY on the big chat (history in the middle, prompt at the bottom) —
+// not a directory picker. Which reachable agent the chat talks to is a chip row
+// at the top; it auto-picks the first agent when the directory arrives.
 //
 // The chat reuses the SAME two-part engine the team chat uses (HistoryView +
-// useCurrentHistory), pointed at that agent's `reach_url` + node `token` via the
-// endpoint override — so a hub agent gets the exact committed-window + reply-tail
-// behavior, zero duplication. The hub WS is the "one channel" for the directory
-// and (later) chat acceleration; history/reply correctness rides the node HTTP
-// the directory hands us (reach_url + token), per cicy-hub/docs/mobile-integration.md.
+// useCurrentHistory), pointed at the selected agent's `reach_url` + node `token`
+// via the endpoint override — so a hub agent gets the exact committed-window +
+// reply-tail behavior, zero duplication. The hub WS is the "one channel" for the
+// directory (and later chat acceleration); history/reply correctness rides the
+// node HTTP the directory hands us, per cicy-hub/docs/mobile-integration.md.
 
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -43,7 +45,7 @@ export default function HubScreen() {
 
   const [status, setStatus] = useState<HubWsStatus>('idle');
   const [directory, setDirectory] = useState<HubAgent[]>([]);
-  const [selected, setSelected] = useState<HubAgent | null>(null);
+  const [selectedAddr, setSelectedAddr] = useState<string | null>(null);
 
   const clientRef = useRef<HubWsClient | null>(null);
 
@@ -68,6 +70,23 @@ export default function HubScreen() {
     };
   }, [hub?.url, hub?.token]);
 
+  // Auto-pick the first reachable agent once the directory lands; keep the
+  // current pick if it's still reachable, otherwise fall back to the first.
+  useEffect(() => {
+    if (directory.length === 0) {
+      setSelectedAddr(null);
+      return;
+    }
+    setSelectedAddr((prev) =>
+      prev && directory.some((a) => a.addr === prev) ? prev : directory[0].addr,
+    );
+  }, [directory]);
+
+  const selected = useMemo(
+    () => directory.find((a) => a.addr === selectedAddr) ?? null,
+    [directory, selectedAddr],
+  );
+
   // Subscribe to the selected agent's chat stream; unsubscribe on switch away.
   useEffect(() => {
     const client = clientRef.current;
@@ -78,94 +97,90 @@ export default function HubScreen() {
 
   if (!hub) return null;
 
-  // Directory grouped by team, teams alphabetized, agents keep server order.
-  const groups = useMemo(() => {
-    const byTeam = new Map<string, HubAgent[]>();
-    for (const a of directory) {
-      const arr = byTeam.get(a.team) ?? [];
-      arr.push(a);
-      byTeam.set(a.team, arr);
-    }
-    return Array.from(byTeam.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([team, agents]) => ({ team, agents }));
-  }, [directory]);
-
-  if (selected) {
-    return (
-      <HubChat
-        agent={selected}
-        status={status}
-        onBack={() => setSelected(null)}
-      />
-    );
-  }
+  const statusLabel =
+    status === 'open'
+      ? t('hub.subtitle', { count: directory.length })
+      : status === 'connecting'
+        ? t('hub.connecting')
+        : t('hub.offline');
 
   return (
     <Screen edges={['top', 'left', 'right']}>
+      {/* Header — back + Hub title + live status dot. */}
       <View style={[styles.header, { borderBottomColor: theme.border }]}>
         <PressableScale onPress={() => router.back()} haptic scaleTo={0.94} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={26} color={theme.text} />
         </PressableScale>
         <View style={{ flex: 1 }}>
           <Text variant="h3">{t('hub.title')}</Text>
-          <Text variant="caption" tone="muted">
-            {status === 'open'
-              ? t('hub.subtitle', { count: directory.length })
-              : status === 'connecting'
-                ? t('hub.connecting')
-                : t('hub.offline')}
+          <Text variant="caption" tone="muted" numberOfLines={1}>
+            {selected ? `${selected.title || selected.wid} · ${selected.team}` : statusLabel}
           </Text>
         </View>
         <View style={[styles.statusDot, { backgroundColor: status === 'open' ? theme.accent : theme.textFaint }]} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.list}>
-        {groups.length === 0 ? (
-          <View style={styles.empty}>
-            <Ionicons name="git-network-outline" size={48} color={theme.textFaint} />
-            <Text tone="muted" style={{ marginTop: spacing.md, textAlign: 'center' }}>
-              {status === 'open' ? t('hub.empty') : t('hub.connecting')}
-            </Text>
-          </View>
-        ) : (
-          groups.map((g) => (
-            <View key={g.team} style={{ marginBottom: spacing.lg }}>
-              <Text variant="caption" tone="faint" style={styles.teamHeader}>
-                {g.team}
-              </Text>
-              {g.agents.map((a) => (
-                <PressableScale
-                  key={a.addr}
-                  onPress={() => setSelected(a)}
-                  haptic
-                  scaleTo={0.97}
-                  style={styles.agentRow}
+      {/* Agent selector — the reachable agents as chips. Which one the big chat
+          below is pointed at. Hidden when there's nothing to choose. */}
+      {directory.length > 0 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.chipsRow}
+          style={[styles.chipsBar, { borderBottomColor: theme.border }]}
+        >
+          {directory.map((a) => {
+            const active = a.addr === selectedAddr;
+            return (
+              <PressableScale
+                key={a.addr}
+                onPress={() => setSelectedAddr(a.addr)}
+                haptic
+                scaleTo={0.96}
+                style={[
+                  styles.chip,
+                  {
+                    backgroundColor: active ? theme.accent : theme.surface,
+                    borderColor: active ? theme.accent : theme.border,
+                  },
+                ]}
+              >
+                <AgentAvatar agentType={a.agent_type} title={a.title} size={20} bordered={false} />
+                <Text
+                  variant="caption"
+                  numberOfLines={1}
+                  style={{ color: active ? theme.accentText : theme.text, maxWidth: 120 }}
                 >
-                  <AgentAvatar agentType={a.agent_type} title={a.title} size={40} bordered />
-                  <View style={{ flex: 1, gap: 2 }}>
-                    <Text variant="callout" numberOfLines={1}>
-                      {a.title || a.wid}
-                    </Text>
-                    <Text variant="caption" tone="faint" numberOfLines={1}>
-                      {[a.model, a.status].filter(Boolean).join(' · ') || a.wid}
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color={theme.textFaint} />
-                </PressableScale>
-              ))}
+                  {a.title || a.wid.split(':')[0]}
+                </Text>
+              </PressableScale>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
+        <View style={{ flex: 1, backgroundColor: theme.bg }}>
+          {selected ? (
+            <HubChatBody key={selected.addr} agent={selected} />
+          ) : (
+            <View style={styles.empty}>
+              <Ionicons name="git-network-outline" size={48} color={theme.textFaint} />
+              <Text tone="muted" style={{ marginTop: spacing.md, textAlign: 'center' }}>
+                {status === 'open' ? t('hub.empty') : t('hub.connecting')}
+              </Text>
             </View>
-          ))
-        )}
-      </ScrollView>
+          )}
+        </View>
+      </KeyboardAvoidingView>
     </Screen>
   );
 }
 
-// The big chat for one hub agent. Endpoint = its node reach_url + token, so the
-// shared HistoryView engine polls the node exactly like a team agent.
-function HubChat({ agent, status, onBack }: { agent: HubAgent; status: HubWsStatus; onBack: () => void }) {
-  const { t } = useTranslation();
+// The chat body + composer for one selected hub agent. Endpoint = its node
+// reach_url + token, so the shared HistoryView engine polls the node exactly
+// like a team agent. Remounted per agent (key=addr) so state never leaks across.
+function HubChatBody({ agent }: { agent: HubAgent }) {
   const theme = useTheme();
 
   const shortWid = agent.wid.split(':')[0];
@@ -205,49 +220,32 @@ function HubChat({ agent, status, onBack }: { agent: HubAgent; status: HubWsStat
   }
 
   return (
-    <Screen edges={['top', 'left', 'right']}>
-      <View style={[styles.header, { borderBottomColor: theme.border }]}>
-        <PressableScale onPress={onBack} haptic scaleTo={0.94} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={26} color={theme.text} />
-        </PressableScale>
-        <AgentAvatar agentType={agent.agent_type} title={agent.title} size={32} bordered />
-        <View style={{ flex: 1 }}>
-          <Text variant="callout" numberOfLines={1}>
-            {agent.title || shortWid}
-          </Text>
-          <Text variant="caption" tone="faint" numberOfLines={1}>
-            {`${agent.team} · ${status === 'open' ? t('hub.connected') : t('hub.offline')}`}
-          </Text>
-        </View>
+    <>
+      <View style={{ flex: 1 }}>
+        <HistoryView
+          agentId={shortWid}
+          endpoint={endpoint}
+          pending={pending}
+          onReplyInFlight={() => setBusy(true)}
+          onReplyDone={() => setBusy(false)}
+          agentType={agent.agent_type}
+          busy={busy}
+        />
       </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
-        <View style={{ flex: 1, backgroundColor: theme.bg }}>
-          <HistoryView
-            agentId={shortWid}
-            endpoint={endpoint}
-            pending={pending}
-            onReplyInFlight={() => setBusy(true)}
-            onReplyDone={() => setBusy(false)}
-            agentType={agent.agent_type}
-            busy={busy}
-          />
-        </View>
-
-        <View style={[styles.composer, { backgroundColor: theme.bg, borderTopColor: theme.border }]}>
-          <Composer
-            value={input}
-            onChangeText={setInput}
-            onSubmit={() => void submit(input)}
-            onTranscript={(txt) => void submit(txt)}
-            disabled={false}
-            sending={sending}
-            busy={busy}
-            onStop={() => void stopGeneration()}
-          />
-        </View>
-      </KeyboardAvoidingView>
-    </Screen>
+      <View style={[styles.composer, { backgroundColor: theme.bg, borderTopColor: theme.border }]}>
+        <Composer
+          value={input}
+          onChangeText={setInput}
+          onSubmit={() => void submit(input)}
+          onTranscript={(txt) => void submit(txt)}
+          disabled={false}
+          sending={sending}
+          busy={busy}
+          onStop={() => void stopGeneration()}
+        />
+      </View>
+    </>
   );
 }
 
@@ -269,25 +267,32 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   statusDot: { width: 10, height: 10, borderRadius: 5 },
-  list: { padding: spacing.lg },
-  teamHeader: {
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: spacing.xs,
-    marginLeft: spacing.xs,
+  chipsBar: {
+    flexGrow: 0,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  agentRow: {
+  chipsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.md,
-    borderRadius: radius.md,
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingLeft: spacing.xs,
+    paddingRight: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.pill ?? 999,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   empty: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: spacing.xl * 2,
+    paddingHorizontal: spacing.xl,
   },
   composer: {
     paddingHorizontal: spacing.md,
