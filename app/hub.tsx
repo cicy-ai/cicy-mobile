@@ -22,7 +22,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Keyboard,
-  KeyboardAvoidingView,
   Platform,
   StyleSheet,
   View,
@@ -196,16 +195,13 @@ export default function HubScreen() {
         ) : null}
       </View>
 
-      {/* padding behaviour is an iOS thing; on Android it mis-sizes the flex
-          column and shoves the composer off-screen (the system already
-          adjustResizes), so leave behaviour undefined there. */}
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={0}
-      >
-        {/* History, or — before a hub is connected — a scan-to-connect prompt. */}
-        <View style={{ flex: 1, backgroundColor: theme.bg }}>
+      {/* Bulletproof chat column: NO KeyboardAvoidingView (it mis-sizes on
+          Android and shoved the composer off-screen — web was always fine).
+          History is flex:1 + minHeight:0 so it shrinks and scrolls INSIDE its
+          box; the composer is the last flex child, so it's always pinned to the
+          bottom. Android's adjustResize lifts the whole column over the keyboard. */}
+      {/* History, or — before a hub is connected — a scan-to-connect prompt. */}
+      <View style={{ flex: 1, minHeight: 0, backgroundColor: theme.bg }}>
           {!hub ? (
             <View style={styles.empty}>
               <Ionicons name="qr-code-outline" size={48} color={theme.textFaint} />
@@ -261,7 +257,6 @@ export default function HubScreen() {
             onStop={() => void stopGeneration()}
           />
         </View>
-      </KeyboardAvoidingView>
 
       {/* The org / teams drawer — teams are the secondary stack, opened here. */}
       <TeamDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
