@@ -1,18 +1,19 @@
 // Copyright 2026 CiCy AI
 // SPDX-License-Identifier: Apache-2.0
 
-// The Hub big-chat screen. A Hub is parallel to teams: one scanned WS
-// connection (HubWsClient) reaches every agent across teams. Tapping Hub lands
-// you DIRECTLY on the big chat (history in the middle, prompt at the bottom) —
-// not a directory picker. Which reachable agent the chat talks to is a chip row
-// at the top; it auto-picks the first agent when the directory arrives.
+// The Hub screen. A Hub is parallel to teams: one scanned WS connection
+// (HubWsClient) reaches the hub. To the user it IS a single agent — tapping Hub
+// opens ONE big chat: history in the middle, a single prompt at the bottom. No
+// agent picker; the chat is pointed at the hub's master (the dispatcher you
+// talk to), which fans work out to its team behind the scenes.
 //
 // The chat reuses the SAME two-part engine the team chat uses (HistoryView +
-// useCurrentHistory), pointed at the selected agent's `reach_url` + node `token`
-// via the endpoint override — so a hub agent gets the exact committed-window +
-// reply-tail behavior, zero duplication. The hub WS is the "one channel" for the
-// directory (and later chat acceleration); history/reply correctness rides the
-// node HTTP the directory hands us, per cicy-hub/docs/mobile-integration.md.
+// useCurrentHistory), pointed at the master's `reach_url` + node `token` from
+// the hub directory via the endpoint override — so the hub chat gets the exact
+// committed-window + reply-tail behavior, zero duplication. The hub WS is the
+// "one channel" that carries the directory (so we learn the master + its
+// reach_url/token); history/reply correctness rides the node HTTP that transparent
+// proxy exposes, per cicy-hub/docs/mobile-integration.md.
 
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -21,7 +22,6 @@ import { useTranslation } from 'react-i18next';
 import {
   KeyboardAvoidingView,
   Platform,
-  ScrollView,
   StyleSheet,
   View,
 } from 'react-native';
@@ -36,7 +36,14 @@ import { Screen } from '@/src/components/Screen';
 import { Text } from '@/src/components/Text';
 import { isHeadlessCicyAgent } from '@/src/lib/agentType';
 import { useAuthStore } from '@/src/store/auth';
-import { radius, spacing, useTheme } from '@/src/theme';
+import { spacing, useTheme } from '@/src/theme';
+
+// The hub's primary agent — the one the single chat talks to. Prefer the team
+// master (dispatcher); fall back to the first reachable agent.
+function pickPrimary(dir: HubAgent[]): HubAgent | null {
+  if (dir.length === 0) return null;
+  return dir.find((a) => a.role === 'master') ?? dir[0];
+}
 
 export default function HubScreen() {
   const { t } = useTranslation();
@@ -45,7 +52,6 @@ export default function HubScreen() {
 
   const [status, setStatus] = useState<HubWsStatus>('idle');
   const [directory, setDirectory] = useState<HubAgent[]>([]);
-  const [selectedAddr, setSelectedAddr] = useState<string | null>(null);
 
   const clientRef = useRef<HubWsClient | null>(null);
 
@@ -70,39 +76,17 @@ export default function HubScreen() {
     };
   }, [hub?.url, hub?.token]);
 
-  // Auto-pick the first reachable agent once the directory lands; keep the
-  // current pick if it's still reachable, otherwise fall back to the first.
-  useEffect(() => {
-    if (directory.length === 0) {
-      setSelectedAddr(null);
-      return;
-    }
-    setSelectedAddr((prev) =>
-      prev && directory.some((a) => a.addr === prev) ? prev : directory[0].addr,
-    );
-  }, [directory]);
+  const primary = useMemo(() => pickPrimary(directory), [directory]);
 
-  const selected = useMemo(
-    () => directory.find((a) => a.addr === selectedAddr) ?? null,
-    [directory, selectedAddr],
-  );
-
-  // Subscribe to the selected agent's chat stream; unsubscribe on switch away.
+  // Subscribe to the primary's chat stream; unsubscribe on change.
   useEffect(() => {
     const client = clientRef.current;
-    if (!client || !selected) return;
-    client.subscribe(selected.addr);
-    return () => client.unsubscribe(selected.addr);
-  }, [selected?.addr]);
+    if (!client || !primary) return;
+    client.subscribe(primary.addr);
+    return () => client.unsubscribe(primary.addr);
+  }, [primary?.addr]);
 
   if (!hub) return null;
-
-  const statusLabel =
-    status === 'open'
-      ? t('hub.subtitle', { count: directory.length })
-      : status === 'connecting'
-        ? t('hub.connecting')
-        : t('hub.offline');
 
   return (
     <Screen edges={['top', 'left', 'right']}>
@@ -111,58 +95,34 @@ export default function HubScreen() {
         <PressableScale onPress={() => router.back()} haptic scaleTo={0.94} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={26} color={theme.text} />
         </PressableScale>
+        {primary ? (
+          <AgentAvatar agentType={primary.agent_type} title={primary.title} size={32} bordered />
+        ) : (
+          <View style={[styles.hubIcon, { backgroundColor: theme.accent }]}>
+            <Ionicons name="git-network-outline" size={18} color={theme.accentText} />
+          </View>
+        )}
         <View style={{ flex: 1 }}>
-          <Text variant="h3">{t('hub.title')}</Text>
-          <Text variant="caption" tone="muted" numberOfLines={1}>
-            {selected ? `${selected.title || selected.wid} · ${selected.team}` : statusLabel}
+          <Text variant="callout" numberOfLines={1}>
+            {t('hub.title')}
+          </Text>
+          <Text variant="caption" tone="faint" numberOfLines={1}>
+            {status === 'open'
+              ? primary
+                ? primary.title || primary.wid.split(':')[0]
+                : t('hub.empty')
+              : status === 'connecting'
+                ? t('hub.connecting')
+                : t('hub.offline')}
           </Text>
         </View>
         <View style={[styles.statusDot, { backgroundColor: status === 'open' ? theme.accent : theme.textFaint }]} />
       </View>
 
-      {/* Agent selector — the reachable agents as chips. Which one the big chat
-          below is pointed at. Hidden when there's nothing to choose. */}
-      {directory.length > 0 && (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.chipsRow}
-          style={[styles.chipsBar, { borderBottomColor: theme.border }]}
-        >
-          {directory.map((a) => {
-            const active = a.addr === selectedAddr;
-            return (
-              <PressableScale
-                key={a.addr}
-                onPress={() => setSelectedAddr(a.addr)}
-                haptic
-                scaleTo={0.96}
-                style={[
-                  styles.chip,
-                  {
-                    backgroundColor: active ? theme.accent : theme.surface,
-                    borderColor: active ? theme.accent : theme.border,
-                  },
-                ]}
-              >
-                <AgentAvatar agentType={a.agent_type} title={a.title} size={20} bordered={false} />
-                <Text
-                  variant="caption"
-                  numberOfLines={1}
-                  style={{ color: active ? theme.accentText : theme.text, maxWidth: 120 }}
-                >
-                  {a.title || a.wid.split(':')[0]}
-                </Text>
-              </PressableScale>
-            );
-          })}
-        </ScrollView>
-      )}
-
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
         <View style={{ flex: 1, backgroundColor: theme.bg }}>
-          {selected ? (
-            <HubChatBody key={selected.addr} agent={selected} />
+          {primary ? (
+            <HubChatBody key={primary.addr} agent={primary} />
           ) : (
             <View style={styles.empty}>
               <Ionicons name="git-network-outline" size={48} color={theme.textFaint} />
@@ -177,9 +137,9 @@ export default function HubScreen() {
   );
 }
 
-// The chat body + composer for one selected hub agent. Endpoint = its node
-// reach_url + token, so the shared HistoryView engine polls the node exactly
-// like a team agent. Remounted per agent (key=addr) so state never leaks across.
+// The chat body + single bottom prompt for the hub's primary agent. Endpoint =
+// its node reach_url + token, so the shared HistoryView engine polls the node
+// exactly like a team agent.
 function HubChatBody({ agent }: { agent: HubAgent }) {
   const theme = useTheme();
 
@@ -266,28 +226,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: 20,
   },
+  hubIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   statusDot: { width: 10, height: 10, borderRadius: 5 },
-  chipsBar: {
-    flexGrow: 0,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  chipsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    paddingLeft: spacing.xs,
-    paddingRight: spacing.sm,
-    paddingVertical: 4,
-    borderRadius: radius.pill ?? 999,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
   empty: {
     flex: 1,
     alignItems: 'center',
