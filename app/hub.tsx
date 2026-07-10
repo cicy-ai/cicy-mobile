@@ -21,11 +21,13 @@ import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  Keyboard,
   Linking,
   Platform,
   StyleSheet,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { createApi, type Endpoint } from '@/src/api/http';
 import { HubWsClient, type HubAgent, type HubWsStatus } from '@/src/api/hubws';
@@ -59,7 +61,22 @@ function pickPrimary(dir: HubAgent[]): HubAgent | null {
 export default function HubScreen() {
   const { t } = useTranslation();
   const theme = useTheme();
+  const insets = useSafeAreaInsets();
   const hub = useAuthStore((s) => s.hub);
+
+  // Keyboard height — edge-to-edge (Android) + no KeyboardAvoidingView means the
+  // window does NOT resize when the keyboard opens; it just overlays. So we lift
+  // the absolutely-pinned composer by the keyboard height ourselves (works the
+  // same on iOS, which also doesn't resize without a KAV). No double-count since
+  // nothing resizes underneath.
+  const [kbH, setKbH] = useState(0);
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const show = Keyboard.addListener(showEvt, (e) => setKbH(e.endCoordinates?.height ?? 0));
+    const hide = Keyboard.addListener(hideEvt, () => setKbH(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
 
   // Measured composer height → reserve it under the history so the absolutely
   // pinned composer never overlaps the last message.
@@ -241,7 +258,7 @@ export default function HubScreen() {
           the history reserves `composerH` of bottom padding so the last message
           never hides behind it. */}
       <View style={{ flex: 1, minHeight: 0, backgroundColor: theme.bg }}>
-        <View style={{ flex: 1, minHeight: 0, paddingBottom: composerH }}>
+        <View style={{ flex: 1, minHeight: 0, paddingBottom: composerH + kbH }}>
           {!hub ? (
             <View style={styles.empty}>
               <Ionicons name="qr-code-outline" size={48} color={theme.textFaint} />
@@ -281,14 +298,14 @@ export default function HubScreen() {
               position: 'absolute',
               left: 0,
               right: 0,
-              bottom: 0,
+              // Lift by the keyboard height so the composer sits right above it
+              // (nothing resizes underneath, so this is the only lift).
+              bottom: kbH,
               backgroundColor: theme.bg,
               borderTopColor: theme.border,
-              // Constant padding: there's no KeyboardAvoidingView anymore, so
-              // Android's adjustResize alone lifts the pinned composer over the
-              // keyboard. Bumping padding on keyboardShown here double-counts and
-              // shoves the input up too far ("顶上去").
-              paddingBottom: spacing.lg,
+              // At rest, clear the gesture bar with the bottom safe-area inset;
+              // while the keyboard is up there's no home indicator to clear.
+              paddingBottom: kbH > 0 ? spacing.sm : spacing.lg + insets.bottom,
             },
           ]}
         >
