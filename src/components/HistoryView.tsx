@@ -4,18 +4,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
-import { useFocusEffect } from 'expo-router';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, type AppStateStatus, Image, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Image, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
 
-import { api } from '@/src/api/http';
-import { ChatWsClient } from '@/src/api/chatws';
 import { assetBrowserUrl, assetUri, isAssetRef } from '@/src/api/upload';
 import i18n from '@/src/i18n';
-import type { HistoryStep, HistoryTurn, StreamDelta } from '@/src/api/types';
-import { buildTurnsFromRawItems, normalizeHistoryTurns, replyItemsToSteps, splitLeadingHarnessBlocks, stripHarnessNoise } from '@/src/lib/historyParse';
-import { historyCache } from '@/src/lib/historyCache';
-import { useAuthStore } from '@/src/store/auth';
+import type { HistoryStep, HistoryTurn } from '@/src/api/types';
+import { stripHarnessNoise } from '@/src/lib/historyParse';
+import { useCurrentHistory } from '@/src/lib/history/useCurrentHistory';
+import { normalizeAgentType } from '@/src/lib/agentType';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 import { ImageLightbox } from './ImageLightbox';
 import { InlineVideo } from './InlineVideo';
@@ -147,1066 +144,53 @@ function isActiveAssistantStatus(s: string): boolean {
   return v === 'thinking' || v === 'streaming' || v === 'pending' || v === 'tool_use' || v === 'running' || v === 'in_progress';
 }
 
-// Does this reply answer a REAL user question? The framework makes its own internal
-// LLM calls whose replies must NOT show as agent answers to the user:
-//   • SUGGESTION MODE  → question starts with "[SUGGESTION MODE…"; reply is the
-//     predicted next user input (e.g. "(no suggestion)").
-//   • system-reminder / recap  → question is harness-only (no real text after the
-//     blocks); reply is often "(silence)".
-// Detected via the reply's `question` field (carried by WS current_updated and
-// reply.json). Empty/absent question → unknown → treat as real (don't over-suppress).
-function replyAnswersRealQuestion(question?: string): boolean {
-  const s = String(question ?? '').trim();
-  if (!s) return true;
-  if (/^\[\s*suggestion mode/i.test(s)) return false;
-  return !!splitLeadingHarnessBlocks(s).remaining.trim();
-}
-
 export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, agentType, busy }: Props) {
   const theme = useTheme();
-  // Real-time WS delta streaming. The AI gateway publishes ai_chunk /
-  // thinking_chunk / status_change per AGENT ID from its audited-capture path
-  // (ai_gateway_audit.go hub.publishAgent) — NOT gated on agent_type. So every
-  // agent whose traffic runs through the gateway (cicy AND claude, once audit
-  // is on) streams over WS. Gating this on 'cicy' dropped claude's stream and
-  // forced idle polling (2.5s heartbeat forever). Subscribe for all agents; the
-  // poll stays as the correction anchor, and an agent that never pushes simply
-  // gets no deltas (harmless).
-  const wsEnabled = true;
-  const wsEnabledRef = useRef(wsEnabled);
-  wsEnabledRef.current = wsEnabled;
+  // cicy 走 WS 直推加速(delta 逐字直拼);非 cicy 纯 poll loop(consumeWsDeltas:false),
+  // 与 cicy-code app 的 CicyHistoryView / CodingAgentHistoryView 分流一致。
+  const consumeWsDeltas = normalizeAgentType(agentType) === 'cicy';
+  const h = useCurrentHistory({
+    paneId: agentId,
+    open: true,
+    promptsOnly: false,
+    hideTools: false,
+    agentType: String(agentType ?? ''),
+    consumeWsDeltas,
+    pending: pending ?? null,
+    onReplyInFlight,
+    onReplyDone,
+  });
+  const {
+    displayItems,
+    liveTurn,
+    committedMaxId,
+    loading,
+    loadingMore,
+    canLoadMore,
+    loadMore,
+    recapResponses,
+    optimisticQ,
+    optimisticBaselineUserIdRef,
+    handleOutcomeRetry,
+    shouldStickBottomRef,
+  } = h;
 
-  // ── Two-part model (faithful port of cicy-code CurrentHistoryView) ────────────
-  // Part 1: committed window (current.json), single-role turns oldest→newest.
-  // Part 2: liveTurn (≤1), the in-flight answer polled from reply.json, rendered
-  // SEPARATELY right after committed. NO optimistic q, NO consecutive-assistant
-  // merge — exactly like web. Single source of truth = reply.json (poll, no WS).
-  const [items, setItems] = useState<HistoryTurn[]>([]); // committed, oldest→newest
-  const [liveTurn, setLiveTurn] = useState<HistoryTurn | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [, setConversationId] = useState('');
-
-  const scrollRef = useRef<ScrollView>(null);
-  // Poll/data refs (read by the loop without re-subscribing).
-  const convRef = useRef('');
-  const maxLoadedIdRef = useRef(0); // largest committed history_id (== q_last id)
-  const minLoadedIdRef = useRef(0); // smallest committed id (paging)
-  const lastSigRef = useRef(''); // last rendered live-tail signature (skip no-op re-renders)
-  const regressStreakRef = useRef(0); // consecutive polls the snapshot lagged the WS-ahead tail
-  const lastDeltaAtRef = useRef(0); // last WS delta arrival — gates the regress self-heal
-  const clearedConvIdRef = useRef(''); // /clear: reject this (soon-rotated) conversation's data
-  const liveTurnIdRef = useRef(''); // backend turn_id of the live tail
-  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const wsUpRef = useRef(false); // live WS status → WS up = no HTTP reply fetching
-  // Latest current_updated event payload, queued for the apply pipeline. The
-  // event carries the FULL reply snapshot (answer/thinking/items/complete/…) so
-  // the pipeline consumes it in place of a current-reply API response.
-  const pendingSnapshotRef = useRef<any>(null);
-  const pollGenRef = useRef(0); // bump to invalidate a stale poll loop's reschedule
-  const aliveRef = useRef(false);
-  const focusedRef = useRef(false); // screen focused (useFocusEffect) — gates AppState resume
-  const reconcilingRef = useRef(false);
-  const requestSeqRef = useRef(0);
-  const lastNonceRef = useRef(0); // last processed `pending.nonce`
-  const optimisticActiveRef = useRef(false); // poll-side mirror of `optimistic` (staleTerminal guard)
-  const itemsRef = useRef<HistoryTurn[]>([]); // render-time mirror for send-time rollback
-  const typeSeededRef = useRef(false); // first tail attach since focus → reveal instantly, don't type
-  const suppressNextAnchorRef = useRef(false); // failed/timed-out send → don't re-anchor the OLD q
-  const onReplyInFlightRef = useRef<typeof onReplyInFlight>(undefined);
-  onReplyInFlightRef.current = onReplyInFlight;
-  const onReplyDoneRef = useRef<typeof onReplyDone>(undefined);
-  onReplyDoneRef.current = onReplyDone;
-  itemsRef.current = items;
-  const committedReadyRef = useRef(false); // Part 1 loaded → poll may attach tail
-  const firstReplyDoneRef = useRef(false); // Part 2's first poll resolved → reveal
-
-  // Anchor refs (port of web's "new q to top"). The bottom SPACER scheme was
-  // removed — the new q glides to the top by scrolling only; when the reply is
-  // too short to reach the very top it just lands as high as the content allows
-  // (no artificial blank below).
-  const anchoredQKeyRef = useRef(''); // q key already pinned to top (re-pins on a NEW q)
-  const activeSpacerTurnKeyRef = useRef(''); // q whose reply is in flight → hold it at top
-  const replySeenActiveRef = useRef(false); // reply streamed once (kept for hold bookkeeping)
-  const didInitialScrollRef = useRef(false);
-  const shouldStickBottomRef = useRef(true);
-  const preserveScrollOffsetRef = useRef(false); // loadMore prepend → keep position
-  const autoLoadArmedRef = useRef(true); // scroll-to-top auto-load: one per approach
-  // Metrics sampled RIGHT BEFORE the prepend's setItems (web invariant: sampling
-  // earlier lets an interleaved poll render consume them mid-fetch → 翻页跳屏).
-  const preserveScrollMetricsRef = useRef<{ h: number; top: number } | null>(null);
-  const scheduledScrollRef = useRef<{ raf: number; timers: number[] } | null>(null);
-
-  const domNode = useCallback((): any => {
-    const sv: any = scrollRef.current;
-    const n = sv && typeof sv.getScrollableNode === 'function' ? sv.getScrollableNode() : null;
-    // Only return a node we can actually set scrollTop on — i.e. a web DOM
-    // element. On native, getScrollableNode() returns a numeric reactTag, and
-    // assigning `.scrollTop` on a number throws "cannot create property
-    // scrollTop on number" (app crash). Returning null makes every scroll
-    // helper no-op on native, exactly as the anchor logic intends.
-    return n && typeof n === 'object' && typeof n.scrollTop === 'number' ? n : null;
-  }, []);
-  // Spacer scheme removed — kept as a no-op so the anchor callers/deps stay
-  // intact without the artificial bottom blank.
-  const applyAnchorSpacerHeight = useCallback((_h: number) => {}, []);
-  const clearScheduledScrolls = useCallback(() => {
-    const s = scheduledScrollRef.current;
-    if (!s) return;
-    cancelAnimationFrame(s.raf as unknown as number);
-    s.timers.forEach((t) => clearTimeout(t));
-    scheduledScrollRef.current = null;
-  }, []);
-  const runScheduledScroll = useCallback(
-    (s: { raf: number; timers: number[] }) => {
-      clearScheduledScrolls();
-      scheduledScrollRef.current = s;
-    },
-    [clearScheduledScrolls],
-  );
-  useEffect(() => () => clearScheduledScrolls(), [clearScheduledScrolls]);
-
-  // ── Part 1: committed window. Always refetched fresh (positional ids drift),
-  // but write-through to historyCache so the NEXT open paints instantly from the
-  // last-seen frame instead of a spinner. The cache is never trusted as truth —
-  // this refetch overwrites it every open.
-  const loadWindow = useCallback(async () => {
-    const ids = await api.getHistoryIds(agentId);
-    const cid = String(ids.conversation_id ?? '');
-    const maxId = Number(ids.id ?? 0);
-    convRef.current = cid;
-    setConversationId(cid);
-    if (!cid || maxId <= 0) {
-      maxLoadedIdRef.current = 0;
-      minLoadedIdRef.current = 0;
-      setItems([]);
-      setHasMore(false);
-      return;
-    }
-    const hist = await api.getCurrentHistory(agentId, { limit: WINDOW, conversationId: cid });
-    const turns = normalizeHistoryTurns(buildTurnsFromRawItems(hist.items ?? []));
-    maxLoadedIdRef.current = maxId;
-    minLoadedIdRef.current = turns.length ? Number(turns[0].history_id ?? 0) : 0;
-    setItems(turns);
-    setHasMore(!!hist.has_more);
-    if (turns.length) {
-      historyCache.put(agentId, {
-        conversationId: cid,
-        maxId,
-        minId: minLoadedIdRef.current,
-        hasMore: !!hist.has_more,
-        turns,
-      });
-    }
-  }, [agentId]);
-
-  // A newer turn started → append ONLY the new committed tail (maxLoaded, newMax];
-  // never re-pull below it (preserves older loaded pages). Port of reconcileTail.
-  //
-  // Pages BACKWARD from the newest window until the fetched span reaches the
-  // already-loaded boundary: a single multi-tool turn can span far more than one
-  // WINDOW of ids, and a one-page fetch would leave a GAP that loadMore can never
-  // fill (it pages below the OLD min, not into the gap) — the turn then renders
-  // with its earlier steps missing until a full reload.
-  // Returns the new committed tail to append ({turns,newMax}) — it does NOT call
-  // setItems itself. The caller applies setItems AND the live-tail update in ONE
-  // synchronous block so React batches them into a single render; otherwise the
-  // boundary grows a frame before the tail re-attaches and the list flips
-  // collapsed/expanded once per tool round ("每轮跳"). A too-big burst resyncs the
-  // whole window in place (a full replace — its own render, rare) and returns null.
-  const reconcileTail = useCallback(async (): Promise<{ turns: HistoryTurn[]; newMax: number } | null> => {
-    try {
-      const ids = await api.getHistoryIds(agentId);
-      const cid = String(ids.conversation_id ?? '');
-      const newMax = Number(ids.id ?? 0);
-      if (clearedConvIdRef.current && cid === clearedConvIdRef.current) return null; // /clear: reject stale conv
-      if (cid && convRef.current && cid !== convRef.current) return null; // rotation → softRebind
-      if (newMax <= maxLoadedIdRef.current) return null;
-      const collected: HistoryTurn[] = [];
-      let before: number | undefined;
-      let reachedStart = false;
-      // Page backward from newest until we touch the already-loaded boundary. Cap
-      // at 12 pages (≈192 ids) as a runaway guard.
-      for (let page = 0; page < 12; page += 1) {
-        const hist = await api.getCurrentHistory(agentId, {
-          limit: WINDOW,
-          conversationId: cid,
-          ...(before ? { before } : {}),
-        });
-        const turns = buildTurnsFromRawItems(hist.items ?? []);
-        if (!turns.length) { reachedStart = true; break; }
-        collected.unshift(...turns);
-        const pageMin = Number(turns[0].history_id ?? 0);
-        if (!hist.has_more) { reachedStart = true; break; }
-        if (pageMin <= maxLoadedIdRef.current + 1) break; // met the loaded boundary → contiguous
-        before = pageMin;
-      }
-      if (!collected.length) return null;
-      const oldestNew = Number(collected[0].history_id ?? 0);
-      const contiguous = reachedStart || oldestNew <= maxLoadedIdRef.current + 1;
-      if (contiguous) return { turns: collected, newMax };
-      // A burst bigger than the page budget (e.g. after a long background) would
-      // leave a permanent HOLE between the old boundary and this tail — loadMore
-      // only pages BELOW minLoaded, never into a middle gap. Resync to a fresh
-      // contiguous window instead of stitching in a discontiguous tail.
-      await loadWindow();
-      return null;
-    } catch {
-      return null;
-    }
-  }, [agentId, loadWindow]);
-
-  // Conversation rotation: swap the new conversation's window in place (keep old
-  // turns mounted, diff by history_id, no skeleton / scroll jump). Port of softRebind.
-  const softRebind = useCallback(
-    async (nextCid: string) => {
-      const seq = ++requestSeqRef.current;
-      try {
-        const ids = await api.getHistoryIds(agentId);
-        if (seq !== requestSeqRef.current) return;
-        const cid = String(ids.conversation_id ?? '') || nextCid;
-        const newMax = Number(ids.id ?? 0);
-        if (!cid || newMax <= 0) {
-          // 新会话是空的(/clear 后):必须把视图完整重置成空,而不是只换 id。否则旧
-          // turn 留在屏上,且 maxLoadedIdRef 仍停在旧会话的 max —— 新会话里任何小 id
-          // 的答案/报错都会被判在边界下方而永不 attach(错误也出不来)。(web 同款坑)
-          maxLoadedIdRef.current = 0;
-          minLoadedIdRef.current = 0;
-          liveTurnIdRef.current = '';
-          lastSigRef.current = '';
-          liveTargetRef.current = null;
-          setLiveTurn(null);
-          setItems([]);
-          setHasMore(false);
-          convRef.current = cid;
-          setConversationId(cid);
-          return;
-        }
-        const hist = await api.getCurrentHistory(agentId, { limit: WINDOW, conversationId: cid });
-        if (seq !== requestSeqRef.current) return;
-        const turns = normalizeHistoryTurns(buildTurnsFromRawItems(hist.items ?? []));
-        maxLoadedIdRef.current = newMax;
-        minLoadedIdRef.current = turns.length ? Number(turns[0].history_id ?? 0) : 0;
-        liveTurnIdRef.current = '';
-        lastSigRef.current = '';
-        setLiveTurn(null);
-        setItems(turns);
-        setHasMore(!!hist.has_more);
-        convRef.current = cid;
-        setConversationId(cid);
-      } catch {}
-    },
-    [agentId],
-  );
-
-
-  // ── Typewriter (render-smoothing on top of the single poll source) ────────────
-  // The poll updates the FULL target every ~700ms; rendering that directly makes the
-  // answer appear in 700ms chunks ("回复文字一顿一顿"). This reveals the trailing TEXT
-  // step char-by-char at 60fps toward the target length, so it reads as continuous
-  // typing. It is NOT a second data source — it only controls how much of the
-  // poll-provided text is shown, so no double-source bugs.
-  const liveTargetRef = useRef<HistoryTurn | null>(null);
-  const typeRafRef = useRef<number | null>(null);
-  const revealRef = useRef<{ key: string; shown: number; frac: number }>({ key: '', shown: 0, frac: 0 });
-  const advanceType = useCallback(() => {
-    typeRafRef.current = null;
-    const target = liveTargetRef.current;
-    if (!target) { setLiveTurn(null); return; }
-    const steps = (target.steps ?? []) as HistoryStep[];
-    const lastIdx = steps.length - 1;
-    const last: any = steps[lastIdx];
-    const revealing = !!last && last.type === 'text' && typeof last.text === 'string';
-    const fullLen = revealing ? (last.text as string).length : 0;
-    const key = `${target.history_id}:${steps.length}:${last?.type ?? ''}`;
-    const rv = revealRef.current;
-    if (rv.key !== key) {
-      // First attach since FOCUS = pre-existing content (entering a chat whose
-      // last reply is done or mid-flight) — show it in full instantly; replaying
-      // it char-by-char would be a fake typewriter over history. Only text that
-      // arrives AFTER we're watching gets typed. A dedicated ref, NOT rv.key===''
-      // — clearLiveTurn resets the key mid-session (suggestion-mode rotation,
-      // transient answerId 0), which would re-arm the instant reveal and make the
-      // next real reply's first chunk pop in un-typed.
-      const preExisting = !typeSeededRef.current;
-      typeSeededRef.current = true;
-      rv.key = key;
-      rv.shown = preExisting ? fullLen : 0;
-      rv.frac = 0;
-    }
-    if (!revealing) { setLiveTurn(target); return; } // nothing to type → show as-is
-    if (rv.shown < fullLen) {
-      // Drain the backlog over ~24 frames (~400ms) so each 700ms chunk finishes about
-      // when the next arrives → continuous. Rate scales with backlog (fast catch-up).
-      const rate = Math.max(0.5, (fullLen - rv.shown) / 24);
-      const acc = rv.frac + rate;
-      const stepN = Math.floor(acc);
-      rv.shown = Math.min(fullLen, rv.shown + stepN);
-      rv.frac = acc - stepN;
-    }
-    const displayedSteps = steps.slice();
-    displayedSteps[lastIdx] = { ...last, text: (last.text as string).slice(0, rv.shown) };
-    setLiveTurn({ ...target, steps: displayedSteps });
-    if (rv.shown < fullLen) typeRafRef.current = requestAnimationFrame(advanceType);
-  }, []);
-  const kickType = useCallback(() => {
-    // cicy streams per-token over WS — that IS the smooth stream. Render the
-    // target DIRECTLY (snap), NO global char-by-char typewriter on top. The
-    // typewriter rewrote the whole liveTurn every frame and, layered over the
-    // multi-round WS/poll updates, is what mangled/overwrote earlier rounds and
-    // the last q. Web's cicy view (CicyHistoryView) has no global typewriter
-    // either — only per-block smoothing. Keep the typewriter for non-cicy
-    // (poll-only) agents to smooth their 700ms chunks.
-    if (wsEnabledRef.current) {
-      if (typeRafRef.current != null) { cancelAnimationFrame(typeRafRef.current); typeRafRef.current = null; }
-      setLiveTurn(liveTargetRef.current);
-      return;
-    }
-    if (typeRafRef.current == null) typeRafRef.current = requestAnimationFrame(advanceType);
-  }, [advanceType]);
-
-  const clearLiveTurn = useCallback(() => {
-    liveTurnIdRef.current = '';
-    lastSigRef.current = '';
-    liveTargetRef.current = null;
-    revealRef.current = { key: '', shown: 0, frac: 0 };
-    if (typeRafRef.current != null) { cancelAnimationFrame(typeRafRef.current); typeRafRef.current = null; }
-    setLiveTurn(null);
-  }, []);
-
-  // ── Part 2: poll reply.json (single source). Attach the in-flight answer as the
-  // live tail of q_last (answerId == committedMax + 1); reconcile when a newer turn
-  // starts; soft-rebind on conversation rotation. Sets liveTurn DIRECTLY. ─────────
-  const pollReply = useCallback(async () => {
-    if (!aliveRef.current) return;
-    const gen = pollGenRef.current;
-    let complete = true;
-    const revealOnce = () => {
-      if (firstReplyDoneRef.current) return;
-      firstReplyDoneRef.current = true;
-      if (committedReadyRef.current) setLoading(false);
-    };
-    // Wait for Part 1 so the tail attaches to a real boundary.
-    if (!committedReadyRef.current) {
-      if (aliveRef.current && gen === pollGenRef.current) pollTimer.current = setTimeout(pollReply, CURRENT_HISTORY_POLL_WAIT_MS);
-      return;
-    }
-    try {
-      // SNAPSHOT SOURCE. WS healthy → the current_updated event IS the snapshot
-      // (the server now packs answer/thinking/items/complete/usage into it):
-      // consume the queued event payload, NEVER the current-reply API. The HTTP
-      // fetch survives ONLY as the WS-down disaster path — with a live socket
-      // this function runs exclusively on pushed data.
-      // (When parked with nothing queued there is nothing to apply — return.)
-      let r: any = null;
-      let fromEvent = false;
-      if (pendingSnapshotRef.current) {
-        r = pendingSnapshotRef.current;
-        pendingSnapshotRef.current = null;
-        fromEvent = true;
-      } else if (!wsUpRef.current) {
-        // Do NOT pin to the committed conversationId: the backend echoes a pinned
-        // cid back even after the agent rotated (returning maxID=0 for it), so a
-        // rotation could never be observed. Poll the agent's CURRENT reply.
-        r = await api.getCurrentReply(agentId);
-      } else {
-        revealOnce();
-        return;
-      }
-      // A stop path (blur/background) or kickPoll invalidated this loop while the
-      // request was in flight → drop the response. Without this, resuming forks a
-      // SECOND poll loop (both reschedule), and a stale out-of-order snapshot can
-      // overwrite a newer liveTarget (text visibly regresses).
-      if (!aliveRef.current || gen !== pollGenRef.current) return;
-      complete = !!r.complete;
-      const cid = String(r.conversation_id ?? '').trim();
-      // /clear in flight → the backend hasn't rotated yet. Reject the cleared
-      // conversation's data (it'd flash the old turns back), poll fast for the
-      // rotation; once a genuinely NEW cid appears, drop the guard and proceed.
-      if (clearedConvIdRef.current) {
-        if (cid && cid === clearedConvIdRef.current) {
-          revealOnce();
-          if (aliveRef.current && gen === pollGenRef.current) pollTimer.current = setTimeout(pollReply, POLL_ACTIVE_MS);
-          return;
-        }
-        clearedConvIdRef.current = '';
-      }
-      // Agent rotated to a different conversation than committed shows → rebind.
-      if (convRef.current && cid && cid !== convRef.current) {
-        revealOnce();
-        if (!reconcilingRef.current) {
-          reconcilingRef.current = true;
-          await softRebind(cid);
-          reconcilingRef.current = false;
-          if (!aliveRef.current || gen !== pollGenRef.current) return;
-        }
-      } else {
-        if (cid && !convRef.current) {
-          convRef.current = cid;
-          setConversationId((p) => p || cid);
-        }
-        // Event snapshots carry conversation_id only (it IS the reply's cid);
-        // HTTP responses carry the explicit reply_conversation_id.
-        const replyCid = String(r.reply_conversation_id ?? r.conversation_id ?? '').trim();
-        const answerId = Number(r.history_id ?? 0); // == committedMax + 1
-        const replyMaxId = answerId > 0 ? answerId - 1 : 0; // current.json maxID (q_last)
-        // reply_status = reply.json's own lifecycle (event snapshots); HTTP
-        // responses expose it as `status` directly.
-        const status = String(r.reply_status ?? r.status ?? 'thinking').trim() || 'thinking';
-        const replyFailed = /^(failed|fail|error)$/.test(status.toLowerCase());
-        if (answerId <= 0) {
-          if (liveTargetRef.current) clearLiveTurn();
-        } else {
-          // A newer turn committed → pull ONLY the new tail (never below). Hold it
-          // (don't setItems yet) so it lands in the SAME render as the live-tail
-          // update below — one batch, no per-round flip.
-          let pendingTail: { turns: HistoryTurn[]; newMax: number } | null = null;
-          if (replyMaxId > maxLoadedIdRef.current && !reconcilingRef.current) {
-            reconcilingRef.current = true;
-            pendingTail = await reconcileTail();
-            reconcilingRef.current = false;
-            if (!aliveRef.current || gen !== pollGenRef.current) return;
-          }
-          const boundary = pendingTail ? pendingTail.newMax : maxLoadedIdRef.current;
-          // Apply the committed tail NOW — everything below is synchronous (no
-          // await), so this setItems batches with the setLiveTurn/clearLiveTurn
-          // that follows into ONE render (no per-round collapsed/expanded flip).
-          if (pendingTail) {
-            const t = pendingTail;
-            setItems((prev) => normalizeHistoryTurns([...prev, ...t.turns]));
-            maxLoadedIdRef.current = t.newMax;
-          }
-          // cicy reseeds current.json every tool round, so mid-turn the boundary
-          // can advance PAST the answer slot this poll snapshotted (answerId is
-          // one round stale). The reply is still THIS in-flight turn — keep the
-          // tail attached at the new slot instead of clear→reattach, which used
-          // to flash the committed copy for one poll = the list jumping every
-          // round. (web's effectiveAnswerId invariant.)
-          const effectiveAnswerId = !complete && !replyFailed ? Math.max(answerId, boundary + 1) : answerId;
-          const answer = String(r.answer ?? '');
-          const thinking = String(r.thinking ?? '');
-          const liveItems: any[] = Array.isArray(r.items) ? r.items : [];
-          const hasContent = !!(answer || thinking) || liveItems.length > 0;
-          const sameConversation = !replyCid || !convRef.current || replyCid === convRef.current;
-          // Suppress a reply to a harness/system message ("(silence)") — noise.
-          const realQ = replyAnswersRealQuestion(r.question);
-          // 乐观 q 还在、真 answer 还没来时,reply.json 里的「终结态」回复(failed /
-          // slash-ack)属于上一轮,不是这条新 q 的答案 —— 不贴,显示 thinking,直到这
-          // 条 q 自己的在途回复到来。绝不挡正常 complete 的上一条答案(否则 a1 闪一下)。
-          const isSlashAck = String(r.turn_id ?? '') === 'slash-ack';
-          const staleTerminal = (isSlashAck || replyFailed) && optimisticActiveRef.current;
-          if (sameConversation && realQ && effectiveAnswerId > boundary && (hasContent || !complete) && !staleTerminal) {
-            const turnId = String(r.turn_id ?? '');
-            // Per-item lengths in the sig: a tool_use item's input can grow while
-            // item count / answer / thinking stay constant — without this the
-            // frame never re-renders. (web parity)
-            const itemsSig = JSON.stringify(
-              liveItems.map((it: any) => [it?.type, String(it?.thinking ?? it?.text ?? '').length, it?.name ?? '']),
-            );
-            const sig = `${turnId}:${effectiveAnswerId}:${status}:${String(r.updated_at ?? '')}:${thinking.length}:${answer.length}:${itemsSig}`;
-            if (sig !== lastSigRef.current) {
-              lastSigRef.current = sig;
-              const prevTurnId = liveTurnIdRef.current;
-              liveTurnIdRef.current = turnId;
-              if (!complete && !replyFailed) onReplyInFlightRef.current?.();
-              else onReplyDoneRef.current?.(); // terminal → composer unlock (event-driven)
-              // Event snapshots carry RAW reply items (the HTTP handler strips
-              // text already committed to current.json mid-turn; the push does
-              // not). Drop live steps that exactly duplicate a recent committed
-              // assistant text, or a mid-turn commit shows the same round twice.
-              const committedTexts = new Set<string>();
-              for (const ct of itemsRef.current.slice(-4)) {
-                if (ct.a) committedTexts.add(String(ct.a));
-                for (const st of ct.steps ?? []) {
-                  const sTxt = (st as any)?.text;
-                  if (sTxt) committedTexts.add(String(sTxt));
-                }
-              }
-              const nextSteps = replyItemsToSteps(liveItems, thinking, answer).filter(
-                (st: any) => !(st?.text && st.type !== 'tool' && committedTexts.has(String(st.text))),
-              );
-              // Regress guard: WS deltas can lead the poll snapshot (delta lands
-              // before the poll that read reply.json is applied). If the snapshot
-              // is SHORTER than the tail we're already showing (same turn, fewer
-              // chars, no new tool), keep the ahead WS version and only move the
-              // slot id — else the answer visibly shrinks and the next delta glues
-              // onto the shortened text (a dropped chunk). Self-heals: forced after
-              // 3 consecutive regressions (~a couple polls). (web parity)
-              // Regress guard applies ONLY to HTTP poll snapshots (WS-down path):
-              // a poll reads reply.json, which can momentarily lag an ai_chunk
-              // that already landed, so a shorter snapshot there must not shrink
-              // the tail. A current_updated EVENT is the authoritative snapshot
-              // itself (it IS the push) — trust it verbatim, or a legit mid-turn
-              // shrink (round N's text commits, round N+1 opens with fewer items)
-              // gets rejected and the last round appears to overwrite/flicker.
-              const prevLive = liveTargetRef.current;
-              let regressed = false;
-              if (!fromEvent && !complete && prevLive && prevTurnId && turnId === prevTurnId) {
-                const prev = liveStepsContentSize(prevLive.steps);
-                const next = liveStepsContentSize(nextSteps);
-                regressed = next.textLen < prev.textLen && next.toolCount <= prev.toolCount;
-                if (regressed) {
-                  regressStreakRef.current += 1;
-                  if (regressStreakRef.current >= 3) regressed = false;
-                } else {
-                  regressStreakRef.current = 0;
-                }
-              } else {
-                regressStreakRef.current = 0;
-              }
-              if (regressed && prevLive) {
-                // Keep the ahead WS content; just re-slot the id if the boundary moved.
-                if (Number(prevLive.history_id ?? 0) !== effectiveAnswerId) {
-                  liveTargetRef.current = { ...prevLive, history_id: effectiveAnswerId };
-                  kickType();
-                }
-              } else {
-              liveTargetRef.current = {
-                history_id: effectiveAnswerId,
-                conversation_id: cid || convRef.current,
-                role: 'assistant',
-                q: '',
-                text: '',
-                a: answer,
-                steps: nextSteps,
-                status: complete ? '' : status,
-                model: String(r.model ?? '') || undefined,
-              };
-              kickType();
-              }
-            }
-          } else if (liveTargetRef.current) {
-            clearLiveTurn();
-          }
-        }
-      }
-      revealOnce();
-    } catch {
-      revealOnce();
-    } finally {
-      if (aliveRef.current && gen === pollGenRef.current) {
-        // WS down → reply.json polling is the only feed: loop like web.
-        // WS up → NO periodic loop. Park; every relevant WS event nudges ONE
-        // fetch (nudgePoll). Only exception: a turn is in flight — keep a slow
-        // sanity heartbeat so a server-side capture gap can't freeze the view.
-        if (!wsUpRef.current) {
-          pollTimer.current = setTimeout(pollReply, complete ? POLL_IDLE_MS : POLL_ACTIVE_MS);
-        } else if (!complete) {
-          pollTimer.current = setTimeout(pollReply, POLL_INFLIGHT_HEARTBEAT_MS);
-        }
-      }
-    }
-  }, [agentId, reconcileTail, softRebind, clearLiveTurn, kickType]);
-
-  // Restart the poll immediately (invalidate any in-flight loop) — after a send /
-  // resume so the new q + its reply surface without waiting out the idle interval.
-  const kickPoll = useCallback(() => {
-    pollGenRef.current += 1;
-    if (pollTimer.current) {
-      clearTimeout(pollTimer.current);
-      pollTimer.current = null;
-    }
-    if (aliveRef.current) pollReply();
-  }, [pollReply]);
-
-  // ── WS delta streaming (cicy only) — zero-latency token push on top of the
-  // poll. The poll stays the correction ANCHOR: the backend writes reply.json
-  // BEFORE publishing each delta, so a poll snapshot always ⊇ the pushed deltas
-  // (it replaces liveTarget wholesale every ~700ms without ever regressing).
-  // WS just fills the gaps between polls so text appears as it's generated. ──────
-  const wsNudgeAtRef = useRef(0);
-  // Debounced poll nudge — a fast delta stream before the baseline is attached
-  // would otherwise kickPoll() every chunk, each bumping the poll gen and
-  // cancelling the prior in-flight poll before it can attach the tail (livelock).
-  const nudgePoll = useCallback(() => {
-    const now = Date.now();
-    if (now - wsNudgeAtRef.current < 200) return;
-    wsNudgeAtRef.current = now;
-    kickPoll();
-  }, [kickPoll]);
-  const appendStreamDelta = useCallback(
-    (kind: 'text' | 'thinking', delta: string, turnId: string) => {
-      if (!delta) return;
-      lastDeltaAtRef.current = Date.now(); // WS is actively feeding the tail
-      const lt = liveTargetRef.current;
-      // No poll baseline yet (just opened / just sent) → let the poll attach the
-      // tail first, else we'd stitch a fragment from mid-stream. Nudge it. (The
-      // dropped pre-baseline deltas aren't lost: reply.json is written before the
-      // delta is published, so the poll snapshot already contains them.)
-      if (!lt) { nudgePoll(); return; }
-      // A delta for a different turn than the one we're showing → the slot is
-      // stale; defer to the poll to re-anchor rather than corrupt the tail.
-      if (turnId && liveTurnIdRef.current && turnId !== liveTurnIdRef.current) { nudgePoll(); return; }
-      const steps = Array.isArray(lt.steps) ? [...lt.steps] : [];
-      const last: any = steps[steps.length - 1];
-      if (last && last.type === kind && typeof last.text === 'string') {
-        // Dedup a delta the poll already folded in (poll vs WS race): a long
-        // delta that is exactly the current suffix is a duplicate — drop it.
-        if (delta.length >= 6 && String(last.text).endsWith(delta)) return;
-        steps[steps.length - 1] = { ...last, text: `${last.text}${delta}` };
-      } else {
-        steps.push({ type: kind, text: delta } as HistoryStep);
-      }
-      liveTargetRef.current = { ...lt, steps, status: kind === 'thinking' ? 'thinking' : 'streaming' };
-      onReplyInFlightRef.current?.();
-      kickType();
-    },
-    [nudgePoll, kickType],
-  );
-
-  // Open one WS per focused cicy chat; consume ai_chunk / thinking_chunk deltas.
-  // Focus-scoped (close on blur, fresh client on return) — same lifecycle as the
-  // poll, so a blurred/backgrounded chat doesn't hold a socket streaming into a
-  // hidden screen.
-  const clientIdRef = useRef<string>('');
-  if (!clientIdRef.current) {
-    // Uniqueness only needs to avoid colliding with other clients of the same
-    // agent. (Date.now/Math.random are fine in app code.)
-    clientIdRef.current = `mobile-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
-  }
-  useFocusEffect(
-    useCallback(() => {
-      if (!wsEnabled) return;
-      const { serverUrl, token } = useAuthStore.getState();
-      if (!serverUrl || !token) return;
-      const client = new ChatWsClient({ serverUrl, token, clientId: clientIdRef.current, agentId });
-      const matchesAgent = (aid: string) =>
-        !aid || aid === agentId || agentId.endsWith(aid) || aid.endsWith(agentId);
-      // Channel sequence (server stamps every agent event with a per-agent
-      // monotonic seq). A gap means we dropped a frame → ONE repair fetch.
-      // This is the WeChat model: push + gap-triggered sync, no periodic poll.
-      let lastSeq = 0;
-      const off = client.on((msg) => {
-        const d = (msg.data ?? {}) as StreamDelta & { status?: string; seq?: number };
-        if (!matchesAgent(String(d.agent_id ?? '').trim())) return;
-        const seq = Number(d.seq ?? 0);
-        if (seq > 0) {
-          if (lastSeq > 0 && seq > lastSeq + 1) nudgePoll(); // dropped frame(s) → repair
-          if (seq > lastSeq) lastSeq = seq;
-        }
-        if (msg.type === 'ai_chunk' || msg.type === 'thinking_chunk') {
-          appendStreamDelta(msg.type === 'thinking_chunk' ? 'thinking' : 'text', String(d.delta ?? ''), String(d.turn_id ?? ''));
-          return;
-        }
-        if (msg.type === 'status_change') {
-          // A tool round started (cicy answers are multi-round: … text → tool →
-          // text …). Refresh the authoritative multi-round structure from
-          // reply.json BEFORE the next round's deltas arrive, so they land on a
-          // fresh step instead of gluing onto the previous round's text (which
-          // read as the earlier round being overwritten). The tool card content
-          // lives only in reply.json — WS never carries it.
-          const st = String(d.status ?? '').toLowerCase();
-          if (st === 'tool_use' || st === 'tool_call' || st === 'working') nudgePoll();
-          // Any other status while the tail hasn't attached yet (just sent /
-          // just opened): nudge once so the baseline lands ASAP (web parity).
-          else if (!liveTargetRef.current) nudgePoll();
-          return;
-        }
-        // The full reply snapshot rides this event (answer/thinking/items/
-        // complete/usage — server-side enrichment). Queue it for the apply
-        // pipeline: SAME battle-tested code path as a poll response, but fed
-        // from the push channel — zero current-reply requests while WS is up.
-        if (msg.type === 'current_updated') {
-          pendingSnapshotRef.current = d;
-          nudgePoll();
-        }
-      });
-      // Track WS health: while up, the poll loop PARKS (event-driven fetches
-      // only). Both transitions need a nudge: on DROP the parked loop must
-      // restart as the sole feed; on (re)OPEN we reconcile whatever the socket
-      // missed while it was down, then park again.
-      const offStatus = client.onStatus((s) => {
-        const up = s === 'open';
-        const was = wsUpRef.current;
-        wsUpRef.current = up;
-        if (was !== up) nudgePoll();
-      });
-      client.connect();
-      return () => {
-        offStatus();
-        wsUpRef.current = false;
-        off();
-        client.close();
-      };
-    }, [agentId, wsEnabled, appendStreamDelta, nudgePoll]),
-  );
-
-  // Full-screen error → Try again: re-run the initial committed load in place
-  // (backing out and re-entering was the only recovery before) + restart polling.
-  const retryInitialLoad = useCallback(() => {
-    setError(null);
-    setLoading(true);
-    (async () => {
-      try {
-        await loadWindow();
-        setError(null);
-      } catch (e: any) {
-        setError(String(e?.message ?? e));
-      } finally {
-        committedReadyRef.current = true;
-        setLoading(false);
-      }
-      kickPoll();
-    })();
-  }, [loadWindow, kickPoll]);
-
-  // Re-run the latest cancelled/failed turn (web's OutcomeNoticeCard 重试).
-  const retryOutcome = useCallback(async () => {
-    try {
-      await api.retryCicyReply(agentId);
-    } catch {}
-    shouldStickBottomRef.current = true;
-    kickPoll();
-  }, [agentId, kickPoll]);
-
-  // Load an older page of committed turns (prepend, keep scroll position).
-  const loadMore = useCallback(async () => {
-    if (loadingMore || !hasMore || !minLoadedIdRef.current) return;
-    setLoadingMore(true);
-    try {
-      const hist = await api.getCurrentHistory(agentId, {
-        limit: WINDOW,
-        before: minLoadedIdRef.current,
-        conversationId: convRef.current,
-      });
-      const older = normalizeHistoryTurns(buildTurnsFromRawItems(hist.items ?? []));
-      if (!older.length) {
-        setHasMore(false);
-      } else {
-        // Sample metrics + arm the preserve flag ONLY now, right before setItems
-        // (not at fetch start — an interleaved poll render would consume the flag
-        // mid-fetch = 翻页跳屏). The anchor pass compensates scrollTop by the
-        // height delta; browser scroll anchoring alone doesn't exist on iOS
-        // WebKit (Safari / Mini-App WKWebView). Native relies on the ScrollView's
-        // maintainVisibleContentPosition instead.
-        const node = domNode();
-        preserveScrollMetricsRef.current = node ? { h: node.scrollHeight, top: node.scrollTop } : null;
-        preserveScrollOffsetRef.current = true;
-        minLoadedIdRef.current = Number(older[0].history_id ?? minLoadedIdRef.current);
-        setItems((prev) => normalizeHistoryTurns([...older, ...prev]));
-        setHasMore(!!hist.has_more);
-      }
-    } catch {
-      // ignore — user can pull again
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [agentId, loadingMore, hasMore, domNode]);
-
-  // Load-earlier is driven by an IntersectionObserver on a TOP sentinel (port of
-  // web): it fires only when the user scrolls the sentinel into view. On a
-  // bottom-anchored open the sentinel isn't visible, so nothing auto-loads — this
-  // is what prevents "一打开全打开了". loadMore self-guards re-entrancy/no-more.
-  const loadMoreFnRef = useRef<() => void>(() => {});
-  loadMoreFnRef.current = () => { void loadMore(); };
-  const canLoadMore = hasMore && minLoadedIdRef.current > 1;
-  useEffect(() => {
-    if (!canLoadMore) return;
-    const root = domNode();
-    if (!root || typeof (globalThis as any).IntersectionObserver !== 'function') return;
-    const target = typeof root.querySelector === 'function' ? root.querySelector('[data-load-more]') : null;
-    if (!target) return;
-    const io = new (globalThis as any).IntersectionObserver(
-      (entries: any[]) => { if (entries.some((e) => e.isIntersecting)) loadMoreFnRef.current(); },
-      { root, threshold: 0.1 },
-    );
-    io.observe(target);
-    return () => io.disconnect();
-  }, [canLoadMore, items, domNode]);
-
-  // Open / re-focus: reset, load committed, then poll the reply tail.
-  useFocusEffect(
-    useCallback(() => {
-      let mounted = true;
-      aliveRef.current = true;
-      focusedRef.current = true;
-      // Instant paint from cache (memory→persistent, sync) so reopening an agent
-      // shows the last-seen conversation immediately; loadWindow() below still
-      // refetches fresh and reconciles. Cache miss → fall back to the spinner.
-      const cached = historyCache.get(agentId);
-      if (cached && cached.turns.length) {
-        convRef.current = cached.conversationId;
-        setConversationId(cached.conversationId);
-        maxLoadedIdRef.current = cached.maxId;
-        minLoadedIdRef.current = cached.minId;
-        setItems(cached.turns);
-        setHasMore(cached.hasMore);
-        setLoading(false);
-      } else {
-        setItems([]);
-        setLoading(true);
-      }
-      setLiveTurn(null);
-      lastSigRef.current = '';
-      liveTurnIdRef.current = '';
-      liveTargetRef.current = null;
-      revealRef.current = { key: '', shown: 0, frac: 0 };
-      typeSeededRef.current = false; // first tail attach after focus reveals instantly
-      clearedConvIdRef.current = '';
-      regressStreakRef.current = 0;
-      if (typeRafRef.current != null) { cancelAnimationFrame(typeRafRef.current); typeRafRef.current = null; }
-      // On a cache hit the committed window is already painted, so the poll loop
-      // may attach the live tail immediately; on a miss it waits for loadWindow.
-      committedReadyRef.current = !!(cached && cached.turns.length);
-      firstReplyDoneRef.current = false;
-      didInitialScrollRef.current = false;
-      shouldStickBottomRef.current = true;
-      preserveScrollOffsetRef.current = false;
-      activeSpacerTurnKeyRef.current = '';
-      anchoredQKeyRef.current = '';
-      replySeenActiveRef.current = false;
-      applyAnchorSpacerHeight(0);
-      (async () => {
-        try {
-          await loadWindow();
-          if (mounted) setError(null);
-        } catch (e: any) {
-          if (mounted) setError(String(e?.message ?? e));
-        } finally {
-          committedReadyRef.current = true;
-          if (mounted && firstReplyDoneRef.current) setLoading(false);
-        }
-        if (!mounted || !aliveRef.current) return;
-        pollReply();
-      })();
-      return () => {
-        mounted = false;
-        aliveRef.current = false;
-        focusedRef.current = false;
-        // Invalidate any in-flight pollReply: without the gen bump, a request
-        // suspended across blur→refocus reschedules alongside the new loop —
-        // two poll chains forever.
-        pollGenRef.current += 1;
-        if (pollTimer.current) clearTimeout(pollTimer.current);
-        pollTimer.current = null;
-        // The typewriter self-reschedules until its backlog drains — cancel it
-        // too, or it keeps setState-ing a blurred screen every frame.
-        if (typeRafRef.current != null) { cancelAnimationFrame(typeRafRef.current); typeRafRef.current = null; }
-        clearScheduledScrolls();
-      };
-    }, [agentId, loadWindow, pollReply, applyAnchorSpacerHeight, clearScheduledScrolls]),
-  );
-
-  // Pause polling in the background; resume on return — but ONLY when this
-  // screen is still the focused one. Without the focus gate, a blurred screen
-  // left mounted under the nav stack would restart its poll loop on every
-  // app foreground and keep polling forever behind the visible screen.
-  useEffect(() => {
-    const onChange = (s: AppStateStatus) => {
-      if (s === 'active') {
-        if (focusedRef.current && !aliveRef.current) {
-          aliveRef.current = true;
-          pollReply();
-        }
-      } else {
-        aliveRef.current = false;
-        // Invalidate the in-flight request too (see focus cleanup) — resuming
-        // while one is suspended must not fork a second poll loop.
-        pollGenRef.current += 1;
-        if (pollTimer.current) clearTimeout(pollTimer.current);
-        pollTimer.current = null;
-      }
-    };
-    const sub = AppState.addEventListener('change', onChange);
-    return () => sub.remove();
-  }, [pollReply]);
-
-  // A new send: nudge the poll so the committed q + its reply surface fast. Like
-  // web, there is NO optimistic bubble — the q renders once it lands in committed
-  // (the anchor then pins it to the top). (~one poll round-trip, sub-second.)
-  // Optimistic double placeholder (port of web's OPTIMISTIC_Q): the instant a
-  // send happens, paint the q bubble + reserve the answer slot BEFORE the poll
-  // round-trips — the q must never lag the keypress. Cleared when a NEWER
-  // committed user turn lands (the real q) or on a 60s no-show timeout.
-  const [optimistic, setOptimistic] = useState<{ text: string; nonce: number; baselineId: number } | null>(null);
-  optimisticActiveRef.current = !!optimistic;
-  useEffect(() => {
-    if (!pending) return;
-    if (pending.nonce === lastNonceRef.current) return;
-    lastNonceRef.current = pending.nonce;
-    // Slash commands (/clear, /compact) are intercepted server-side and never
-    // become a committed user turn — an optimistic bubble would never see its
-    // teardown signal and would sit there until the 60s timeout. Skip it; the
-    // command's ack arrives via the reply.json poll. (web onNudge invariant)
-    if (/^\/\w+(\s|$)/.test(pending.text.trim())) {
-      // /clear → blank the view NOW (don't wait for the backend to rotate + a
-      // poll round-trip), and remember the cleared conversation id so any poll /
-      // reconcile / rebind that races the rotation REJECTS its (soon-stale) data
-      // — otherwise the old turns flash back for a frame. Guard clears once a
-      // genuinely new conversation id shows up. (web /clear invariant)
-      if (/^\/clear(\s|$)/.test(pending.text.trim())) {
-        clearedConvIdRef.current = convRef.current;
-        maxLoadedIdRef.current = 0;
-        minLoadedIdRef.current = 0;
-        clearLiveTurn();
-        setOptimistic(null);
-        setItems([]);
-        setHasMore(false);
-      }
-      kickPoll();
-      return;
-    }
-    // 上一轮若是「生成失败」→ 新 q 就地覆盖它(后端 dropTrailingFailedTurnLocked 丢掉
-    // 失败的 q 并让新 q 复用同一个 id)。前端必须配合:删掉失败的 q + 它的 a,并把
-    // committed 边界回退到失败 q 之前 —— 否则新 q 复用旧 id 后 reconcileTail 的
-    // `newMax > maxLoadedIdRef` 永不成立,那个 slot 永不重拉 = UI 一直卡着旧 q。
-    // 失败可能是 committed 的 outcome==='error',也可能还挂在 live tail,两者都要清。
-    let base = itemsRef.current;
-    const lastLive = liveTargetRef.current;
-    const liveFailed = !!lastLive && /fail|error/i.test(String((lastLive as any)?.status ?? ''));
-    const committedFailed = base.length > 0 && String((base[base.length - 1] as any)?.outcome ?? '') === 'error';
-    if (committedFailed || liveFailed) {
-      let cut = base.length;
-      for (let i = base.length - 1; i >= 0; i -= 1) {
-        if (base[i]?.role === 'user') { cut = i; break; }
-      }
-      base = base.slice(0, cut);
-      setItems(base);
-      maxLoadedIdRef.current = Number(base[base.length - 1]?.history_id ?? 0);
-      clearLiveTurn();
-    }
-    // Baseline = max USER id (web parity), not max overall id: after a rollback
-    // the new q reuses the failed q's id, which can be ≤ the old overall max.
-    let maxUserId = 0;
-    for (const it of base) {
-      if (it?.role === 'user') maxUserId = Math.max(maxUserId, Number(it?.history_id ?? 0));
-    }
-    setOptimistic({ text: pending.text, nonce: pending.nonce, baselineId: maxUserId });
-    kickPoll();
-  }, [pending, kickPoll, clearLiveTurn]);
-  // `pending: null` from the send path = the send FAILED → drop the bubble. The
-  // anchor must NOT mistake the previous q for a "new question" when the opt-
-  // key disappears (it would glide the OLD q to the top and open a viewport-
-  // sized blank spacer that nothing ever shrinks).
-  useEffect(() => {
-    if (pending === null) {
-      suppressNextAnchorRef.current = true;
-      setOptimistic(null);
-    }
-  }, [pending]);
-  useEffect(() => {
-    if (!optimistic) return;
-    const timer = setTimeout(() => {
-      setOptimistic((cur) => {
-        if (cur && cur.nonce === optimistic.nonce) {
-          suppressNextAnchorRef.current = true; // no-show ≠ new question — don't re-anchor the old q
-          return null;
-        }
-        return cur;
-      });
-    }, 60000);
-    return () => clearTimeout(timer);
-  }, [optimistic]);
-
-  // ── Render data: web's displayItems (no merge, no optimistic) ────────────────
-  const committedMaxId = useMemo(
-    () => items.reduce((m, t) => Math.max(m, Number(t?.history_id ?? 0)), 0),
-    [items],
-  );
-  // The real committed q landed → retire the optimistic bubble in place.
-  useEffect(() => {
-    if (!optimistic) return;
-    const landed = items.some(
-      (t) =>
-        t?.role === 'user' &&
-        Number(t?.history_id ?? 0) > optimistic.baselineId &&
-        stripHarnessNoise(String(t.q ?? t.text ?? '')) === optimistic.text.trim(),
-    );
-    const anyNewerUser = items.some(
-      (t) => t?.role === 'user' && Number(t?.history_id ?? 0) > optimistic.baselineId,
-    );
-    if (landed || anyNewerUser) setOptimistic(null);
-  }, [items, optimistic]);
-  // While the live turn renders the in-flight assistant response (with its tool
-  // steps, in serial order), HIDE the committed assistant turn(s) of that SAME
-  // turn — else round-0's tools render BOTH committed (above) and in the live turn
-  // (below) = the "reply 先到上一条 再乱跳" duplicate/jump. The live turn owns the
-  // full ordered render until the turn completes and migrates into committed.
-  // Boolean, not the liveTurn object: the typewriter replaces liveTurn ~60×/s
-  // while it types, and an object dep would recompute displayItems (new array
-  // identity) — and re-fire everything downstream of it — every frame.
   const liveVisible = !!liveTurn && Number(liveTurn.history_id ?? 0) > committedMaxId;
-  const displayItems = useMemo(() => {
-    // Display layer drops system noise entirely (用户指令:agent 显示层完全过滤
-    // system message):role==='system' turns and harness-only user turns (a q
-    // that is nothing but system-reminder/recap blocks) never render. Their
-    // assistant recap responses are dropped separately via recapResponses.
-    const visible = items.filter((t) => {
-      if (t?.role === 'system') return false;
-      if (t?.role === 'user') {
-        const q = String((t as any)?.q ?? (t as any)?.text ?? '');
-        // Drop the turn when nothing real remains after removing ALL system noise
-        // (leading + embedded + trailing), not just leading blocks.
-        if (q.trim() && !stripHarnessNoise(q)) return false;
-      }
-      return true;
-    });
-    if (!liveVisible) return visible;
-    let lastUserId = 0;
-    for (const t of visible) if (t?.role === 'user') lastUserId = Math.max(lastUserId, Number(t?.history_id ?? 0));
-    return visible.filter((t) => !(t?.role === 'assistant' && Number(t?.history_id ?? 0) > lastUserId));
-  }, [items, liveVisible]);
-
-  // Recap-on-return is system noise: a harness-only user turn + the assistant
-  // recap it triggers. The harness q itself is dropped by displayItems, so this
-  // must scan the UNFILTERED items — scanning displayItems can never see the
-  // harness q, pendingRecap never sets, and the recap answer leaks through as an
-  // orphan assistant turn with no question above it. The drop Set holds object
-  // identities from `items`, which displayItems shares (it's a filter of items).
-  const recapResponses = useMemo(() => {
-    const drop = new Set<HistoryTurn>();
-    let pendingRecap = false;
-    for (const t of items) {
-      if (t?.role === 'system') continue; // may sit between the harness q and its recap
-      const q = String((t as any)?.text || (t as any)?.q || '');
-      if (t?.role === 'user' && q.trim()) {
-        const { blocks } = splitLeadingHarnessBlocks(q);
-        pendingRecap = !stripHarnessNoise(q) && blocks.length > 0;
-        continue;
-      }
-      const hasContent =
-        String((t as any)?.a || '').trim().length > 0 ||
-        (Array.isArray((t as any)?.steps) && (t as any).steps.length > 0);
-      if (t?.role === 'assistant' && pendingRecap && hasContent) {
-        pendingRecap = false;
-        drop.add(t);
-      }
-    }
-    return drop;
-  }, [items]);
-
-  // Coarse live signature for the anchor effect: changes on poll-level transitions
-  // (new turn / status flip / a step appended), NOT on every typewriter frame.
-  // Depending on the liveTurn OBJECT re-ran the anchor effect ~60×/s during the
-  // char-by-char reveal — a rAF + getBoundingClientRect layout read per frame.
-  // The per-token pin hold lives in onContentSizeChange, which doesn't need this.
-  const liveSig = liveTurn
-    ? `${liveTurn.history_id ?? ''}:${liveTurn.status ?? ''}:${(liveTurn.steps ?? []).length}`
-    : '';
   const liveVisibleRef = useRef(false);
   liveVisibleRef.current = liveVisible;
 
-  // ── Anchor: pin a new q to the viewport top, reply streams below (port of web's
-  // CurrentHistoryView §"new q to top", incl. the smooth-scroll + hand-off + the
-  // "don't shrink spacer before streaming" 回落 guard). ───────────────────────────
-  const computeLastUserKey = useCallback((): string => {
-    // The optimistic bubble IS the newest question while it's up — anchor it.
-    if (optimistic) return `opt-${optimistic.nonce}`;
-    for (let i = displayItems.length - 1; i >= 0; i -= 1) {
-      const t = displayItems[i];
-      if (t?.role === 'user' && !!stripHarnessNoise(String(t.q ?? t.text ?? ''))) {
-        return String(t.history_id ?? `u-${i}`);
-      }
-    }
-    return '';
-  }, [displayItems, optimistic]);
-
-  // ↓-chip: visible once the user is parked >300px above the bottom (mid-stream
-  // scroll-up otherwise requires repeated flings to get back down).
+  // ── Native ChatGPT-style stick-to-bottom scroll (NO top-anchor spacer — that
+  // web-DOM mechanism is gone). Land at the newest turn on open, then follow the
+  // bottom while the user is parked there; release on scroll-up; auto-load older
+  // near the top (one load per approach). ─────────────────────────────────────
+  const scrollRef = useRef<ScrollView>(null);
+  const didInitialScrollRef = useRef(false);
+  const autoLoadArmedRef = useRef(false);
   const [showJump, setShowJump] = useState(false);
   const showJumpRef = useRef(false);
+  const loadMoreFnRef = useRef(loadMore);
+  loadMoreFnRef.current = loadMore;
+
   const onScroll = useCallback(
     (e: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
       const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
@@ -1218,13 +202,6 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
         showJumpRef.current = jump;
         setShowJump(jump);
       }
-      // Auto-load older history when the user scrolls near the top — no tap.
-      // ONE load per approach to the top: fire when armed + near top, then DISARM
-      // until the user scrolls back down (y > 300) and re-approaches. Without this
-      // the load could re-fire while still at y≈0 (if the platform didn't
-      // compensate the prepend) and page the WHOLE history in a runaway loop
-      // ("一打开全打开了"). Gated on didInitialScrollRef so opening a chat (lands at
-      // the bottom) never auto-pages.
       if (!didInitialScrollRef.current) return;
       if (y > 300) autoLoadArmedRef.current = true;
       if (y <= 80 && autoLoadArmedRef.current) {
@@ -1232,136 +209,23 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
         loadMoreFnRef.current();
       }
     },
-    [],
+    [shouldStickBottomRef],
   );
+
+  const onContentSizeChange = useCallback(() => {
+    // Land at / follow the bottom. While the live tail types, content grows every
+    // frame — jump-follow (not animated, which would restart 60×/s and stutter).
+    if (!didInitialScrollRef.current || shouldStickBottomRef.current) {
+      const animated = didInitialScrollRef.current && !liveVisibleRef.current;
+      scrollRef.current?.scrollToEnd({ animated });
+      didInitialScrollRef.current = true;
+    }
+  }, [shouldStickBottomRef]);
+
   const jumpToLatest = useCallback(() => {
     shouldStickBottomRef.current = true;
-    // Jumping down while an anchor spacer is open would land in its blank — the
-    // user explicitly wants the bottom, so release the anchor.
-    activeSpacerTurnKeyRef.current = '';
-    applyAnchorSpacerHeight(0);
-    const node = domNode();
-    if (node) animateScrollTop(node, node.scrollHeight, 300);
-    else scrollRef.current?.scrollToEnd({ animated: true });
-  }, [domNode, applyAnchorSpacerHeight]);
-
-  // w-10064's RN tip: re-assert the anchor on content-size change (markdown/code
-  // reflow shifts offsetTop) — more reliable than timers alone. Keeps the in-flight
-  // q pinned to the top as its reply grows below it; else follows the bottom if stuck.
-  const onContentSizeChange = useCallback(() => {
-    const node = domNode();
-    if (!node) {
-      // Native (iOS/Android): no DOM, so the web scrollTop helpers all no-op and
-      // the list would otherwise open pinned to the TOP. The top-anchor mechanism
-      // is web-only; on native we just want chat behaviour — land at the newest
-      // turn on open, then keep following the bottom while the user is parked
-      // there (onScroll maintains shouldStickBottomRef). Imperative scrollToEnd
-      // is the native equivalent of web's scheduleBottom.
-      if (!didInitialScrollRef.current || shouldStickBottomRef.current) {
-        // While the live tail is typing, content grows every frame — an ANIMATED
-        // scrollToEnd would be restarted 60×/s and stutter. Jump-follow instead;
-        // keep the animation for discrete changes (a new committed turn landing).
-        const animated = didInitialScrollRef.current && !liveVisibleRef.current;
-        scrollRef.current?.scrollToEnd({ animated });
-        didInitialScrollRef.current = true;
-      }
-      return;
-    }
-    if (activeSpacerTurnKeyRef.current) {
-      // IDEMPOTENT hold: only re-pin if q actually drifted (>6px). An unconditional
-      // pin every token snapped the view = "滚动跟随生硬". A stable q → no-op → smooth.
-      const qTop = turnTopInContent(node, activeSpacerTurnKeyRef.current);
-      if (qTop != null && Math.abs(qTop - 8) > 6) node.scrollTop = node.scrollTop + (qTop - 8);
-    } else if (shouldStickBottomRef.current) {
-      node.scrollTop = node.scrollHeight;
-    }
-  }, [domNode]);
-
-  useEffect(() => {
-    if (!liveVisible && loading) return;
-    const frame = requestAnimationFrame(() => {
-      const node = domNode();
-      if (!node) return;
-
-      // loadMore prepend → restore the user's position: scrollTop += the height
-      // the prepend added. Chrome's scroll anchoring does this for free, iOS
-      // WebKit (Safari / WKWebView) doesn't — without the explicit compensation
-      // the content jumps out from under the finger on every "load earlier".
-      if (preserveScrollOffsetRef.current) {
-        preserveScrollOffsetRef.current = false;
-        const m = preserveScrollMetricsRef.current;
-        preserveScrollMetricsRef.current = null;
-        if (m) node.scrollTop = m.top + (node.scrollHeight - m.h);
-        didInitialScrollRef.current = true;
-        return;
-      }
-
-      const lastUserKey = computeLastUserKey();
-
-      // First load: show the newest turn (bottom), mark it anchored.
-      if (!didInitialScrollRef.current) {
-        anchoredQKeyRef.current = lastUserKey;
-        applyAnchorSpacerHeight(0);
-        runScheduledScroll(scheduleBottom(node));
-        shouldStickBottomRef.current = true;
-        didInitialScrollRef.current = true;
-        return;
-      }
-
-      // A failed / timed-out send dropped the optimistic q: the PREVIOUS q becoming
-      // "the newest" again is not a new question. Resync the anchor bookkeeping and
-      // close the spacer without scrolling — re-anchoring here glided the OLD q to
-      // the top and left a viewport-sized blank that nothing ever shrank.
-      if (suppressNextAnchorRef.current) {
-        suppressNextAnchorRef.current = false;
-        anchoredQKeyRef.current = lastUserKey;
-        activeSpacerTurnKeyRef.current = '';
-        replySeenActiveRef.current = false;
-        applyAnchorSpacerHeight(0);
-        return;
-      }
-
-      // A NEW question appeared → GLIDE it toward the TOP (no spacer). When the
-      // reply is short the scroll clamps at content end, so q lands as high as
-      // the content allows instead of forcing a viewport-sized blank below it.
-      if (lastUserKey && lastUserKey !== anchoredQKeyRef.current) {
-        const target = findTurnEl(node, lastUserKey);
-        if (target) {
-          anchoredQKeyRef.current = lastUserKey;
-          activeSpacerTurnKeyRef.current = lastUserKey;
-          replySeenActiveRef.current = false;
-          const tgt = node.scrollTop + (target.getBoundingClientRect().top - node.getBoundingClientRect().top) - 8;
-          animateScrollTop(node, tgt, 320);
-          shouldStickBottomRef.current = false;
-          return;
-        }
-      }
-
-      // A q with its reply settling. While the reply is IN FLIGHT keep q at the
-      // top as the reply grows below it (idempotent — only correct real drift so
-      // streaming reads smooth). Once it settles, release the anchor.
-      if (activeSpacerTurnKeyRef.current) {
-        const key = activeSpacerTurnKeyRef.current;
-        const qTop = turnTopInContent(node, key);
-        if (qTop == null) {
-          activeSpacerTurnKeyRef.current = ''; // anchored element vanished → release
-          return;
-        }
-        const lastCommitted = displayItems[displayItems.length - 1];
-        const replyInFlight = !!liveSig || isActiveAssistantStatus(String(lastCommitted?.status ?? ''));
-        if (replyInFlight) {
-          replySeenActiveRef.current = true;
-          if (Math.abs(qTop - 8) > 6) animateScrollTop(node, node.scrollTop + (qTop - 8), 220);
-          return;
-        }
-        // Reply settled → release the anchor (no spacer to shrink anymore).
-        activeSpacerTurnKeyRef.current = '';
-        return;
-      }
-    });
-    return () => cancelAnimationFrame(frame);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, displayItems, liveSig, liveVisible, optimistic]);
+    scrollRef.current?.scrollToEnd({ animated: true });
+  }, [shouldStickBottomRef]);
 
   if (loading) {
     return (
@@ -1370,149 +234,113 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
       </View>
     );
   }
-  // Only take over the screen with an error when there's nothing to show. If a
-  // cached/loaded conversation is on screen, a failed background refresh must not
-  // blank it.
-  if (error && displayItems.length === 0 && !liveVisible) {
-    return (
-      <View style={[styles.center, { gap: spacing.lg, paddingHorizontal: spacing.xl }]}>
-        <Text variant="callout" tone="danger" style={{ textAlign: 'center' }}>
-          {error}
-        </Text>
-        <PressableScale
-          onPress={retryInitialLoad}
-          haptic
-          scaleTo={0.96}
-          style={[styles.retryBtn, { borderColor: theme.border, backgroundColor: theme.surface }]}
-        >
-          <Ionicons name="refresh" size={16} color={theme.text} />
-          <Text variant="callout">{i18n.t('common.tryAgain')}</Text>
-        </PressableScale>
-      </View>
-    );
-  }
 
   const isEmpty = displayItems.length === 0 && !liveVisible;
+  // Optimistic q shows until the real committed q (id > baseline) lands.
+  const optimisticPending =
+    !!optimisticQ &&
+    !displayItems.some((t) => t?.role === 'user' && Number(t?.history_id ?? 0) > optimisticBaselineUserIdRef.current);
+
   return (
     <View style={{ flex: 1 }}>
-    {/* Single non-virtualized scroll container (windowed to WINDOW committed items).
-        On web this is one overflow <div> — required for the top-anchor mechanism
-        (precise scrollTop + a dynamic bottom spacer), exactly like cicy-code. */}
-    <ScrollView
-      ref={scrollRef}
-      style={{ flex: 1 }}
-      contentContainerStyle={styles.list}
-      onScroll={onScroll}
-      scrollEventThrottle={16}
-      onContentSizeChange={onContentSizeChange}
-      // Native "load earlier": keep the currently-visible turn in place when a
-      // page is prepended (the DOM scroll compensation above is web-only).
-      maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-    >
-      {/* Load-earlier at the TOP. When more exists, a sentinel (data-load-more) the
-          IntersectionObserver watches — only fires when scrolled into view (also
-          tappable). Not auto-fired on open → no "一打开全打开了". */}
-      {isEmpty ? null : loadingMore ? (
-        <View style={styles.loadMoreRow}>
-          <ActivityIndicator size="small" color={theme.textMuted} />
-        </View>
-      ) : canLoadMore ? (
-        <View {...({ dataSet: { loadMore: '1' } } as any)} style={styles.loadMoreRow}>
-          <PressableScale onPress={() => { void loadMore(); }} hitSlop={6}>
-            <Text variant="caption" tone="faint">
-              {i18n.t('chat.loadEarlier')}
-            </Text>
-          </PressableScale>
-        </View>
-      ) : (
-        <View style={styles.loadMoreRow}>
-          <Text variant="caption" tone="faint">
-            {i18n.t('chat.beginningOfHistory')}
-          </Text>
-        </View>
-      )}
-
-      {isEmpty ? (
-        <View style={styles.center}>
-          <Text tone="muted" variant="h3" style={{ marginBottom: spacing.sm }}>
-            {i18n.t('chat.noTurnsTitle')}
-          </Text>
-          <Text tone="faint" variant="callout" style={{ textAlign: 'center' }}>
-            {i18n.t('chat.noTurnsBody')}
-          </Text>
-        </View>
-      ) : null}
-
-      {/* Part 1 — committed turns. Each carries data-turn-key so the anchor can find
-          a q. Recap responses dropped. In-flight assistants suppressed (displayItems). */}
-      {displayItems.map((t, i) => {
-        if (recapResponses.has(t)) return null;
-        const turnKey = String(t.history_id ?? `u-${i}`);
-        const isLastRow = !liveVisible && i === displayItems.length - 1;
-        return (
-          <View key={`row-${t.history_id ?? t.turn_id ?? i}`} {...({ dataSet: { turnKey } } as any)}>
-            <Turn
-              turn={t}
-              isLast={isLastRow}
-              // 重试 only on the LATEST turn's outcome (older failures are history),
-              // and never for 'blocked' (web parity).
-              onRetry={t.outcome && t.outcome !== 'blocked' && isLastRow ? retryOutcome : undefined}
-            />
-          </View>
-        );
-      })}
-
-      {/* Part 2 — the live tail (answer-only) right after committed, rendered
-          SEPARATELY so its per-token growth never re-renders committed. */}
-      {liveVisible && liveTurn ? (
-        <View key="live" {...({ dataSet: { turnKey: 'live' } } as any)}>
-          <Turn turn={liveTurn} isLast />
-        </View>
-      ) : null}
-
-      {/* Optimistic q + reserved answer SLOT (web parity): the sent q paints
-          instantly, and a thinking placeholder reserves the answer position right
-          below it — so the user immediately sees the turn was accepted and is
-          being worked on. Gate the placeholder on !liveStreaming (NOT !liveVisible):
-          a previous COMPLETED answer keeps liveVisible=true, and we must still show
-          the new q's thinking; once the real reply streams (thinking/streaming/…),
-          the live tail takes over and the placeholder hides → exactly one indicator.
-          MUST render AFTER the live tail (cicy lazy migration: a1 is still the live
-          tail when q2 is sent; q2 before it reads as "q1 → q2 → a1"). The block
-          drops the FRAME the real committed q lands (retire effect runs post-paint). */}
-      {optimistic &&
-      !displayItems.some((t) => t?.role === 'user' && Number(t?.history_id ?? 0) > optimistic.baselineId) ? (
-        <View key={`opt-${optimistic.nonce}`} {...({ dataSet: { turnKey: `opt-${optimistic.nonce}` } } as any)} style={{ gap: spacing.md }}>
-          <QuestionBubble text={optimistic.text} />
-        </View>
-      ) : null}
-
-      {/* Persistent thinking indicator: shown CONTINUOUSLY from send until the
-          turn resolves. `busy` is the composer's hysteresis — set on send,
-          cleared ONLY on a terminal turn (cancel / failure / success) — so this
-          never blinks off in the gap between the optimistic q retiring and the
-          live tail attaching, nor on a transient per-poll status wobble (the old
-          bug). It trails whatever's showing: the q (before any answer), the live
-          answer (as a "still generating" tick), or a thinking block. */}
-      {busy ? (
-        <View {...({ dataSet: { turnKey: 'thinking' } } as any)} style={{ paddingRight: spacing.lg }}>
-          <TypingDots />
-        </View>
-      ) : null}
-    </ScrollView>
-
-    {/* ↓ chip — parked above the composer, only when scrolled well off the bottom. */}
-    {showJump ? (
-      <PressableScale
-        onPress={jumpToLatest}
-        haptic
-        scaleTo={0.9}
-        accessibilityLabel={i18n.t('chat.jumpToLatest')}
-        style={[styles.jumpChip, { backgroundColor: theme.surface, borderColor: theme.border }]}
+      <ScrollView
+        ref={scrollRef}
+        style={{ flex: 1 }}
+        contentContainerStyle={styles.list}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
+        onContentSizeChange={onContentSizeChange}
+        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
       >
-        <Ionicons name="arrow-down" size={18} color={theme.text} />
-      </PressableScale>
-    ) : null}
+        {/* Load-earlier at the TOP: tap or auto-fire when scrolled near the top
+            (one load per approach → no "一打开全打开了"). */}
+        {isEmpty ? null : loadingMore ? (
+          <View style={styles.loadMoreRow}>
+            <ActivityIndicator size="small" color={theme.textMuted} />
+          </View>
+        ) : canLoadMore ? (
+          <View style={styles.loadMoreRow}>
+            <PressableScale onPress={() => { void loadMore(); }} hitSlop={6}>
+              <Text variant="caption" tone="faint">
+                {i18n.t('chat.loadEarlier')}
+              </Text>
+            </PressableScale>
+          </View>
+        ) : (
+          <View style={styles.loadMoreRow}>
+            <Text variant="caption" tone="faint">
+              {i18n.t('chat.beginningOfHistory')}
+            </Text>
+          </View>
+        )}
+
+        {isEmpty ? (
+          <View style={styles.center}>
+            <Text tone="muted" variant="h3" style={{ marginBottom: spacing.sm }}>
+              {i18n.t('chat.noTurnsTitle')}
+            </Text>
+            <Text tone="faint" variant="callout" style={{ textAlign: 'center' }}>
+              {i18n.t('chat.noTurnsBody')}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Part 1 — committed turns (recap responses dropped; in-flight assistant
+            of the current round suppressed inside displayItems). */}
+        {displayItems.map((t, i) => {
+          if (recapResponses.has(t)) return null;
+          const isLastRow = !liveVisible && i === displayItems.length - 1;
+          return (
+            <View key={`row-${t.history_id ?? t.turn_id ?? i}`}>
+              <Turn
+                turn={t}
+                isLast={isLastRow}
+                onRetry={
+                  t.outcome && t.outcome !== 'blocked' && isLastRow
+                    ? () => handleOutcomeRetry(String(t.history_id ?? t.turn_id ?? i))
+                    : undefined
+                }
+              />
+            </View>
+          );
+        })}
+
+        {/* Part 2 — live tail (answer-only), rendered SEPARATELY after committed. */}
+        {liveVisible && liveTurn ? (
+          <View key="live">
+            <Turn turn={liveTurn} isLast />
+          </View>
+        ) : null}
+
+        {/* Optimistic q — the sent question paints instantly; drops the frame the
+            real committed q lands. MUST render after the live tail (cicy lazy
+            migration: a1 is still the live tail when q2 is sent). */}
+        {optimisticPending ? (
+          <View key={`opt-${optimisticQ!.ts}`} style={{ gap: spacing.md }}>
+            <QuestionBubble text={optimisticQ!.text} />
+          </View>
+        ) : null}
+
+        {/* Persistent thinking indicator: from send until the turn resolves. `busy`
+            is the composer hysteresis (set on send, cleared only on terminal). */}
+        {busy ? (
+          <View style={{ paddingRight: spacing.lg }}>
+            <TypingDots />
+          </View>
+        ) : null}
+      </ScrollView>
+
+      {showJump ? (
+        <PressableScale
+          onPress={jumpToLatest}
+          haptic
+          scaleTo={0.9}
+          accessibilityLabel={i18n.t('chat.jumpToLatest')}
+          style={[styles.jumpChip, { backgroundColor: theme.surface, borderColor: theme.border }]}
+        >
+          <Ionicons name="arrow-down" size={18} color={theme.text} />
+        </PressableScale>
+      ) : null}
     </View>
   );
 }
@@ -2412,7 +1240,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
-  loadMoreRow: { alignItems: 'center', paddingVertical: spacing.md },
+  loadMoreRow: { alignItems: 'center', paddingTop: 0, paddingBottom: spacing.md },
   mdTable: {
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.sm,

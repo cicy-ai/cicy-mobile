@@ -70,13 +70,32 @@ export function Composer({
   // Voice-first on native (按住说话 is the default prompt); web has no voice
   // stack and stays in text mode.
   const [mode, setMode] = useState<'text' | 'voice'>(IS_WEB ? 'text' : 'voice');
+  const inputRef = useRef<TextInput>(null);
+  // Tapping the ⌨ (voice→text) should immediately raise the keyboard, not just
+  // swap the UI. Focus once the TextInput is mounted for this mode. Skip the
+  // initial web mount (mode starts 'text' there and auto-focusing steals focus).
+  const didMountRef = useRef(false);
+  useEffect(() => {
+    if (!didMountRef.current) { didMountRef.current = true; return; }
+    if (mode === 'text') {
+      // rAF: let the TextInput commit for this render before focusing.
+      const raf = requestAnimationFrame(() => inputRef.current?.focus());
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [mode]);
   const [sheetOpen, setSheetOpen] = useState(false);
   const { phase, start, stop } = useVoiceRecorder({ onTranscript, onError });
 
   const isRecording = phase === 'recording';
   const isTranscribing = phase === 'transcribing';
   const hasText = value.trim().length > 0;
-  const canAttach = !IS_WEB && !!onPickAttachments;
+  // Attach works on web too: expo-image-picker / expo-document-picker fall back
+  // to a native <input type=file> in the browser. (Was gated off with !IS_WEB.)
+  const canAttach = !!onPickAttachments;
+  // Voice hold-to-talk stays native-only: it needs expo-audio recording +
+  // expo-speech-recognition, neither of which has a web implementation. Enabling
+  // it on web would render a mic UI whose recorder throws. A web voice path would
+  // be a separate MediaRecorder + Web Speech API build.
   const showVoice = !IS_WEB;
 
   // Slide-up-to-cancel (per the reference shots): while holding, moving the
@@ -212,11 +231,18 @@ export function Composer({
         ) : (
           <>
             <TextInput
+              ref={inputRef}
               value={value}
               onChangeText={onChangeText}
               placeholder={showVoice ? t('chat.composerPlaceholder') : t('chat.messagePlaceholder')}
               placeholderTextColor={theme.textFaint}
               multiline
+              // RN-Web renders a multiline TextInput as a <textarea>; with no
+              // rows it defaults to ~2 lines, so the empty composer is too tall
+              // on web (native auto-sizes to 1 line and is fine). Pin rows=1 on
+              // web ONLY — on native numberOfLines can CAP visible lines, which
+              // we must not do. maxHeight:140 still caps growth on both.
+              {...(IS_WEB ? { numberOfLines: 1 } : {})}
               editable={!disabled}
               style={[styles.input, typeScale.body, { color: theme.text }]}
             />

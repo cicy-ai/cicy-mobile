@@ -169,6 +169,11 @@ export const api = {
     );
   },
 
+  // Role-specific opening greeting (开场白) for the empty-history state of a cicy
+  // agent. Mirrors web's apiService.getAgentGreeting → GET /api/agents/greeting/{id}.
+  getGreeting: (paneId: string) =>
+    request<{ greeting?: string }>(`/api/agents/greeting/${encodeURIComponent(paneId)}`),
+
   // current-reply: the in-flight answer for q_last (history_id == maxID + 1).
   getCurrentReply: (paneId: string, conversationId?: string) =>
     request<CurrentReplyResp>(
