@@ -22,6 +22,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Keyboard,
+  Linking,
   Platform,
   StyleSheet,
   View,
@@ -38,8 +39,10 @@ import { Screen } from '@/src/components/Screen';
 import { TeamDrawer } from '@/src/components/TeamDrawer';
 import { Text } from '@/src/components/Text';
 import { isHeadlessCicyAgent } from '@/src/lib/agentType';
+import { checkApkUpdate, type ApkUpdate } from '@/src/lib/appUpdate';
+import { useOtaReady } from '@/src/lib/otaInfo';
 import { useAuthStore } from '@/src/store/auth';
-import { spacing, useTheme } from '@/src/theme';
+import { radius, spacing, useTheme } from '@/src/theme';
 
 // The hub's primary agent — the ONE agent the single chat talks to. A Hub reads
 // to the user as one conversation with the fleet's coordinator (协调官): it
@@ -68,6 +71,21 @@ export default function HubScreen() {
     const showSub = Keyboard.addListener(showEvent, () => setKeyboardShown(true));
     const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardShown(false));
     return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
+
+  // Measured composer height → reserve it under the history so the absolutely
+  // pinned composer never overlaps the last message.
+  const [composerH, setComposerH] = useState(96);
+
+  // Update banners — the Hub is the home now, so it (not the teams screen) must
+  // surface the OTA-ready "tap to apply" prompt, else downloaded updates never
+  // get applied. Plus the Android sideload APK-update banner.
+  const ota = useOtaReady();
+  const [apkUpdate, setApkUpdate] = useState<ApkUpdate | null>(null);
+  useEffect(() => {
+    let alive = true;
+    checkApkUpdate().then((u) => { if (alive && u) setApkUpdate(u); }).catch(() => {});
+    return () => { alive = false; };
   }, []);
 
   const [status, setStatus] = useState<HubWsStatus>('idle');
@@ -195,13 +213,47 @@ export default function HubScreen() {
         ) : null}
       </View>
 
-      {/* Bulletproof chat column: NO KeyboardAvoidingView (it mis-sizes on
-          Android and shoved the composer off-screen — web was always fine).
-          History is flex:1 + minHeight:0 so it shrinks and scrolls INSIDE its
-          box; the composer is the last flex child, so it's always pinned to the
-          bottom. Android's adjustResize lifts the whole column over the keyboard. */}
-      {/* History, or — before a hub is connected — a scan-to-connect prompt. */}
+      {/* OTA-ready / APK-update banner. The Hub is the home now, so it must
+          carry this — otherwise a downloaded OTA never gets a "tap to apply". */}
+      {ota.ready ? (
+        <PressableScale
+          onPress={ota.apply}
+          haptic
+          scaleTo={0.98}
+          style={[styles.updateBanner, { backgroundColor: theme.surface, borderColor: theme.accent }]}
+        >
+          <Ionicons name="flash" size={18} color={theme.accent} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text variant="caption" style={{ color: theme.accent }}>{t('update.otaReady')}</Text>
+            <Text variant="caption" tone="faint" numberOfLines={1}>{t('update.otaTapToApply')}</Text>
+          </View>
+        </PressableScale>
+      ) : apkUpdate ? (
+        <PressableScale
+          onPress={() => { Linking.openURL(apkUpdate.apk).catch(() => {}); }}
+          haptic
+          scaleTo={0.98}
+          style={[styles.updateBanner, { backgroundColor: theme.surface, borderColor: theme.accent }]}
+        >
+          <Ionicons name="arrow-down-circle" size={18} color={theme.accent} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text variant="caption" style={{ color: theme.accent }}>
+              {t('update.available', { version: apkUpdate.version })}
+            </Text>
+            <Text variant="caption" tone="faint" numberOfLines={1}>{t('update.tapToInstall')}</Text>
+          </View>
+          <PressableScale onPress={() => setApkUpdate(null)} hitSlop={8}>
+            <Ionicons name="close" size={16} color={theme.textFaint} />
+          </PressableScale>
+        </PressableScale>
+      ) : null}
+
+      {/* Chat area. The composer is ABSOLUTELY pinned to the bottom of this box
+          (per request) so no flex/KAV quirk can push it off-screen on native;
+          the history reserves `composerH` of bottom padding so the last message
+          never hides behind it. */}
       <View style={{ flex: 1, minHeight: 0, backgroundColor: theme.bg }}>
+        <View style={{ flex: 1, minHeight: 0, paddingBottom: composerH }}>
           {!hub ? (
             <View style={styles.empty}>
               <Ionicons name="qr-code-outline" size={48} color={theme.textFaint} />
@@ -232,13 +284,16 @@ export default function HubScreen() {
           )}
         </View>
 
-        {/* Prompt — ALWAYS pinned at the bottom, voice-first on native. Kept
-            enabled like the team chat (send no-ops until a hub agent exists);
-            + bottom safe-area inset so a home-indicator phone never clips it. */}
+        {/* Prompt — absolutely pinned to the bottom, voice-first on native. */}
         <View
+          onLayout={(e) => setComposerH(e.nativeEvent.layout.height)}
           style={[
             styles.composer,
             {
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: 0,
               backgroundColor: theme.bg,
               borderTopColor: theme.border,
               paddingBottom: keyboardShown
@@ -257,6 +312,7 @@ export default function HubScreen() {
             onStop={() => void stopGeneration()}
           />
         </View>
+      </View>
 
       {/* The org / teams drawer — teams are the secondary stack, opened here. */}
       <TeamDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
@@ -300,5 +356,16 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     paddingBottom: Platform.OS === 'ios' ? spacing.xl : spacing.lg,
     borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  updateBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: 1,
   },
 });
