@@ -124,6 +124,21 @@ export const api = {
       '/api/tmux/create',
       { method: 'POST', body: JSON.stringify(data) },
     ),
+  // Fork a worker (TeamPanel's fork menu action; server clones workspace +
+  // conversation and binds the copy under the same master).
+  forkPane: (data: { source_pane_id: string; title?: string; master_pane_id?: string }) =>
+    request<{ pane_id?: string; success?: boolean; error?: string }>('/api/tmux/fork', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  // Bind an existing unbound pane to the team master / unbind a member.
+  // unbind takes the pane_agents row id (the `id` field on /api/poll rows).
+  bindAgent: (data: { pane_id: string; agent_name: string }) =>
+    request<unknown>('/api/agents/bind', { method: 'POST', body: JSON.stringify(data) }),
+  unbindAgent: (bindingId: number) =>
+    request<unknown>(`/api/agents/unbind/${encodeURIComponent(String(bindingId))}`, {
+      method: 'DELETE',
+    }),
 
   // Conversation turns (q + a + steps) for an agent. Same endpoint the desktop
   // ChatHistoryView consumes; pane id format is the short pane name (e.g. w-10018).

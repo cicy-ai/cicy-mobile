@@ -16,6 +16,7 @@ import {
   Platform,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   TextInput,
   View,
@@ -154,6 +155,15 @@ export default function Agents() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; title: string } | null>(null);
+  // TeamPanel-parity member management: long-press action sheet + fork/unbind
+  // confirms + the ⊕ add menu (create new vs bind an existing unbound pane).
+  const [memberMenu, setMemberMenu] = useState<Agent | null>(null);
+  const [confirmFork, setConfirmFork] = useState<Agent | null>(null);
+  const [confirmUnbind, setConfirmUnbind] = useState<Agent | null>(null);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [bindOpen, setBindOpen] = useState(false);
+  const [bindCandidates, setBindCandidates] = useState<{ wid: string; title: string; agentType: string }[] | null>(null);
+  const [bindBusy, setBindBusy] = useState(false);
   // Cloud default team: server enforces agent_type 'cicy' (w-10122).
   const cloudLocked = !!currentTeam?.builtin;
   // Sideload self-update: newer APK on the CDN → banner (Android only).
@@ -218,6 +228,81 @@ export default function Agents() {
   }, [currentTeam?.id, isFocused, hostPaneId, serverUrl, token, clientId]);
 
   const liveMetrics = useTeamLiveMetrics(agentIds, isFocused, pushedStatuses, wsUp);
+
+  // ── Fork tree + machine groups (port of TeamPanel's forksByParent/nestedWids,
+  // incl. the cycle guard) ────────────────────────────────────────────────────
+  // /api/poll rows carry source_kind/source_ref/machine_label and mobile's
+  // compose spreads them onto each Agent, so the same shape web renders is
+  // derivable here: fork children nest under their parent (collapsible), and
+  // when workers span machines a slim group label separates them.
+  const [collapsedWids, setCollapsedWids] = useState<Set<string>>(new Set());
+  const toggleCollapsed = useCallback((wid: string) => {
+    setCollapsedWids((prev) => {
+      const next = new Set(prev);
+      if (next.has(wid)) next.delete(wid);
+      else next.add(wid);
+      return next;
+    });
+  }, []);
+
+  type ListRow =
+    | { kind: 'agent'; agent: Agent; depth: number; forkCount: number; collapsed: boolean }
+    | { kind: 'machine'; key: string; label: string };
+  const listRows = useMemo<ListRow[]>(() => {
+    const wid = (a: Agent) => String(a.name ?? a.id ?? a.pane_id ?? '');
+    const master = agents.find((a) => wid(a) === hostPaneId) ?? null;
+    const workers = agents.filter((a) => a !== master);
+    const byWid = new Map(workers.map((a) => [wid(a), a] as const));
+    const isFork = (a: Agent) => String((a as any).source_kind || '') === 'fork' && !!(a as any).source_ref;
+    const byParent = new Map<string, Agent[]>();
+    const nested = new Set<string>();
+    for (const a of workers) {
+      if (!isFork(a)) continue;
+      const parentWid = String((a as any).source_ref || '').split(':')[0];
+      if (!parentWid || !byWid.has(parentWid) || parentWid === wid(a)) continue;
+      if (!byParent.has(parentWid)) byParent.set(parentWid, []);
+      byParent.get(parentWid)!.push(a);
+      nested.add(wid(a));
+    }
+    // Cycle guard (web-identical): an edge that would make a node an ancestor
+    // of its own parent chain loops the recursion — drop it back to top level.
+    const reaches = (from: string, target: string, depth = 0): boolean => {
+      if (depth > 16) return false;
+      return (byParent.get(from) || []).some((k) => wid(k) === target || reaches(wid(k), target, depth + 1));
+    };
+    for (const [parentWid, kids] of [...byParent.entries()]) {
+      const safe = kids.filter((k) => !reaches(wid(k), parentWid));
+      for (const k of kids) if (!safe.includes(k)) nested.delete(wid(k));
+      if (safe.length) byParent.set(parentWid, safe);
+      else byParent.delete(parentWid);
+    }
+    const subtreeCount = (w: string, depth = 0): number => {
+      if (depth > 16) return 0;
+      return (byParent.get(w) || []).reduce((n, k) => n + 1 + subtreeCount(wid(k), depth + 1), 0);
+    };
+    const rows: ListRow[] = [];
+    const pushTree = (a: Agent, depth: number) => {
+      const w = wid(a);
+      const forkCount = subtreeCount(w);
+      const collapsed = collapsedWids.has(w);
+      rows.push({ kind: 'agent', agent: a, depth, forkCount, collapsed });
+      if (!collapsed) for (const kid of byParent.get(w) || []) pushTree(kid, depth + 1);
+    };
+    if (master) rows.push({ kind: 'agent', agent: master, depth: 0, forkCount: 0, collapsed: false });
+    const topLevel = workers.filter((a) => !nested.has(wid(a)));
+    const groups = new Map<string, Agent[]>();
+    for (const a of topLevel) {
+      const label = String((a as any).machine_label || '').trim() || t('agents.localMachine');
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label)!.push(a);
+    }
+    const multiMachine = groups.size > 1;
+    for (const [label, members] of groups) {
+      if (multiMachine) rows.push({ kind: 'machine', key: `m:${label}`, label });
+      for (const a of members) pushTree(a, 0);
+    }
+    return rows;
+  }, [agents, hostPaneId, collapsedWids, t]);
 
   const load = useCallback(async () => {
     if (!currentTeam) {
@@ -504,13 +589,15 @@ export default function Agents() {
         )}
       </View>
 
-      {/* ⊕ — straight into create-member (adding a TEAM lives in the drawer:
-          scan top-right / cloud login bottom) */}
+      {/* ⊕ — TeamPanel-toolbar parity: create new OR bind an existing unbound
+          pane. Cloud tenants have no bindings, so ⊕ goes straight to create.
+          (Adding a TEAM lives in the drawer: scan top-right / cloud login.) */}
       <PressableScale
         onPress={() => {
           setCreateType(cloudLocked ? 'cicy' : 'claude');
           setCreateError(null);
-          setCreateOpen(true);
+          if (cloudLocked) setCreateOpen(true);
+          else setAddMenuOpen(true);
         }}
         haptic
         scaleTo={0.94}
@@ -537,6 +624,64 @@ export default function Agents() {
       await load();
     } catch (e: any) {
       setError(String(e?.message ?? e));
+    }
+  };
+  // Fork = clone workspace+conversation under the same master (TeamPanel menu).
+  const forkAgent = async (a: Agent) => {
+    const wid = String(a.name ?? a.pane_id ?? '');
+    try {
+      const res = await api.forkPane({ source_pane_id: wid, master_pane_id: hostPaneId || DEFAULT_MASTER });
+      if (res && res.success === false) throw new Error(res.error || 'fork failed');
+      await load();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    }
+  };
+  // Unbind detaches the pane_agents row (pane survives, re-bindable). The row
+  // id rides on /api/poll rows; cloud tenants have no bindings → gated off.
+  const unbindMember = async (a: Agent) => {
+    const bindingId = Number((a as any).id || 0);
+    if (!bindingId) return;
+    try {
+      await api.unbindAgent(bindingId);
+      await load();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    }
+  };
+  // Bind sheet: unbound = panes whose short id isn't in the roster, minus
+  // masters (web's `available`). Fetched fresh on open, like onRefreshPanes.
+  const openBindSheet = async () => {
+    setBindOpen(true);
+    setBindCandidates(null);
+    try {
+      const panes = await api.getPanes();
+      const inRoster = new Set(agents.map((x) => String(x.name ?? x.pane_id ?? '')));
+      const seen = new Set<string>();
+      const avail: { wid: string; title: string; agentType: string }[] = [];
+      for (const p of panes) {
+        if (typeof p.pane_id !== 'string' || p.role === 'master') continue;
+        const wid = p.pane_id.split(':')[0];
+        if (!wid || inRoster.has(wid) || seen.has(wid)) continue;
+        seen.add(wid);
+        avail.push({ wid, title: p.title || wid, agentType: String(p.agent_type || '') });
+      }
+      setBindCandidates(avail);
+    } catch {
+      setBindCandidates([]);
+    }
+  };
+  const bindMember = async (wid: string) => {
+    if (bindBusy) return;
+    setBindBusy(true);
+    try {
+      await api.bindAgent({ pane_id: hostPaneId || DEFAULT_MASTER, agent_name: wid });
+      setBindOpen(false);
+      await load();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setBindBusy(false);
     }
   };
   const createAgent = async () => {
@@ -642,6 +787,149 @@ export default function Agents() {
     />
   );
 
+  // ── TeamPanel-parity member sheets ──────────────────────────────────────────
+  // Long-press action sheet: 解绑 / 重启 / Fork / 删除 — the worker menu web puts
+  // behind the row's "…" button. Also the first member actions available on
+  // mobile-web, where RNGH swipe never worked.
+  const memberMenuEl = (() => {
+    const a = memberMenu;
+    if (!a) return null;
+    const wid = String(a.name ?? a.pane_id ?? '');
+    const isMaster = wid === hostPaneId;
+    const canRestart = normalizeAgentType(a.agent_type) !== 'cicy';
+    const canUnbind = !isMaster && Number((a as any).id || 0) > 0;
+    const close = () => setMemberMenu(null);
+    const Row = ({ icon, label, danger, onPress }: { icon: any; label: string; danger?: boolean; onPress: () => void }) => (
+      <PressableScale onPress={onPress} scaleTo={0.97} style={[styles.sheetRow, { borderColor: theme.border }]}>
+        <Ionicons name={icon} size={18} color={danger ? theme.danger : theme.text} />
+        <Text variant="body" style={danger ? { color: theme.danger } : undefined}>{label}</Text>
+      </PressableScale>
+    );
+    return (
+      <Modal visible transparent animationType="fade" onRequestClose={close}>
+        <Pressable style={styles.sheetBackdrop} onPress={close}>
+          <Pressable style={[styles.sheet, { backgroundColor: theme.bg, borderColor: theme.border }]} onPress={() => {}}>
+            <View style={styles.sheetHeader}>
+              <AgentAvatar agentType={a.agent_type} title={a.title || wid} size={32} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text variant="bodyMedium" numberOfLines={1}>{a.title || wid}</Text>
+                <Text variant="caption" tone="faint" numberOfLines={1}>{wid}</Text>
+              </View>
+            </View>
+            {canRestart ? (
+              <Row icon="refresh" label={t('agents.restart')} onPress={() => { close(); void restartAgent(wid); }} />
+            ) : null}
+            {!isMaster ? (
+              <Row icon="git-branch-outline" label={t('agents.fork')} onPress={() => { close(); setConfirmFork(a); }} />
+            ) : null}
+            {canUnbind ? (
+              <Row icon="unlink-outline" label={t('agents.unbind')} onPress={() => { close(); setConfirmUnbind(a); }} />
+            ) : null}
+            {!isMaster ? (
+              <Row icon="trash-outline" label={t('agents.delete')} danger onPress={() => { close(); setConfirmDelete({ id: wid, title: a.title || wid }); }} />
+            ) : null}
+          </Pressable>
+        </Pressable>
+      </Modal>
+    );
+  })();
+
+  const forkConfirmEl = (
+    <ConfirmModal
+      open={!!confirmFork}
+      title={t('agents.forkConfirmTitle')}
+      body={confirmFork ? t('agents.forkConfirmBody', { title: confirmFork.title || confirmFork.name || '' }) : undefined}
+      confirmText={t('agents.fork')}
+      cancelText={t('common.cancel')}
+      onConfirm={() => {
+        const target = confirmFork;
+        setConfirmFork(null);
+        if (target) void forkAgent(target);
+      }}
+      onCancel={() => setConfirmFork(null)}
+    />
+  );
+
+  const unbindConfirmEl = (
+    <ConfirmModal
+      open={!!confirmUnbind}
+      title={t('agents.unbindConfirmTitle')}
+      body={confirmUnbind ? t('agents.unbindConfirmBody', { title: confirmUnbind.title || confirmUnbind.name || '' }) : undefined}
+      confirmText={t('agents.unbind')}
+      cancelText={t('common.cancel')}
+      destructive
+      onConfirm={() => {
+        const target = confirmUnbind;
+        setConfirmUnbind(null);
+        if (target) void unbindMember(target);
+      }}
+      onCancel={() => setConfirmUnbind(null)}
+    />
+  );
+
+  // ⊕ menu: create new vs bind existing (TeamPanel toolbar = create button +
+  // bind select, collapsed into one entry point on mobile).
+  const addMenuEl = (
+    <Modal visible={addMenuOpen} transparent animationType="fade" onRequestClose={() => setAddMenuOpen(false)}>
+      <Pressable style={styles.sheetBackdrop} onPress={() => setAddMenuOpen(false)}>
+        <Pressable style={[styles.sheet, { backgroundColor: theme.bg, borderColor: theme.border }]} onPress={() => {}}>
+          <Text variant="h3" style={{ marginBottom: spacing.sm }}>{t('agents.addMenuTitle')}</Text>
+          <PressableScale
+            onPress={() => { setAddMenuOpen(false); setCreateOpen(true); }}
+            scaleTo={0.97}
+            style={[styles.sheetRow, { borderColor: theme.border }]}
+          >
+            <Ionicons name="person-add-outline" size={18} color={theme.text} />
+            <Text variant="body">{t('agents.createNew')}</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={() => { setAddMenuOpen(false); void openBindSheet(); }}
+            scaleTo={0.97}
+            style={[styles.sheetRow, { borderColor: theme.border }]}
+          >
+            <Ionicons name="link-outline" size={18} color={theme.text} />
+            <Text variant="body">{t('agents.bindExisting')}</Text>
+          </PressableScale>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+
+  const bindSheetEl = (
+    <Modal visible={bindOpen} transparent animationType="fade" onRequestClose={() => setBindOpen(false)}>
+      <Pressable style={styles.sheetBackdrop} onPress={() => setBindOpen(false)}>
+        <Pressable style={[styles.sheet, { backgroundColor: theme.bg, borderColor: theme.border }]} onPress={() => {}}>
+          <Text variant="h3" style={{ marginBottom: spacing.sm }}>{t('agents.bindTitle')}</Text>
+          {bindCandidates === null ? (
+            <ActivityIndicator color={theme.textMuted} style={{ marginVertical: spacing.lg }} />
+          ) : bindCandidates.length === 0 ? (
+            <Text variant="callout" tone="muted" style={{ marginVertical: spacing.md, textAlign: 'center' }}>
+              {t('agents.bindEmpty')}
+            </Text>
+          ) : (
+            <ScrollView style={{ maxHeight: 360 }}>
+              {bindCandidates.map((c) => (
+                <PressableScale
+                  key={c.wid}
+                  onPress={() => void bindMember(c.wid)}
+                  scaleTo={0.97}
+                  style={[styles.sheetRow, { borderColor: theme.border, opacity: bindBusy ? 0.5 : 1 }]}
+                >
+                  <AgentAvatar agentType={c.agentType} title={c.title} size={28} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text variant="body" numberOfLines={1}>{c.title}</Text>
+                    <Text variant="caption" tone="faint" numberOfLines={1}>{c.wid}</Text>
+                  </View>
+                  <Ionicons name="link-outline" size={16} color={theme.textFaint} />
+                </PressableScale>
+              ))}
+            </ScrollView>
+          )}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+
   const drawerEl = <TeamDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />;
   const titleModalEl =
     currentTeam && (
@@ -716,8 +1004,10 @@ export default function Agents() {
       {renderHeader()}
       {renderUpdateBanner()}
       <FlatList
-        data={agents}
-        keyExtractor={(a) => String(a.name ?? a.id ?? a.pane_id ?? '')}
+        data={listRows}
+        keyExtractor={(r) =>
+          r.kind === 'machine' ? r.key : String(r.agent.name ?? r.agent.id ?? r.agent.pane_id ?? '')
+        }
         contentContainerStyle={{
           flexGrow: 1,
           paddingHorizontal: spacing.lg,
@@ -736,21 +1026,40 @@ export default function Agents() {
             </Text>
           </View>
         }
-        renderItem={({ item }) => (
-          <AgentRow
-            agent={item}
-            metrics={liveMetrics[agentId(item)]}
-            gateway={gatewayByName[agentId(item)]}
-            isMaster={agentId(item) === hostPaneId}
-            onRestart={(id) => void restartAgent(id)}
-            onDelete={(id, title) => setConfirmDelete({ id, title })}
-          />
-        )}
+        renderItem={({ item }) =>
+          item.kind === 'machine' ? (
+            <View style={styles.machineHeader}>
+              <Ionicons name="hardware-chip-outline" size={12} color={theme.textFaint} />
+              <Text variant="caption" tone="faint" numberOfLines={1}>
+                {item.label}
+              </Text>
+            </View>
+          ) : (
+            <AgentRow
+              agent={item.agent}
+              metrics={liveMetrics[agentId(item.agent)]}
+              gateway={gatewayByName[agentId(item.agent)]}
+              isMaster={agentId(item.agent) === hostPaneId}
+              depth={item.depth}
+              forkCount={item.forkCount}
+              collapsed={item.collapsed}
+              onToggleCollapse={toggleCollapsed}
+              onRestart={(id) => void restartAgent(id)}
+              onDelete={(id, title) => setConfirmDelete({ id, title })}
+              onLongPress={(a) => setMemberMenu(a)}
+            />
+          )
+        }
       />
       {drawerEl}
       {titleModalEl}
       {createModalEl}
       {deleteConfirmEl}
+      {memberMenuEl}
+      {forkConfirmEl}
+      {unbindConfirmEl}
+      {addMenuEl}
+      {bindSheetEl}
     </Screen>
   );
 }
@@ -760,15 +1069,27 @@ function AgentRow({
   metrics,
   gateway,
   isMaster,
+  depth = 0,
+  forkCount = 0,
+  collapsed = false,
+  onToggleCollapse,
   onRestart,
   onDelete,
+  onLongPress,
 }: {
   agent: Agent;
   metrics?: AgentLiveMetrics;
   gateway?: boolean;
   isMaster?: boolean;
+  // Fork-tree rendering (TeamPanel parity): depth indents the card, forkCount>0
+  // shows a collapse chevron, collapsed shows the hidden-descendant count.
+  depth?: number;
+  forkCount?: number;
+  collapsed?: boolean;
+  onToggleCollapse?: (wid: string) => void;
   onRestart?: (id: string) => void;
   onDelete?: (id: string, title: string) => void;
+  onLongPress?: (agent: Agent) => void;
 }) {
   const theme = useTheme();
   const { t } = useTranslation();
@@ -835,17 +1156,36 @@ function AgentRow({
       // dragging. Delaying press-in lets a scroll (finger moves immediately) abort
       // before any scale fires; a real tap (held still) still scales after the delay.
       unstable_pressDelay={120}
+      onLongPress={onLongPress ? () => onLongPress(agent) : undefined}
       style={[
         rowStyles.card,
         { backgroundColor: theme.surface, borderColor: theme.border },
+        depth > 0 ? { marginLeft: Math.min(depth, 4) * 18 } : null,
       ]}
     >
+      {forkCount > 0 ? (
+        <PressableScale
+          onPress={() => onToggleCollapse?.(workerId)}
+          hitSlop={8}
+          scaleTo={0.9}
+          style={rowStyles.collapseBtn}
+        >
+          <Ionicons name={collapsed ? 'chevron-forward' : 'chevron-down'} size={14} color={theme.textFaint} />
+        </PressableScale>
+      ) : null}
       <AgentAvatar agentType={agent.agent_type} title={agent.title || agent.name || String(routeId)} size={40} />
       <View style={{ flex: 1, gap: 3 }}>
         <View style={rowStyles.titleRow}>
           <Text variant="bodyMedium" numberOfLines={1} style={{ flexShrink: 1 }}>
             {agent.title || agent.name || String(routeId)}
           </Text>
+          {collapsed && forkCount > 0 ? (
+            <View style={[rowStyles.collapsedBadge, { borderColor: theme.border, backgroundColor: theme.surfaceMuted }]}>
+              <Text variant="caption" tone="muted" style={{ fontSize: 10 }}>
+                {t('agents.collapsedCount', { count: forkCount })}
+              </Text>
+            </View>
+          ) : null}
           {/* 网关标识(同 cicy-code team-panel-worker-gateway):
               实心蓝点 = 本地 AI Gateway,空心环 = 官方登录直连。 */}
           {gateway != null ? (
@@ -880,6 +1220,20 @@ function AgentRow({
           ) : null}
         </View>
       </View>
+      {/* Explicit "…" member-menu button (TeamPanel's worker-menu-button). A
+          row long-press also opens it, but on RN-Web long-press doesn't
+          reliably suppress onPress (the row navigates), so the button is the
+          dependable entry on web. */}
+      {onLongPress ? (
+        <PressableScale
+          onPress={() => onLongPress(agent)}
+          hitSlop={8}
+          scaleTo={0.9}
+          style={rowStyles.menuBtn}
+        >
+          <Ionicons name="ellipsis-horizontal" size={16} color={theme.textFaint} />
+        </PressableScale>
+      ) : null}
       <Ionicons name="chevron-forward" size={18} color={theme.textFaint} />
     </PressableScale>
   );
@@ -964,6 +1318,21 @@ const styles = StyleSheet.create({
     padding: spacing.xl,
     gap: spacing.md,
   },
+  // Member/add/bind sheets (TeamPanel-parity actions) — reuse the bottom-sheet
+  // shell (sheetBackdrop/sheet/sheetRow) above.
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingBottom: spacing.sm,
+  },
+  machineHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 4,
+    paddingTop: spacing.sm,
+  },
   createInput: {
     width: '100%',
     height: 48,
@@ -1021,6 +1390,16 @@ const rowStyles = StyleSheet.create({
   },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   gatewayDot: { width: 6, height: 6, borderRadius: 3, flexShrink: 0 },
+  // Fork-tree affordances (TeamPanel parity).
+  collapseBtn: { marginLeft: -6, marginRight: -4, alignSelf: 'center' },
+  menuBtn: { paddingHorizontal: 4, alignSelf: 'center' },
+  collapsedBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexShrink: 0,
+  },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'nowrap' },
   modelChip: {
     paddingHorizontal: 5,
