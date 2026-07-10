@@ -332,20 +332,16 @@ export default function HubScreen() {
               position: 'absolute',
               left: 0,
               right: 0,
-              // Lift by the keyboard height so the composer sits right above it
-              // (nothing resizes underneath, so this is the only lift).
-              bottom: kbH,
+              // Lift by the keyboard height so the composer sits above it. On
+              // Android edge-to-edge the reported height sits the pill flush on
+              // the keyboard, so add a small gap; nothing to add at rest.
+              bottom: kbH > 0 ? kbH + (Platform.OS === 'android' ? spacing.md : 0) : 0,
               backgroundColor: theme.bg,
               borderTopColor: theme.border,
-              // At rest, clear the gesture bar with the bottom safe-area inset;
-              // while the keyboard is up there's no home indicator to clear.
-              // iOS reports a real bottom inset (home indicator) so the pill
-              // clears it; this Android edge-to-edge device reports ~0, leaving
-              // the composer crushed behind the gesture bar — floor it so it
-              // always lifts clear of the nav bar.
-              paddingBottom: kbH > 0
-                ? spacing.sm
-                : spacing.lg + Math.max(insets.bottom, Platform.OS === 'android' ? 28 : 0),
+              // At rest: no extra offset (just the real safe-area inset), so it
+              // sits flush at the bottom like the team chat. Keyboard open: a
+              // tighter pad since the composer is lifted to sit on the keyboard.
+              paddingBottom: kbH > 0 ? spacing.sm : spacing.lg + insets.bottom,
             },
           ]}
         >
