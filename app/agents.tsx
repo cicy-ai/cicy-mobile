@@ -13,7 +13,6 @@ import {
   FlatList,
   Linking,
   Modal,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -21,7 +20,6 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
 
 import { Button } from '@/src/components/Button';
 import { ConfirmModal } from '@/src/components/ConfirmModal';
@@ -1035,19 +1033,33 @@ export default function Agents() {
               </Text>
             </View>
           ) : (
-            <AgentRow
-              agent={item.agent}
-              metrics={liveMetrics[agentId(item.agent)]}
-              gateway={gatewayByName[agentId(item.agent)]}
-              isMaster={agentId(item.agent) === hostPaneId}
-              depth={item.depth}
-              forkCount={item.forkCount}
-              collapsed={item.collapsed}
-              onToggleCollapse={toggleCollapsed}
-              onRestart={(id) => void restartAgent(id)}
-              onDelete={(id, title) => setConfirmDelete({ id, title })}
-              onLongPress={(a) => setMemberMenu(a)}
-            />
+            // Fork children: indent + a continuous vertical guide rail on the
+            // left (web TeamPanel's tree line). The negative top margin bridges
+            // the FlatList row gap so consecutive nested rows share one line.
+            <View
+              style={
+                item.depth > 0
+                  ? {
+                      marginLeft: Math.min(item.depth, 4) * 18,
+                      borderLeftWidth: 2,
+                      borderLeftColor: theme.border,
+                      paddingLeft: 10,
+                      marginTop: -spacing.sm,
+                      paddingTop: spacing.sm,
+                    }
+                  : undefined
+              }
+            >
+              <AgentRow
+                agent={item.agent}
+                metrics={liveMetrics[agentId(item.agent)]}
+                gateway={gatewayByName[agentId(item.agent)]}
+                forkCount={item.forkCount}
+                collapsed={item.collapsed}
+                onToggleCollapse={toggleCollapsed}
+                onLongPress={(a) => setMemberMenu(a)}
+              />
+            </View>
           )
         }
       />
@@ -1068,79 +1080,46 @@ function AgentRow({
   agent,
   metrics,
   gateway,
-  isMaster,
-  depth = 0,
   forkCount = 0,
   collapsed = false,
   onToggleCollapse,
-  onRestart,
-  onDelete,
   onLongPress,
 }: {
   agent: Agent;
   metrics?: AgentLiveMetrics;
   gateway?: boolean;
-  isMaster?: boolean;
-  // Fork-tree rendering (TeamPanel parity): depth indents the card, forkCount>0
-  // shows a collapse chevron, collapsed shows the hidden-descendant count.
-  depth?: number;
+  // Fork-tree rendering (TeamPanel parity): forkCount>0 shows a collapse
+  // chevron, collapsed shows the hidden-descendant count. Indentation + the
+  // vertical guide rail are drawn by the renderItem wrapper (depth-aware).
   forkCount?: number;
   collapsed?: boolean;
   onToggleCollapse?: (wid: string) => void;
-  onRestart?: (id: string) => void;
-  onDelete?: (id: string, title: string) => void;
   onLongPress?: (agent: Agent) => void;
 }) {
   const theme = useTheme();
   const { t } = useTranslation();
   const routeId = agent.name || agent.id || agent.pane_id;
-  const swipeRef = useRef<Swipeable | null>(null);
 
   // Show worker id ("w-10036") under the title — that's the chat-ws routing
   // key and the only stable identifier across renames.
   const workerId = agent.name || String(routeId);
 
-  // Swipe-left actions (native only; RNGH Swipeable is unreliable on web).
-  // cicy lite agents run headless — no tmux process to restart, so the web
-  // hides restart for them (TeamPanel gates on normalizeAgentType !== 'cicy');
-  // mirror that. Delete stays for workers (the master is the team).
-  const canRestart = normalizeAgentType(agent.agent_type) !== 'cicy';
-  const renderRightActions = () => (
-    <View style={rowStyles.swipeActions}>
-      {canRestart && (
-      <PressableScale
-        onPress={() => { swipeRef.current?.close(); onRestart?.(String(routeId)); }}
-        style={[rowStyles.swipeBtn, { backgroundColor: theme.surfaceMuted }]}
-        scaleTo={0.95}
-        haptic
-      >
-        <Ionicons name="refresh" size={20} color={theme.text} />
-        <Text variant="caption">{t('agents.restart')}</Text>
-      </PressableScale>
-      )}
-      {!isMaster && (
-        <PressableScale
-          onPress={() => {
-            swipeRef.current?.close();
-            onDelete?.(String(routeId), agent.title || agent.name || String(routeId));
-          }}
-          style={[rowStyles.swipeBtn, { backgroundColor: theme.danger }]}
-          scaleTo={0.95}
-          haptic
-        >
-          <Ionicons name="trash-outline" size={20} color="#fff" />
-          <Text variant="caption" style={{ color: '#fff' }}>{t('agents.delete')}</Text>
-        </PressableScale>
-      )}
-    </View>
-  );
+  // Long-press = the single member-actions entry (restart/fork/unbind/delete
+  // all live in that sheet — no per-row "…" button, no swipe actions). On
+  // RN-Web onLongPress does NOT suppress the subsequent onPress (the row would
+  // navigate right over the freshly opened sheet), so guard it manually.
+  const longPressFiredRef = useRef(false);
 
   const row = (
     <PressableScale
       // Hand the row's metadata to the detail screen so the header/terminal
       // button render instantly — the list already knows type + title, no
       // reason to make the chat screen re-await /api/panes for first paint.
-      onPress={() =>
+      onPress={() => {
+        if (longPressFiredRef.current) {
+          longPressFiredRef.current = false;
+          return;
+        }
         router.push({
           pathname: '/chat/[agentId]',
           params: {
@@ -1149,18 +1128,24 @@ function AgentRow({
             agentType: agent.agent_type || '',
             machineLabel: (agent as any).machine_label || '',
           },
-        })
-      }
+        });
+      }}
       // In a scrolling list, a touch-down fires onPressIn → the card scales down,
       // then the scroll gesture cancels it → it springs back = a "弹一下" pop while
       // dragging. Delaying press-in lets a scroll (finger moves immediately) abort
       // before any scale fires; a real tap (held still) still scales after the delay.
       unstable_pressDelay={120}
-      onLongPress={onLongPress ? () => onLongPress(agent) : undefined}
+      onLongPress={
+        onLongPress
+          ? () => {
+              longPressFiredRef.current = true;
+              onLongPress(agent);
+            }
+          : undefined
+      }
       style={[
         rowStyles.card,
         { backgroundColor: theme.surface, borderColor: theme.border },
-        depth > 0 ? { marginLeft: Math.min(depth, 4) * 18 } : null,
       ]}
     >
       {forkCount > 0 ? (
@@ -1220,36 +1205,11 @@ function AgentRow({
           ) : null}
         </View>
       </View>
-      {/* Explicit "…" member-menu button (TeamPanel's worker-menu-button). A
-          row long-press also opens it, but on RN-Web long-press doesn't
-          reliably suppress onPress (the row navigates), so the button is the
-          dependable entry on web. */}
-      {onLongPress ? (
-        <PressableScale
-          onPress={() => onLongPress(agent)}
-          hitSlop={8}
-          scaleTo={0.9}
-          style={rowStyles.menuBtn}
-        >
-          <Ionicons name="ellipsis-horizontal" size={16} color={theme.textFaint} />
-        </PressableScale>
-      ) : null}
       <Ionicons name="chevron-forward" size={18} color={theme.textFaint} />
     </PressableScale>
   );
 
-  // Web: RNGH Swipeable is unreliable there — plain row, no swipe actions.
-  if (Platform.OS === 'web') return row;
-  return (
-    <Swipeable
-      ref={swipeRef}
-      renderRightActions={renderRightActions}
-      overshootRight={false}
-      friction={2}
-    >
-      {row}
-    </Swipeable>
-  );
+  return row;
 }
 
 const styles = StyleSheet.create({
@@ -1366,19 +1326,6 @@ const styles = StyleSheet.create({
 });
 
 const rowStyles = StyleSheet.create({
-  swipeActions: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    marginLeft: spacing.sm,
-    gap: spacing.xs,
-  },
-  swipeBtn: {
-    width: 68,
-    borderRadius: radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-  },
   card: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1392,7 +1339,6 @@ const rowStyles = StyleSheet.create({
   gatewayDot: { width: 6, height: 6, borderRadius: 3, flexShrink: 0 },
   // Fork-tree affordances (TeamPanel parity).
   collapseBtn: { marginLeft: -6, marginRight: -4, alignSelf: 'center' },
-  menuBtn: { paddingHorizontal: 4, alignSelf: 'center' },
   collapsedBadge: {
     paddingHorizontal: 5,
     paddingVertical: 1,
