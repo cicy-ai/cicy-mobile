@@ -26,6 +26,7 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { createApi, type Endpoint } from '@/src/api/http';
 import { HubWsClient, type HubAgent, type HubWsStatus } from '@/src/api/hubws';
@@ -57,6 +58,7 @@ function pickPrimary(dir: HubAgent[]): HubAgent | null {
 export default function HubScreen() {
   const { t } = useTranslation();
   const theme = useTheme();
+  const insets = useSafeAreaInsets();
   const hub = useAuthStore((s) => s.hub);
 
   const [status, setStatus] = useState<HubWsStatus>('idle');
@@ -217,15 +219,24 @@ export default function HubScreen() {
           )}
         </View>
 
-        {/* Prompt — ALWAYS pinned at the bottom, voice-first on native. Disabled
-            until the hub has a reachable agent to talk to. */}
-        <View style={[styles.composer, { backgroundColor: theme.bg, borderTopColor: theme.border }]}>
+        {/* Prompt — ALWAYS pinned at the bottom, voice-first on native. Kept
+            enabled like the team chat (send no-ops until a hub agent exists);
+            + bottom safe-area inset so a home-indicator phone never clips it. */}
+        <View
+          style={[
+            styles.composer,
+            {
+              backgroundColor: theme.bg,
+              borderTopColor: theme.border,
+              paddingBottom: (Platform.OS === 'ios' ? spacing.xl : spacing.lg) + insets.bottom,
+            },
+          ]}
+        >
           <Composer
             value={input}
             onChangeText={setInput}
             onSubmit={() => void submit(input)}
             onTranscript={(txt) => void submit(txt)}
-            disabled={!primary}
             sending={sending}
             busy={busy}
             onStop={() => void stopGeneration()}
