@@ -26,8 +26,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { api } from '@/src/api/http';
+import { api, createApi, type Endpoint } from '@/src/api/http';
 import { ChatWsClient } from '@/src/api/chatws';
+
+// The endpoint-bound API surface (team singleton or a Hub agent's createApi).
+type ApiClient = ReturnType<typeof createApi>;
 import type { CurrentReplyResp, HistoryStep, HistoryTurn, RawHistoryItem } from '@/src/api/types';
 import {
   buildTurnsFromRawItems,
@@ -76,8 +79,9 @@ function replyAnswersRealQuestion(question?: string): boolean {
 }
 
 // getHistoryIDs — RN equivalent of web lib/dataAccess.getHistoryIDs.
-async function getHistoryIDs(paneId: string): Promise<any> {
-  return api.getHistoryIds(paneId);
+// `a` is the endpoint-bound API (team singleton, or a Hub agent's createApi).
+async function getHistoryIDs(a: ApiClient, paneId: string): Promise<any> {
+  return a.getHistoryIds(paneId);
 }
 
 // loadWindowItems — RN port of web lib/dataAccess.loadWindowItems, minus the
@@ -86,6 +90,7 @@ async function getHistoryIDs(paneId: string): Promise<any> {
 // the window low bound `lo` so the caller derives hasMore/nextBefore exactly like
 // web. `fresh` is accepted for signature parity (there is no cache to bypass).
 async function loadWindowItems(
+  a: ApiClient,
   paneId: string,
   conversationId: string,
   hi: number,
@@ -94,7 +99,7 @@ async function loadWindowItems(
 ): Promise<{ items: RawHistoryItem[]; lo: number }> {
   if (hi <= 0 || !conversationId) return { items: [], lo: 0 };
   const lo = Math.max(1, hi - Math.max(1, size) + 1);
-  const data = await api.getCurrentHistory(paneId, {
+  const data = await a.getCurrentHistory(paneId, {
     before: hi + 1,
     limit: hi - lo + 1,
     conversationId,
@@ -123,6 +128,11 @@ export type UseCurrentHistoryOpts = {
   // - busy signal to the composer (replaces window 'cicy:dispatcher-busy').
   onReplyInFlight?: () => void;
   onReplyDone?: () => void;
+  // - endpoint override: when set, the whole two-part engine (history/reply
+  //   fetches + chat WS) targets this server+token instead of the active team.
+  //   A Hub agent passes its reach_url + node api_token here so the SAME chat
+  //   serves hub agents. Omit → active team in the store.
+  endpoint?: Endpoint | null;
 };
 
 // Normalized WS delta detail (built by the WS client callback, consumed by
@@ -137,6 +147,15 @@ type StreamDeltaDetail = {
 
 export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
   const { paneId, open, promptsOnly, consumeWsDeltas } = opts;
+  // Endpoint-bound API: a Hub agent's reach_url+token, or the active team.
+  // Memoized on the endpoint identity so poll loops keep a stable client.
+  const endpoint = opts.endpoint ?? null;
+  const apiClient = useMemo<ApiClient>(
+    () => (endpoint ? createApi(endpoint) : api),
+    [endpoint?.serverUrl, endpoint?.token],
+  );
+  const apiRef = useRef(apiClient);
+  apiRef.current = apiClient;
   const onReplyInFlightRef = useRef(opts.onReplyInFlight);
   onReplyInFlightRef.current = opts.onReplyInFlight;
   const onReplyDoneRef = useRef(opts.onReplyDone);
@@ -203,13 +222,13 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
   // touching state; the poll commits items + live tail in ONE synchronous batch.
   const fetchTailBeyondBoundary = async (): Promise<{ tail: HistoryTurn[]; newMax: number } | null> => {
     try {
-      const ids = await getHistoryIDs(paneId);
+      const ids = await getHistoryIDs(apiRef.current, paneId);
       const cid = String(ids?.conversation_id || '').trim();
       const newMax = Number(ids?.id || 0);
       if (!cid || newMax <= maxLoadedIdRef.current) return null;
       if (clearedConvIdRef.current && cid === clearedConvIdRef.current) return null;
       const size = Math.min(newMax - maxLoadedIdRef.current, 100);
-      const { items: raw } = await loadWindowItems(paneId, cid, newMax, size, { fresh: true });
+      const { items: raw } = await loadWindowItems(apiRef.current, paneId, cid, newMax, size, { fresh: true });
       const tail = buildTurnsFromRawItems(raw);
       if (!tail.length) return null;
       return { tail, newMax };
@@ -225,7 +244,7 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
   const softRebind = async (nextCid: string) => {
     const seq = ++requestSeqRef.current;
     try {
-      const ids = await getHistoryIDs(paneId);
+      const ids = await getHistoryIDs(apiRef.current, paneId);
       if (seq !== requestSeqRef.current) return;
       const cid = String(ids?.conversation_id || '').trim() || nextCid;
       const newMax = Number(ids?.id || 0);
@@ -239,7 +258,7 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
         setConversationId(cid);
         return;
       }
-      const { items: raw, lo } = await loadWindowItems(paneId, cid, newMax, CURRENT_HISTORY_WINDOW, { fresh: true });
+      const { items: raw, lo } = await loadWindowItems(apiRef.current, paneId, cid, newMax, CURRENT_HISTORY_WINDOW, { fresh: true });
       if (seq !== requestSeqRef.current) return;
       const turns = buildTurnsFromRawItems(raw);
       maxLoadedIdRef.current = newMax;
@@ -289,7 +308,7 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
       maxLoadedIdRef.current = snap.maxId;
     }
     if (!hasSnap) setLoading(true);
-    getHistoryIDs(paneId)
+    getHistoryIDs(apiRef.current, paneId)
       .then(async (data: any) => {
         if (cancelled || requestSeq !== requestSeqRef.current) return [] as HistoryTurn[];
         const nextConversationId = String(data?.conversation_id || '').trim();
@@ -308,6 +327,7 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
           return [] as HistoryTurn[];
         }
         const { items: rawItems, lo } = await loadWindowItems(
+          apiRef.current,
           paneId,
           nextConversationId,
           nextMaxHistoryId,
@@ -404,7 +424,7 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
       pollInFlight = true;
       lastPollStartAt = Date.now();
       try {
-        const data: CurrentReplyResp = await api.getCurrentReply(paneId);
+        const data: CurrentReplyResp = await apiRef.current.getCurrentReply(paneId);
         if (cancelled) return;
         const cid = String(data?.conversation_id || '').trim();
 
@@ -655,7 +675,10 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
   // always current) — which gates on consumeWsDeltas internally, exactly like web.
   useEffect(() => {
     if (!open || !paneId) return;
-    const { serverUrl, token } = useAuthStore.getState();
+    // Endpoint override (Hub agent) wins; otherwise the active team's creds.
+    const store = useAuthStore.getState();
+    const serverUrl = endpoint?.serverUrl ?? store.serverUrl;
+    const token = endpoint?.token ?? store.token;
     if (!serverUrl || !token) return;
     const clientId = `mobile-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
     const client = new ChatWsClient({ serverUrl, token, clientId, agentId: paneId });
@@ -674,7 +697,8 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
     });
     client.connect();
     return () => { off(); client.close(); };
-  }, [open, paneId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, paneId, endpoint?.serverUrl, endpoint?.token]);
 
   // Drive onNudge / onCancelOptimistic from the `pending` prop (the RN send
   // channel, in place of window events). nonce dedups repeated sends.
@@ -696,6 +720,7 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
     setLoadingMore(true);
     try {
       const { items: rawItems, lo } = await loadWindowItems(
+        apiRef.current,
         paneId,
         conversationId,
         Number(nextBefore) - 1,
@@ -806,7 +831,7 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
     if (!paneId || retryingKey) return;
     setRetryingKey(key);
     shouldStickBottomRef.current = true;
-    Promise.resolve(api.retryCicyReply(paneId))
+    Promise.resolve(apiRef.current.retryCicyReply(paneId))
       .catch(() => {})
       .finally(() => {
         nudgeFnRef.current({});

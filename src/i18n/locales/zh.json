@@ -83,6 +83,19 @@
     "titlePlaceholder": "比如：工作 / 个人",
     "defaultTitle": "我的团队"
   },
+  "hub": {
+    "title": "Hub",
+    "connected": "已连接",
+    "notConnected": "扫码连接",
+    "disconnect": "断开",
+    "disconnectConfirmTitle": "断开 Hub？",
+    "disconnectConfirmBody": "将从此设备移除该 Hub 连接。可重新扫码恢复。",
+    "empty": "暂无可达的 Agent",
+    "connecting": "连接中…",
+    "offline": "已断开",
+    "pickAgent": "选择一个 Agent 开始聊天",
+    "subtitle": "{{count}} 个可达 Agent"
+  },
   "chat": {
     "messagePlaceholder": "输入消息…",
     "composerPlaceholder": "发消息或按住说话…",

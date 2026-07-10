@@ -5,6 +5,7 @@ import { create } from 'zustand';
 
 import i18n from '@/src/i18n';
 import { fetchCloudTeams, type CloudSession } from '@/src/api/cloudAuth';
+import { fetchTier, registerDevice } from '@/src/api/cloudDevice';
 import { storage } from './storage';
 
 const TEAMS_KEY = 'cicy_teams_v1';
@@ -16,6 +17,9 @@ const CLIENT_ID_KEY = 'cicy_client_id';
 const SESSION_KEY = 'cicy_session';
 const USER_EMAIL_KEY = 'cicy_user_email';
 const USER_ID_KEY = 'cicy_user_id';
+// Hub connection (parallel to teams, ONE per device): { url, token }. Scanned
+// via a hub QR; `token` is a typ=hub JWT. Drives the Hub entry above the teams.
+const HUB_KEY = 'cicy_hub_v1';
 // Every cloud account ever signed in on this device: { email, token, userId,
 // addedAt }[]. SESSION_KEY/USER_EMAIL_KEY stay the ACTIVE account (older code
 // and the http layer read them); this list powers the account switcher.
@@ -65,6 +69,9 @@ type AuthState = {
   /** cicy-cloud session (sk-sess-…); null = not signed in to the cloud. */
   session: string | null;
   userEmail: string | null;
+  /** Account plan level from the cloud ("personal" | "team" | "enterprise");
+   *  null = unknown / not signed in. Refreshed on the 60s cloud heartbeat. */
+  tier: string | null;
   /** Every cloud account signed in on this device (active one included). */
   accounts: CloudAccount[];
   /** Make `email` the active account: restore its session and rebuild the team
@@ -99,6 +106,14 @@ type AuthState = {
   renameTeam: (id: string, title: string) => Promise<void>;
   /** Wipe everything — sign out completely. */
   clear: () => Promise<void>;
+
+  // ── Hub (parallel to teams; one scanned connection per device) ──
+  /** The scanned Hub connection, or null when not connected. */
+  hub: { url: string; token: string } | null;
+  /** Persist a scanned Hub connection (from a hub QR). Replaces any existing one. */
+  connectHub: (p: { url: string; token: string }) => Promise<void>;
+  /** Forget the Hub connection. */
+  disconnectHub: () => Promise<void>;
 };
 
 function makeClientId() {
@@ -193,6 +208,48 @@ function selectCurrent(teams: Team[], currentTeamId: string | null) {
   };
 }
 
+// Cloud heartbeat (desktop parity, MAIN-process equivalent): while signed in,
+// every 60s re-register this device (the cloud stamps last_seen → device
+// liveness), re-mirror the team list, and refresh the account tier badge. One
+// shared timer for the whole app — a fresh login/switch resets it, logout stops
+// it. Each beat is best-effort: a failed leg never throws out of here.
+const CLOUD_HEARTBEAT_MS = 60_000;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+async function cloudBeat() {
+  const st = useAuthStore.getState();
+  const session = st.session;
+  if (!session) {
+    stopCloudHeartbeat();
+    return;
+  }
+  await registerDevice(session).catch(() => {});
+  await st.syncCloudTeams().catch(() => {});
+  try {
+    const tier = await fetchTier(session);
+    // Guard against a race: only apply if the same account is still active.
+    if (useAuthStore.getState().session === session) useAuthStore.setState({ tier });
+  } catch {
+    /* keep the last-known tier on a network blip */
+  }
+}
+
+function startCloudHeartbeat() {
+  stopCloudHeartbeat();
+  void cloudBeat(); // fire once now, then on the interval
+  heartbeatTimer = setInterval(() => void cloudBeat(), CLOUD_HEARTBEAT_MS);
+  if (heartbeatTimer && typeof (heartbeatTimer as any).unref === 'function') {
+    (heartbeatTimer as any).unref();
+  }
+}
+
+function stopCloudHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
 // Map the server's cloud team list into local Team rows (the cloud is the source
 // of truth). Only rows with a reachable address become teams — /api/teams also
 // returns dead "local" registration residue (host_url empty); those must NOT
@@ -242,19 +299,38 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   hydrated: false,
   session: null,
   userEmail: null,
+  tier: null,
   accounts: [],
   serverUrl: null,
   token: null,
+  hub: null,
+
+  connectHub: async (p) => {
+    const hub = { url: p.url.replace(/\/+$/, ''), token: p.token };
+    await storage.setItem(HUB_KEY, JSON.stringify(hub));
+    set({ hub });
+  },
+  disconnectHub: async () => {
+    await storage.removeItem(HUB_KEY).catch(() => {});
+    set({ hub: null });
+  },
 
   hydrate: async () => {
-    const [teamsRaw, clientId, session, userEmail, userId, accountsLoaded] = await Promise.all([
+    const [teamsRaw, clientId, session, userEmail, userId, accountsLoaded, hubRaw] = await Promise.all([
       storage.getItem(TEAMS_KEY),
       storage.getItem(CLIENT_ID_KEY),
       storage.getItem(SESSION_KEY),
       storage.getItem(USER_EMAIL_KEY),
       storage.getItem(USER_ID_KEY),
       loadAccounts(),
+      storage.getItem(HUB_KEY),
     ]);
+    let hub: { url: string; token: string } | null = null;
+    try {
+      const h = hubRaw ? JSON.parse(hubRaw) : null;
+      if (h?.url && h?.token) hub = { url: String(h.url), token: String(h.token) };
+    } catch { /* ignore corrupt */ }
+    set({ hub });
     // Migration: devices signed in before the account switcher existed have a
     // session but an empty ACCOUNTS_KEY — seed the list with the active account.
     let accounts = accountsLoaded;
@@ -318,10 +394,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const { serverUrl, token } = selectCurrent(teams, currentTeamId);
     set({ teams, currentTeamId, clientId: cid, hydrated: true, serverUrl, token });
 
-    // Signed in to the cloud → mirror the server's current team list in the
-    // background (propagates deletions/additions). Non-blocking; keeps cache on
-    // failure. Runs after the initial paint so startup isn't gated on the network.
-    if (session) void get().syncCloudTeams();
+    // Signed in to the cloud → start the desktop-parity heartbeat: register
+    // this device, mirror the team list, refresh the account tier — then keep
+    // beating every 60s. Non-blocking; keeps cache on failure.
+    if (session) startCloudHeartbeat();
   },
 
   addTeam: async ({ serverUrl, token, title }) => {
@@ -406,7 +482,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const currentTeamId = teams[0]?.id ?? null;
     await persist(teams, currentTeamId);
     const sel = selectCurrent(teams, currentTeamId);
-    set({ teams, currentTeamId, session: s.token, userEmail: s.email, ...sel });
+    set({ teams, currentTeamId, session: s.token, userEmail: s.email, tier: null, ...sel });
+    startCloudHeartbeat();
   },
 
   syncCloudTeams: async () => {
@@ -472,7 +549,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!remaining.some((tm) => tm.id === next)) next = remaining[0]?.id ?? null;
     await persist(remaining, next);
     const sel = selectCurrent(remaining, next);
-    set({ teams: remaining, currentTeamId: next, session: null, userEmail: null, accounts, ...sel });
+    stopCloudHeartbeat();
+    set({ teams: remaining, currentTeamId: next, session: null, userEmail: null, tier: null, accounts, ...sel });
   },
 
   clear: async () => {
@@ -483,6 +561,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       storage.removeItem(ACCOUNTS_KEY).catch(() => {}),
     ]);
     await persist([], null);
-    set({ teams: [], currentTeamId: null, session: null, userEmail: null, accounts: [], serverUrl: null, token: null });
+    stopCloudHeartbeat();
+    set({ teams: [], currentTeamId: null, session: null, userEmail: null, tier: null, accounts: [], serverUrl: null, token: null });
   },
 }));

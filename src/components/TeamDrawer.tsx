@@ -35,6 +35,21 @@ type Props = {
 
 const DRAWER_W = Math.min(320, Dimensions.get('window').width * 0.84);
 
+// Account plan level → short display badge. Mirrors the cloud's tier names
+// (personal | team | enterprise); '' / unknown → no badge.
+function tierLabel(tier: string | null): string {
+  switch (tier) {
+    case 'personal':
+      return 'Free';
+    case 'team':
+      return 'Team';
+    case 'enterprise':
+      return 'Enterprise';
+    default:
+      return '';
+  }
+}
+
 export function TeamDrawer({ open, onClose }: Props) {
   const { t } = useTranslation();
   const theme = useTheme();
@@ -55,8 +70,11 @@ export function TeamDrawer({ open, onClose }: Props) {
   const currentTeamId = useAuthStore((s) => s.currentTeamId);
   const switchTeam = useAuthStore((s) => s.switchTeam);
   const removeTeam = useAuthStore((s) => s.removeTeam);
+  const hub = useAuthStore((s) => s.hub);
+  const disconnectHub = useAuthStore((s) => s.disconnectHub);
   const session = useAuthStore((s) => s.session);
   const userEmail = useAuthStore((s) => s.userEmail);
+  const tier = useAuthStore((s) => s.tier);
   const accounts = useAuthStore((s) => s.accounts);
   const switchAccount = useAuthStore((s) => s.switchAccount);
   const removeAccount = useAuthStore((s) => s.removeAccount);
@@ -100,6 +118,7 @@ export function TeamDrawer({ open, onClose }: Props) {
   // Long-press a team → in-app confirm overlay (RN-web's Alert.alert with
   // buttons is a no-op, so a real modal is the only cross-platform way).
   const [confirmTeam, setConfirmTeam] = useState<Team | null>(null);
+  const [confirmHub, setConfirmHub] = useState(false);
 
   async function onConfirmRemove() {
     const team = confirmTeam;
@@ -157,6 +176,48 @@ export function TeamDrawer({ open, onClose }: Props) {
           </View>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list}>
+            {/* Hub — parallel to teams, pinned above them. Tap when connected →
+                the big Hub chat; tap when not → scan a hub QR. Long-press a
+                connected hub → disconnect. */}
+            <PressableScale
+              onPress={() => {
+                onClose();
+                setTimeout(() => router.push(hub ? '/hub' : '/scan'), 80);
+              }}
+              onLongPress={hub ? () => setConfirmHub(true) : undefined}
+              haptic
+              scaleTo={0.97}
+              style={styles.teamRow}
+            >
+              <View
+                style={[
+                  styles.hubIcon,
+                  { backgroundColor: hub ? theme.accent : theme.surface, borderColor: theme.border },
+                ]}
+              >
+                <Ionicons
+                  name="git-network-outline"
+                  size={20}
+                  color={hub ? theme.accentText : theme.textMuted}
+                />
+              </View>
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text variant="callout" numberOfLines={1}>
+                  {t('hub.title')}
+                </Text>
+                <Text variant="caption" tone="faint" numberOfLines={1} ellipsizeMode="middle">
+                  {hub ? t('hub.connected') : t('hub.notConnected')}
+                </Text>
+              </View>
+              <Ionicons
+                name={hub ? 'ellipse' : 'scan-outline'}
+                size={hub ? 10 : 16}
+                color={hub ? theme.accent : theme.textFaint}
+              />
+            </PressableScale>
+
+            <View style={[styles.sectionDivider, { backgroundColor: theme.border }]} />
+
             {ordered.map((team) => {
               return (
                 <PressableScale
@@ -226,6 +287,13 @@ export function TeamDrawer({ open, onClose }: Props) {
                   >
                     {acct.email}
                   </Text>
+                  {active && tierLabel(tier) ? (
+                    <View style={[styles.tierBadge, { backgroundColor: theme.accent + '22', borderColor: theme.accent + '55' }]}>
+                      <Text variant="caption" style={{ color: theme.accent, fontSize: 10, fontWeight: '600' }}>
+                        {tierLabel(tier)}
+                      </Text>
+                    </View>
+                  ) : null}
                   {busy ? (
                     <Text variant="caption" tone="faint">…</Text>
                   ) : active ? (
@@ -276,6 +344,20 @@ export function TeamDrawer({ open, onClose }: Props) {
           destructive
           onConfirm={() => void onConfirmRemove()}
           onCancel={() => setConfirmTeam(null)}
+        />
+
+        <ConfirmModal
+          open={confirmHub}
+          title={t('hub.disconnectConfirmTitle')}
+          body={t('hub.disconnectConfirmBody')}
+          confirmText={t('hub.disconnect')}
+          cancelText={t('common.cancel')}
+          destructive
+          onConfirm={() => {
+            setConfirmHub(false);
+            void disconnectHub();
+          }}
+          onCancel={() => setConfirmHub(false)}
         />
 
         <ConfirmModal
@@ -344,6 +426,12 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     borderRadius: radius.sm,
   },
+  tierBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   footer: {
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.md,
@@ -357,5 +445,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
     borderRadius: radius.md,
+  },
+  hubIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sectionDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginVertical: spacing.xs,
+    marginHorizontal: spacing.md,
+    opacity: 0.6,
   },
 });

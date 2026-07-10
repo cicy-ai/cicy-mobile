@@ -26,6 +26,7 @@ export default function Scan() {
   const session = useAuthStore((s) => s.session);
   const canGoBack = teams.length > 0;
   const addTeam = useAuthStore((s) => s.addTeam);
+  const connectHub = useAuthStore((s) => s.connectHub);
   const [done, setDone] = useState(false);
   const handledRef = useRef(false);
 
@@ -83,6 +84,19 @@ export default function Scan() {
     if (handledRef.current) return;
     handledRef.current = true;
     const parsed = parsePayload(raw);
+    // Hub QR ({ type:'hub', url, token }) → connect the Hub (parallel to teams).
+    if (parsed?.hub) {
+      try {
+        await connectHub(parsed.hub);
+        setDone(true);
+        setTimeout(() => router.replace('/agents'), 600);
+      } catch (e: any) {
+        Alert.alert(t('scan.invalidTitle'), String(e?.message ?? e), [
+          { text: t('common.tryAgain'), onPress: () => { handledRef.current = false; } },
+        ]);
+      }
+      return;
+    }
     if (!parsed || !parsed.server || !parsed.token) {
       // QR must contain BOTH server URL and token to add a team — there's no
       // notion of "partial creds" anymore now that we've removed manual entry.

@@ -143,6 +143,8 @@ export default function RootLayout() {
           {/* Scan draws its own nav row — same reason as chat. */}
           <Stack.Screen name="scan" options={{ headerShown: false }} />
           <Stack.Screen name="login" options={{ headerShown: false }} />
+          {/* Hub — draws its own nav row (directory + big chat). */}
+          <Stack.Screen name="hub" options={{ headerShown: false }} />
         </Stack>
         {/* Translucent — SystemUI paints theme.bg behind. Icon color tracks
             the active theme so it stays readable against that bg. */}

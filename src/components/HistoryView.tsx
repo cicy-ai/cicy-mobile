@@ -9,6 +9,7 @@ import { ActivityIndicator, Image, Linking, Platform, ScrollView, StyleSheet, Vi
 
 import { assetBrowserUrl, assetUri, isAssetRef } from '@/src/api/upload';
 import i18n from '@/src/i18n';
+import type { Endpoint } from '@/src/api/http';
 import type { HistoryStep, HistoryTurn } from '@/src/api/types';
 import { stripHarnessNoise } from '@/src/lib/historyParse';
 import { useCurrentHistory } from '@/src/lib/history/useCurrentHistory';
@@ -53,6 +54,10 @@ type Props = {
   // shows continuously from send until cancel/failure/success, never flickering
   // off on a transient per-poll status gap.
   busy?: boolean;
+  // Endpoint override — when set, the whole two-part engine targets this
+  // server+token instead of the active team. A Hub agent passes its reach_url +
+  // node api_token so the same chat serves hub agents. Omit → active team.
+  endpoint?: Endpoint | null;
 };
 
 // Two-part history (ported from desktop CurrentHistoryView):
@@ -159,7 +164,7 @@ function isActiveAssistantStatus(s: string): boolean {
   return v === 'thinking' || v === 'streaming' || v === 'pending' || v === 'tool_use' || v === 'running' || v === 'in_progress' || v === 'working';
 }
 
-export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, agentType, busy }: Props) {
+export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, agentType, busy, endpoint }: Props) {
   const theme = useTheme();
   // cicy 走 WS 直推加速(delta 逐字直拼);非 cicy 纯 poll loop(consumeWsDeltas:false),
   // 与 cicy-code app 的 CicyHistoryView / CodingAgentHistoryView 分流一致。
@@ -174,6 +179,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
     pending: pending ?? null,
     onReplyInFlight,
     onReplyDone,
+    endpoint: endpoint ?? null,
   });
   const {
     displayItems,
@@ -227,6 +233,15 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
     [shouldStickBottomRef],
   );
 
+  // User grabbed the list → stop following IMMEDIATELY. During streaming, content
+  // grows every frame and onContentSizeChange can fire before onScroll updates the
+  // stick flag, reading a stale stick=true and yanking to the bottom mid-drag (the
+  // "拖动时还一直落底" bug). Disengaging on drag-start beats that race; onScroll then
+  // re-engages only if the user settles back near the bottom.
+  const onScrollBeginDrag = useCallback(() => {
+    shouldStickBottomRef.current = false;
+  }, [shouldStickBottomRef]);
+
   const onContentSizeChange = useCallback(() => {
     // Land at / follow the bottom. While the live tail types, content grows every
     // frame — jump-follow (not animated, which would restart 60×/s and stutter).
@@ -263,6 +278,7 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
         style={{ flex: 1 }}
         contentContainerStyle={styles.list}
         onScroll={onScroll}
+        onScrollBeginDrag={onScrollBeginDrag}
         scrollEventThrottle={16}
         onContentSizeChange={onContentSizeChange}
         maintainVisibleContentPosition={{ minIndexForVisible: 0 }}

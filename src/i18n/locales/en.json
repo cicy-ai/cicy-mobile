@@ -83,6 +83,19 @@
     "titlePlaceholder": "e.g. Work / Personal",
     "defaultTitle": "My Team"
   },
+  "hub": {
+    "title": "Hub",
+    "connected": "Connected",
+    "notConnected": "Scan to connect",
+    "disconnect": "Disconnect",
+    "disconnectConfirmTitle": "Disconnect Hub?",
+    "disconnectConfirmBody": "This Hub connection will be removed from this device. You can re-add it by scanning again.",
+    "empty": "No reachable agents",
+    "connecting": "Connecting…",
+    "offline": "Disconnected",
+    "pickAgent": "Pick an agent to start chatting",
+    "subtitle": "{{count}} reachable agents"
+  },
   "chat": {
     "messagePlaceholder": "Message…",
     "composerPlaceholder": "Message or hold to talk…",
