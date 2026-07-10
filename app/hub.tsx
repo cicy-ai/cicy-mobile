@@ -338,10 +338,11 @@ export default function HubScreen() {
               bottom: kbH > 0 ? kbH + (Platform.OS === 'android' ? spacing.md : 0) : 0,
               backgroundColor: theme.bg,
               borderTopColor: theme.border,
-              // At rest: no extra offset (just the real safe-area inset), so it
-              // sits flush at the bottom like the team chat. Keyboard open: a
-              // tighter pad since the composer is lifted to sit on the keyboard.
-              paddingBottom: kbH > 0 ? spacing.sm : spacing.lg + insets.bottom,
+              // At rest: sit flush against the bottom safe area — no extra gap.
+              // iOS: just the home-indicator inset. Android edge-to-edge reports
+              // ~0, so floor it to spacing.lg to clear the gesture bar. Keyboard
+              // open: a tight pad since the composer is lifted onto the keyboard.
+              paddingBottom: kbH > 0 ? spacing.sm : Math.max(insets.bottom, spacing.lg),
             },
           ]}
         >
