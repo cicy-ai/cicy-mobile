@@ -33,7 +33,9 @@ import { AgentAvatar } from '@/src/components/AgentAvatar';
 import { Button } from '@/src/components/Button';
 import { Composer } from '@/src/components/Composer';
 import { HistoryView } from '@/src/components/HistoryView';
+import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
+import { TeamDrawer } from '@/src/components/TeamDrawer';
 import { Text } from '@/src/components/Text';
 import { isHeadlessCicyAgent } from '@/src/lib/agentType';
 import { useAuthStore } from '@/src/store/auth';
@@ -59,6 +61,7 @@ export default function HubScreen() {
 
   const [status, setStatus] = useState<HubWsStatus>('idle');
   const [directory, setDirectory] = useState<HubAgent[]>([]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const clientRef = useRef<HubWsClient | null>(null);
 
@@ -147,9 +150,18 @@ export default function HubScreen() {
 
   return (
     <Screen edges={['top', 'left', 'right']}>
-      {/* Header — just the Hub identity + status. It's one prompt chat with the
-          hub; no org/team list. */}
+      {/* Header — left ☰ opens the org/teams drawer (Hub is the home; teams are
+          the secondary stack reached from there) + Hub identity + status dot. */}
       <View style={[styles.header, { borderBottomColor: theme.border }]}>
+        <PressableScale
+          onPress={() => setDrawerOpen(true)}
+          haptic
+          scaleTo={0.94}
+          hitSlop={8}
+          style={styles.iconBtn}
+        >
+          <Ionicons name="menu" size={24} color={theme.text} />
+        </PressableScale>
         {primary ? (
           <AgentAvatar agentType={primary.agent_type} title={primary.title} size={32} bordered />
         ) : (
@@ -220,6 +232,9 @@ export default function HubScreen() {
           />
         </View>
       </KeyboardAvoidingView>
+
+      {/* The org / teams drawer — teams are the secondary stack, opened here. */}
+      <TeamDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </Screen>
   );
 }
