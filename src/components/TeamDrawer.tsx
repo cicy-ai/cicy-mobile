@@ -113,6 +113,9 @@ export function TeamDrawer({ open, onClose }: Props) {
   async function onPickTeam(team: Team) {
     if (team.id !== currentTeamId) await switchTeam(team.id);
     onClose();
+    // Teams are the secondary stack. Picking one from the Hub's drawer steps
+    // into it; from the teams screen itself this is a no-op (already there).
+    router.navigate('/agents');
   }
 
   // Long-press a team → in-app confirm overlay (RN-web's Alert.alert with

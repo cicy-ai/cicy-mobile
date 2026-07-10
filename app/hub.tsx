@@ -30,10 +30,12 @@ import {
 import { createApi, type Endpoint } from '@/src/api/http';
 import { HubWsClient, type HubAgent, type HubWsStatus } from '@/src/api/hubws';
 import { AgentAvatar } from '@/src/components/AgentAvatar';
+import { Button } from '@/src/components/Button';
 import { Composer } from '@/src/components/Composer';
 import { HistoryView } from '@/src/components/HistoryView';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
+import { TeamDrawer } from '@/src/components/TeamDrawer';
 import { Text } from '@/src/components/Text';
 import { isHeadlessCicyAgent } from '@/src/lib/agentType';
 import { useAuthStore } from '@/src/store/auth';
@@ -59,13 +61,9 @@ export default function HubScreen() {
 
   const [status, setStatus] = useState<HubWsStatus>('idle');
   const [directory, setDirectory] = useState<HubAgent[]>([]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const clientRef = useRef<HubWsClient | null>(null);
-
-  // No hub connected (e.g. deep-linked here after a disconnect) → bounce to scan.
-  useEffect(() => {
-    if (!hub) router.replace('/scan');
-  }, [hub]);
 
   // One WS for the whole screen's lifetime. Connected = the scanned state.
   useEffect(() => {
@@ -138,10 +136,11 @@ export default function HubScreen() {
     }
   }
 
-  if (!hub) return null;
-
-  const subtitle =
-    status === 'open'
+  // Header subtitle: not-connected prompts to scan; connected reflects the
+  // coordinator / connection status.
+  const subtitle = !hub
+    ? t('hub.notConnected')
+    : status === 'open'
       ? primary
         ? primary.title || shortWid
         : t('hub.empty')
@@ -151,17 +150,17 @@ export default function HubScreen() {
 
   return (
     <Screen edges={['top', 'left', 'right']}>
-      {/* Header — teams entry (Hub is the home; teams are the secondary stack)
-          + Hub identity + live status dot. */}
+      {/* Header — left ☰ opens the org/teams drawer (Hub is the home; teams are
+          the secondary stack reached from there) + Hub identity + status dot. */}
       <View style={[styles.header, { borderBottomColor: theme.border }]}>
         <PressableScale
-          onPress={() => router.navigate('/agents')}
+          onPress={() => setDrawerOpen(true)}
           haptic
           scaleTo={0.94}
           hitSlop={8}
           style={styles.iconBtn}
         >
-          <Ionicons name="people-outline" size={24} color={theme.text} />
+          <Ionicons name="menu" size={24} color={theme.text} />
         </PressableScale>
         {primary ? (
           <AgentAvatar agentType={primary.agent_type} title={primary.title} size={32} bordered />
@@ -178,13 +177,26 @@ export default function HubScreen() {
             {subtitle}
           </Text>
         </View>
-        <View style={[styles.statusDot, { backgroundColor: status === 'open' ? theme.accent : theme.textFaint }]} />
+        {hub ? (
+          <View
+            style={[styles.statusDot, { backgroundColor: status === 'open' ? theme.accent : theme.textFaint }]}
+          />
+        ) : null}
       </View>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
-        {/* History (or a placeholder while the hub resolves its primary). */}
+        {/* History, or — before a hub is connected — a scan-to-connect prompt. */}
         <View style={{ flex: 1, backgroundColor: theme.bg }}>
-          {primary && endpoint ? (
+          {!hub ? (
+            <View style={styles.empty}>
+              <Ionicons name="qr-code-outline" size={48} color={theme.textFaint} />
+              <Text tone="muted" style={{ marginTop: spacing.md, textAlign: 'center' }}>
+                {t('hub.notConnected')}
+              </Text>
+              <View style={{ height: spacing.lg }} />
+              <Button title={t('hub.scanToConnect')} onPress={() => router.push('/scan')} />
+            </View>
+          ) : primary && endpoint ? (
             <HistoryView
               key={primary.addr}
               agentId={shortWid}
@@ -205,8 +217,8 @@ export default function HubScreen() {
           )}
         </View>
 
-        {/* Prompt — ALWAYS pinned at the bottom. Disabled until the hub has a
-            reachable agent to talk to, but the input box is always visible. */}
+        {/* Prompt — ALWAYS pinned at the bottom, voice-first on native. Disabled
+            until the hub has a reachable agent to talk to. */}
         <View style={[styles.composer, { backgroundColor: theme.bg, borderTopColor: theme.border }]}>
           <Composer
             value={input}
@@ -220,6 +232,9 @@ export default function HubScreen() {
           />
         </View>
       </KeyboardAvoidingView>
+
+      {/* The org / teams drawer — teams are the secondary stack, opened here. */}
+      <TeamDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </Screen>
   );
 }

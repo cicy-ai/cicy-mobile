@@ -86,7 +86,8 @@
   "hub": {
     "title": "Hub",
     "connected": "Connected",
-    "notConnected": "Scan to connect",
+    "notConnected": "Scan to connect a Hub",
+    "scanToConnect": "Scan to connect",
     "disconnect": "Disconnect",
     "disconnectConfirmTitle": "Disconnect Hub?",
     "disconnectConfirmBody": "This Hub connection will be removed from this device. You can re-add it by scanning again.",

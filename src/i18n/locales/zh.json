@@ -86,7 +86,8 @@
   "hub": {
     "title": "Hub",
     "connected": "已连接",
-    "notConnected": "扫码连接",
+    "notConnected": "扫码连接 Hub",
+    "scanToConnect": "扫码连接",
     "disconnect": "断开",
     "disconnectConfirmTitle": "断开 Hub？",
     "disconnectConfirmBody": "将从此设备移除该 Hub 连接。可重新扫码恢复。",

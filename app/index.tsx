@@ -5,17 +5,15 @@ import { Redirect } from 'expo-router';
 
 import { useAuthStore } from '@/src/store/auth';
 
-// This app is primarily a conversation with the Hub (the fleet coordinator).
-// So the Hub is the home/root when one is connected; teams are a separate,
-// secondary stack you step into from there.
-//
-//   hub connected        → /hub   (the coordinator conversation — the home)
-//   no hub, has teams     → /agents (teams stack; connect a Hub from its drawer)
-//   fresh (nothing yet)   → /login  (cloud-first; QR scan is the secondary path)
+// This app is primarily a conversation with the Hub (the fleet coordinator),
+// so the HOME is always the Hub screen — even before one is connected, where it
+// shows a scan-to-connect prompt. Teams are a separate, secondary stack reached
+// from the Hub's ☰ org/teams drawer. The one exception is a brand-new install
+// with nothing at all: send it to the cloud-first login so onboarding still works.
 export default function Index() {
   const hub = useAuthStore((s) => s.hub);
   const teams = useAuthStore((s) => s.teams);
-  if (hub) return <Redirect href="/hub" />;
-  if (teams.length === 0) return <Redirect href="/login" />;
-  return <Redirect href="/agents" />;
+  const session = useAuthStore((s) => s.session);
+  if (!hub && teams.length === 0 && !session) return <Redirect href="/login" />;
+  return <Redirect href="/hub" />;
 }
