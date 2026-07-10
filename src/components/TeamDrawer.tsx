@@ -57,8 +57,11 @@ export function TeamDrawer({ open, onClose }: Props) {
   const removeTeam = useAuthStore((s) => s.removeTeam);
   const session = useAuthStore((s) => s.session);
   const userEmail = useAuthStore((s) => s.userEmail);
-  const logoutCloud = useAuthStore((s) => s.logoutCloud);
-  const [confirmLogout, setConfirmLogout] = useState(false);
+  const accounts = useAuthStore((s) => s.accounts);
+  const switchAccount = useAuthStore((s) => s.switchAccount);
+  const removeAccount = useAuthStore((s) => s.removeAccount);
+  const [confirmAccount, setConfirmAccount] = useState<string | null>(null);
+  const [switching, setSwitching] = useState<string | null>(null);
 
   // Built-in default team pinned first, then cloud teams, then scanned customs
   // (each group keeps its addedAt order).
@@ -183,36 +186,72 @@ export function TeamDrawer({ open, onClose }: Props) {
             })}
           </ScrollView>
 
-          {/* cicy-cloud account — login entry, or the signed-in email + sign-out. */}
-          <View style={[styles.settings, { borderTopColor: theme.border }]}>
-            {session ? (
-              <>
-                <Ionicons name="cloud-done-outline" size={18} color={theme.accent} />
-                <Text variant="caption" tone="muted" numberOfLines={1} style={{ flex: 1 }}>
-                  {userEmail || 'cicy-cloud'}
-                </Text>
-                <PressableScale onPress={() => setConfirmLogout(true)} hitSlop={8}>
-                  <Text variant="caption" style={{ color: theme.danger }}>
-                    {t('login.signOut')}
+          {/* cicy-cloud accounts — every account signed in on this device.
+              Tap → switch (rebuilds the team list for that account); long-press
+              → remove from the device; ＋ row → email login for another one. */}
+          <View style={[styles.accounts, { borderTopColor: theme.border }]}>
+            {accounts.map((acct) => {
+              const active = session != null && acct.email.toLowerCase() === (userEmail || '').toLowerCase();
+              const busy = switching === acct.email;
+              return (
+                <PressableScale
+                  key={acct.email.toLowerCase()}
+                  onPress={() => {
+                    if (active || switching) return;
+                    setSwitching(acct.email);
+                    void (async () => {
+                      try {
+                        await switchAccount(acct.email);
+                      } finally {
+                        setSwitching(null);
+                        onClose();
+                      }
+                    })();
+                  }}
+                  onLongPress={() => setConfirmAccount(acct.email)}
+                  haptic
+                  scaleTo={0.97}
+                  style={styles.accountRow}
+                >
+                  <Ionicons
+                    name={active ? 'cloud-done-outline' : 'cloud-outline'}
+                    size={18}
+                    color={active ? theme.accent : theme.textFaint}
+                  />
+                  <Text
+                    variant="caption"
+                    tone={active ? undefined : 'muted'}
+                    numberOfLines={1}
+                    style={{ flex: 1 }}
+                  >
+                    {acct.email}
                   </Text>
+                  {busy ? (
+                    <Text variant="caption" tone="faint">…</Text>
+                  ) : active ? (
+                    <Ionicons name="checkmark" size={16} color={theme.accent} />
+                  ) : null}
                 </PressableScale>
-              </>
-            ) : (
-              <PressableScale
-                onPress={() => {
-                  onClose();
-                  setTimeout(() => router.push('/login'), 80);
-                }}
-                haptic
-                scaleTo={0.97}
-                style={styles.loginRow}
-              >
-                <Ionicons name="cloud-outline" size={18} color={theme.accent} />
-                <Text variant="callout" style={{ color: theme.accent }}>
-                  {t('login.entry')}
-                </Text>
-              </PressableScale>
-            )}
+              );
+            })}
+            <PressableScale
+              onPress={() => {
+                onClose();
+                setTimeout(() => router.push('/login'), 80);
+              }}
+              haptic
+              scaleTo={0.97}
+              style={styles.accountRow}
+            >
+              <Ionicons
+                name={accounts.length ? 'add-circle-outline' : 'cloud-outline'}
+                size={18}
+                color={theme.accent}
+              />
+              <Text variant="callout" style={{ color: theme.accent }}>
+                {accounts.length ? t('account.add') : t('login.entry')}
+              </Text>
+            </PressableScale>
           </View>
 
           {/* 会议实录 is shelved — switch hidden on request (store kept, so
@@ -240,16 +279,18 @@ export function TeamDrawer({ open, onClose }: Props) {
         />
 
         <ConfirmModal
-          open={confirmLogout}
-          title={t('login.signOutConfirmTitle')}
-          body={t('login.signOutConfirmBody')}
-          confirmText={t('login.signOut')}
+          open={!!confirmAccount}
+          title={t('account.removeConfirmTitle')}
+          body={confirmAccount ? t('account.removeConfirmBody', { email: confirmAccount }) : undefined}
+          confirmText={t('account.remove')}
           cancelText={t('common.cancel')}
           destructive
           onConfirm={() => {
-            setConfirmLogout(false);
+            const email = confirmAccount;
+            setConfirmAccount(null);
+            if (!email) return;
             void (async () => {
-              await logoutCloud();
+              await removeAccount(email);
               const remaining = useAuthStore.getState().teams;
               if (remaining.length === 0) {
                 onClose();
@@ -257,7 +298,7 @@ export function TeamDrawer({ open, onClose }: Props) {
               }
             })();
           }}
-          onCancel={() => setConfirmLogout(false)}
+          onCancel={() => setConfirmAccount(null)}
         />
       </View>
     </Modal>
@@ -290,20 +331,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   list: { paddingVertical: spacing.xs, gap: spacing.xs },
-  settings: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
+  accounts: {
     paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.md,
+    paddingVertical: spacing.xs,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
-  loginRow: {
-    flex: 1,
+  accountRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    paddingVertical: 2,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.sm,
   },
   footer: {
     paddingHorizontal: spacing.sm,

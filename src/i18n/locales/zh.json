@@ -65,6 +65,12 @@
     "signOutConfirmTitle": "退出 cicy-cloud?",
     "signOutConfirmBody": "云端团队将从此设备移除;扫码添加的团队保留。"
   },
+  "account": {
+    "add": "添加账号",
+    "remove": "移除",
+    "removeConfirmTitle": "移除账号?",
+    "removeConfirmBody": "在此设备退出并移除 {{email}}。其云端团队将从列表消失;扫码添加的团队保留,重新登录即恢复。"
+  },
   "teams": {
     "cloudDefaultTitle": "默认团队",
     "drawerTitle": "团队",

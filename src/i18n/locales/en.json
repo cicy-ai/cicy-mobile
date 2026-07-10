@@ -65,6 +65,12 @@
     "signOutConfirmTitle": "Sign out of cicy-cloud?",
     "signOutConfirmBody": "Cloud teams will be removed from this device; QR-scanned teams stay."
   },
+  "account": {
+    "add": "Add account",
+    "remove": "Remove",
+    "removeConfirmTitle": "Remove account?",
+    "removeConfirmBody": "Sign out and remove {{email}} on this device. Its cloud teams disappear from the list; QR-scanned teams stay and come back on re-login."
+  },
   "teams": {
     "cloudDefaultTitle": "Default Team",
     "drawerTitle": "Teams",

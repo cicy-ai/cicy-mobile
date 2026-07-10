@@ -16,6 +16,10 @@ const CLIENT_ID_KEY = 'cicy_client_id';
 const SESSION_KEY = 'cicy_session';
 const USER_EMAIL_KEY = 'cicy_user_email';
 const USER_ID_KEY = 'cicy_user_id';
+// Every cloud account ever signed in on this device: { email, token, userId,
+// addedAt }[]. SESSION_KEY/USER_EMAIL_KEY stay the ACTIVE account (older code
+// and the http layer read them); this list powers the account switcher.
+const ACCOUNTS_KEY = 'cicy_accounts_v1';
 // Legacy keys — migrated to a single team on first launch, then never read.
 const LEGACY_TOKEN_KEY = 'cicy_token';
 const LEGACY_SERVER_KEY = 'cicy_server_url';
@@ -45,6 +49,14 @@ type Persisted = {
   currentTeamId: string | null;
 };
 
+export type CloudAccount = {
+  email: string;
+  /** sk-sess-… login session for this account. */
+  token: string;
+  userId: string;
+  addedAt: number;
+};
+
 type AuthState = {
   teams: Team[];
   currentTeamId: string | null;
@@ -53,6 +65,14 @@ type AuthState = {
   /** cicy-cloud session (sk-sess-…); null = not signed in to the cloud. */
   session: string | null;
   userEmail: string | null;
+  /** Every cloud account signed in on this device (active one included). */
+  accounts: CloudAccount[];
+  /** Make `email` the active account: restore its session and rebuild the team
+   *  list (mirrored cloud teams + that account's QR-scanned customs). */
+  switchAccount: (email: string) => Promise<void>;
+  /** Forget an account on this device. Removing the ACTIVE one switches to the
+   *  next remaining account, or signs out of the cloud if it was the last. */
+  removeAccount: (email: string) => Promise<void>;
   hydrate: () => Promise<void>;
   /** Persist a fresh cloud login: session + the user's cloud team list (mirrored
    *  from the server — no client-fabricated default team). */
@@ -132,6 +152,39 @@ async function saveAccountCustoms(email: string | null | undefined, teams: Team[
   }
 }
 
+// ── device account store ──────────────────────────────────────────────────────
+async function loadAccounts(): Promise<CloudAccount[]> {
+  try {
+    const raw = await storage.getItem(ACCOUNTS_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list.filter((a) => a?.email && a?.token) : [];
+  } catch {
+    return [];
+  }
+}
+async function saveAccounts(list: CloudAccount[]) {
+  try {
+    await storage.setItem(ACCOUNTS_KEY, JSON.stringify(list));
+  } catch {
+    /* best-effort */
+  }
+}
+// Insert or refresh an account (keyed by lowercased email; keeps addedAt so the
+// switcher order is stable across re-logins).
+function upsertAccount(list: CloudAccount[], s: CloudSession): CloudAccount[] {
+  const key = accountKey(s.email);
+  const prev = list.find((a) => accountKey(a.email) === key);
+  const next: CloudAccount = {
+    email: s.email,
+    token: s.token,
+    userId: s.userId,
+    addedAt: prev?.addedAt ?? Date.now(),
+  };
+  return [...list.filter((a) => accountKey(a.email) !== key), next].sort(
+    (a, b) => a.addedAt - b.addedAt,
+  );
+}
+
 function selectCurrent(teams: Team[], currentTeamId: string | null) {
   const cur = teams.find((tm) => tm.id === currentTeamId) ?? null;
   return {
@@ -189,17 +242,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   hydrated: false,
   session: null,
   userEmail: null,
+  accounts: [],
   serverUrl: null,
   token: null,
 
   hydrate: async () => {
-    const [teamsRaw, clientId, session, userEmail] = await Promise.all([
+    const [teamsRaw, clientId, session, userEmail, userId, accountsLoaded] = await Promise.all([
       storage.getItem(TEAMS_KEY),
       storage.getItem(CLIENT_ID_KEY),
       storage.getItem(SESSION_KEY),
       storage.getItem(USER_EMAIL_KEY),
+      storage.getItem(USER_ID_KEY),
+      loadAccounts(),
     ]);
-    set({ session: session || null, userEmail: userEmail || null });
+    // Migration: devices signed in before the account switcher existed have a
+    // session but an empty ACCOUNTS_KEY — seed the list with the active account.
+    let accounts = accountsLoaded;
+    if (session && userEmail && !accounts.some((a) => accountKey(a.email) === accountKey(userEmail))) {
+      accounts = upsertAccount(accounts, { token: session, email: userEmail, userId: userId || '' });
+      await saveAccounts(accounts);
+    }
+    set({ session: session || null, userEmail: userEmail || null, accounts });
     let cid = clientId;
     if (!cid) {
       cid = makeClientId();
@@ -313,11 +376,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   loginCloud: async (s) => {
+    // Record the account on the device list (switcher), then activate it.
+    const accounts = upsertAccount(get().accounts, s);
     await Promise.all([
       storage.setItem(SESSION_KEY, s.token),
       storage.setItem(USER_EMAIL_KEY, s.email),
       storage.setItem(USER_ID_KEY, s.userId),
+      saveAccounts(accounts),
     ]);
+    set({ accounts });
 
     // The cloud is the source of truth: mirror exactly the teams the server
     // returns (NO client-fabricated default team — the retired default team no
@@ -364,18 +431,48 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ teams, currentTeamId, ...sel });
   },
 
+  switchAccount: async (email) => {
+    const acct = get().accounts.find((a) => accountKey(a.email) === accountKey(email));
+    if (!acct || accountKey(get().userEmail) === accountKey(acct.email)) return;
+    // Reuse the login path: it re-upserts the account (no-op), activates the
+    // session, and rebuilds teams (mirrored cloud rows + THIS account's customs).
+    // An expired session degrades gracefully — buildCloudTeams fetch fails and
+    // the drawer shows customs only; re-login from the account refreshes it.
+    await get().loginCloud({ token: acct.token, email: acct.email, userId: acct.userId });
+  },
+
+  removeAccount: async (email) => {
+    const key = accountKey(email);
+    const accounts = get().accounts.filter((a) => accountKey(a.email) !== key);
+    await saveAccounts(accounts);
+    set({ accounts });
+    if (accountKey(get().userEmail) !== key) return; // inactive account — list edit only
+    const fallback = accounts[0];
+    if (fallback) {
+      await get().loginCloud({ token: fallback.token, email: fallback.email, userId: fallback.userId });
+    } else {
+      await get().logoutCloud();
+    }
+  },
+
   logoutCloud: async () => {
+    // Signing out forgets the ACTIVE account on this device too — a lingering
+    // list entry with a possibly-revoked session is a switch-to-nothing trap.
+    const accounts = get().accounts.filter(
+      (a) => accountKey(a.email) !== accountKey(get().userEmail),
+    );
     await Promise.all([
       storage.removeItem(SESSION_KEY).catch(() => {}),
       storage.removeItem(USER_EMAIL_KEY).catch(() => {}),
       storage.removeItem(USER_ID_KEY).catch(() => {}),
+      saveAccounts(accounts),
     ]);
     const remaining = get().teams.filter((tm) => tm.kind !== 'cloud');
     let next = get().currentTeamId;
     if (!remaining.some((tm) => tm.id === next)) next = remaining[0]?.id ?? null;
     await persist(remaining, next);
     const sel = selectCurrent(remaining, next);
-    set({ teams: remaining, currentTeamId: next, session: null, userEmail: null, ...sel });
+    set({ teams: remaining, currentTeamId: next, session: null, userEmail: null, accounts, ...sel });
   },
 
   clear: async () => {
@@ -383,8 +480,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       storage.removeItem(SESSION_KEY).catch(() => {}),
       storage.removeItem(USER_EMAIL_KEY).catch(() => {}),
       storage.removeItem(USER_ID_KEY).catch(() => {}),
+      storage.removeItem(ACCOUNTS_KEY).catch(() => {}),
     ]);
     await persist([], null);
-    set({ teams: [], currentTeamId: null, session: null, userEmail: null, serverUrl: null, token: null });
+    set({ teams: [], currentTeamId: null, session: null, userEmail: null, accounts: [], serverUrl: null, token: null });
   },
 }));
