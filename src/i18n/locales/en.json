@@ -24,7 +24,22 @@
     "restart": "Restart",
     "delete": "Delete",
     "deleteConfirmTitle": "Delete this member?",
-    "deleteConfirmBody": "\"{{title}}\" will be removed; its session and config are gone for good."
+    "deleteConfirmBody": "\"{{title}}\" will be removed; its session and config are gone for good.",
+    "memberActions": "Member actions",
+    "unbind": "Unbind",
+    "fork": "Fork",
+    "forkConfirmTitle": "Fork this member?",
+    "forkConfirmBody": "Clones “{{title}}”'s workspace and conversation into a new member bound to this team.",
+    "forkStarted": "Fork started — the new member will appear shortly",
+    "unbindConfirmTitle": "Unbind this member?",
+    "unbindConfirmBody": "“{{title}}” is removed from the team (the pane survives and can be re-bound).",
+    "addMenuTitle": "Add member",
+    "createNew": "Create new member",
+    "bindExisting": "Bind existing pane",
+    "bindTitle": "Bind member",
+    "bindEmpty": "No unbound panes available",
+    "localMachine": "This machine",
+    "collapsedCount": "+{{count}}"
   },
   "login": {
     "entry": "Sign in to cicy-cloud",
@@ -91,7 +106,11 @@
     "copyAnswer": "Copy answer",
     "showAllSteps": "Show all {{count}} steps",
     "jumpToLatest": "Jump to latest",
-    "openExternal": "Open in browser"
+    "openExternal": "Open in browser",
+    "toolExitCodeNoOutput": "Exit code {{code}} · no output",
+    "toolExitNoOutput": "Exited · no output",
+    "toolFailed": "failed",
+    "toolTruncated": "truncated, {{total}} chars total"
   },
   "voice": {
     "holdToTalk": "Hold to talk",

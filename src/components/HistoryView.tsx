@@ -12,6 +12,18 @@ import i18n from '@/src/i18n';
 import type { HistoryStep, HistoryTurn } from '@/src/api/types';
 import { stripHarnessNoise } from '@/src/lib/historyParse';
 import { useCurrentHistory } from '@/src/lib/history/useCurrentHistory';
+import {
+  buildToolCardId,
+  cleanToolResult,
+  formatToolArg,
+  formatToolResult,
+  isPatchText,
+  parseToolInput,
+  shortenToolPath,
+  toolBodyContent,
+  toolEditDiff,
+  toolHeadline,
+} from '@/src/lib/history/toolFormat';
 import { normalizeAgentType } from '@/src/lib/agentType';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 import { ImageLightbox } from './ImageLightbox';
@@ -141,7 +153,10 @@ function isActiveAssistantStatus(s: string): boolean {
   // NB: 'thinking' MUST be here. Omitting it meant the reply's initial thinking
   // phase read as "not active", so the answer showed no typing indicator while
   // a stray one appeared elsewhere.
-  return v === 'thinking' || v === 'streaming' || v === 'pending' || v === 'tool_use' || v === 'running' || v === 'in_progress';
+  // 'working' is the gateway's inter-round status while the CLI executes a tool
+  // (no live HTTP). Missing it meant streaming=false exactly during the tool-run
+  // gap — the running (●) indicator never showed when a tool was actually running.
+  return v === 'thinking' || v === 'streaming' || v === 'pending' || v === 'tool_use' || v === 'running' || v === 'in_progress' || v === 'working';
 }
 
 export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, agentType, busy }: Props) {
@@ -543,6 +558,8 @@ function Turn({
               key={offset + i}
               step={step}
               streaming={streaming && offset + i === steps.length - 1}
+              turnKey={turn.history_id ?? 'live'}
+              stepIndex={offset + i}
             />
           ))}
 
@@ -561,7 +578,7 @@ function Turn({
 // this comparator only the step whose text/tools actually changed (the growing last
 // one) repaints; all earlier steps are skipped.
 const Step = memo(
-  function Step({ step, streaming }: { step: HistoryStep; streaming: boolean }) {
+  function Step({ step, streaming, turnKey, stepIndex }: { step: HistoryStep; streaming: boolean; turnKey: string | number; stepIndex: number }) {
     if (step.type === 'thinking' && typeof step.text === 'string') {
       return <ThinkingBlock text={step.text} streaming={streaming} />;
     }
@@ -569,12 +586,13 @@ const Step = memo(
       return <RichText text={step.text} />;
     }
     if (step.type === 'tool' && Array.isArray(step.tools)) {
-      return <ToolStrip tools={step.tools as { name?: string }[]} />;
+      return <ToolStrip tools={step.tools as ToolData[]} turnKey={turnKey} stepIndex={stepIndex} streaming={streaming} />;
     }
     return null;
   },
   (a, b) => {
     if (a.streaming !== b.streaming) return false;
+    if (a.turnKey !== b.turnKey || a.stepIndex !== b.stepIndex) return false;
     const s1 = a.step as any;
     const s2 = b.step as any;
     if (s1.type !== s2.type) return false;
@@ -613,68 +631,91 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }
   );
 }
 
-type ToolData = { name?: string; arg?: string; result?: string };
-
-// A one-line preview of the call for the collapsed header: prefer a meaningful
-// field out of a JSON arg (command / path / pattern …), else the arg's first
-// line. Mirrors cicy-code's toolHeadline intent.
-function toolHeadline(arg?: string): string {
-  const s = String(arg ?? '').trim();
-  if (!s) return '';
-  if (s.startsWith('{')) {
-    try {
-      const o = JSON.parse(s);
-      const cand =
-        o.command ?? o.cmd ?? o.file_path ?? o.path ?? o.pattern ?? o.query ?? o.url ?? o.description ?? '';
-      if (cand) return String(cand).split('\n')[0].slice(0, 140);
-    } catch {}
-  }
-  return s.split('\n')[0].slice(0, 140);
-}
+type ToolData = { name?: string; arg?: string; result?: string; isError?: boolean };
 
 const TOOL_BODY_MAX = 4000; // cap expanded text so a huge result can't blow up the row
 
-function ToolStrip({ tools }: { tools: ToolData[] }) {
+// Expanded/collapsed state per tool card, keyed by a stable id (turn + step +
+// tool index + name) — FlatList recycles rows, so component state alone loses
+// the open state as soon as the card scrolls out of the window.
+const toolCardOpenState = new Map<string, boolean>();
+
+function ToolStrip({ tools, turnKey, stepIndex, streaming }: { tools: ToolData[]; turnKey: string | number; stepIndex: number; streaming: boolean }) {
   return (
     <View style={{ gap: spacing.sm }}>
-      {tools.map((t, i) => (
-        <ToolCard key={i} tool={t} />
-      ))}
+      {tools.map((t, i) => {
+        const toolId = buildToolCardId(turnKey, stepIndex, t, i);
+        // In the streaming step, a tool with no result yet is executing right
+        // now (the CLI runs it and feeds the output back next round).
+        const running = streaming && !String(t?.result ?? '').trim() && t?.isError !== true;
+        return <ToolCard key={toolId} tool={t} toolId={toolId} running={running} />;
+      })}
     </View>
   );
 }
 
-// Complete tool card (ported from cicy-code's ToolCard): collapsed shows the
-// tool name + a one-line arg headline; tapping expands the full command/args
-// and the result.
-function ToolCard({ tool }: { tool: ToolData }) {
+// Complete tool card (ported from cicy-code's ToolCard): collapsed shows a
+// status glyph (✓ / ✗ failed / ● running) + tool name + a one-line headline
+// (the file / command / pattern the user actually scans for). Tapping expands
+// a HUMANIZED body — command as code, Edit as an old/new diff, patch text as
+// colored lines, JSON args/results as readable key: value lines — never raw JSON.
+function ToolCard({ tool, toolId, running }: { tool: ToolData; toolId: string; running?: boolean }) {
   const theme = useTheme();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(() => toolCardOpenState.get(toolId) ?? false);
+  useEffect(() => {
+    setOpen(toolCardOpenState.get(toolId) ?? false);
+  }, [toolId]);
   const name = String(tool?.name ?? 'tool').trim() || 'tool';
-  const arg = String(tool?.arg ?? '').trim();
-  const result = String(tool?.result ?? '').trim();
-  const headline = toolHeadline(arg);
-  // Skip the arg block when it's just the single-line headline repeated.
-  const showArg = !!arg && arg !== headline;
-  const hasBody = showArg || !!result;
-  const clamp = (s: string) => (s.length > TOOL_BODY_MAX ? s.slice(0, TOOL_BODY_MAX) + '\n…(truncated)' : s);
+  const isError = tool?.isError === true;
+  const input = parseToolInput(tool);
+  const editDiff = toolEditDiff(tool);
+  const hasDiff = !!editDiff && !!(editDiff.old || editDiff.new);
+  const patchArg = String(tool?.arg || '');
+  const showPatchArg = open && !!patchArg && isPatchText(patchArg);
+  const headline = toolHeadline(tool);
+  const command = input ? String(input.command ?? input.cmd ?? '').trim() : '';
+  const bodyContent = toolBodyContent(tool);
+  const displayResult = cleanToolResult(formatToolResult(tool));
+  // For a short single-line command the headline already shows it in full —
+  // repeating it in the body is pure duplication, but only suppress when the
+  // body has something ELSE to show (else expanding looks like a no-op).
+  const hasOtherBody = !!displayResult || hasDiff || !!bodyContent || (!!patchArg && isPatchText(patchArg));
+  const commandRedundant = hasOtherBody && !!command && !command.includes('\n') && command.length <= 80 && shortenToolPath(command) === headline;
+  // 兜底参数:只在没有 command / content / diff / patch 这些专门渲染时,才平铺
+  // 人话化后的剩余参数(如 Grep/Glob/Task)——绝不显示原始 JSON。
+  const genericArg = (!command && !bodyContent && !hasDiff && !isPatchText(patchArg)) ? formatToolArg(tool) : '';
+  const hasBody = hasOtherBody || (!!command && !commandRedundant) || !!genericArg;
+  const clamp = (s: string) => (s.length > TOOL_BODY_MAX ? s.slice(0, TOOL_BODY_MAX) + '\n…' : s);
+  const toggleOpen = () => {
+    if (!hasBody) return;
+    setOpen((v) => {
+      const next = !v;
+      toolCardOpenState.set(toolId, next);
+      return next;
+    });
+  };
 
   return (
-    <View style={[styles.toolCard, { borderColor: theme.border, backgroundColor: theme.surface }]}>
+    <View style={[styles.toolCard, { borderColor: isError ? theme.danger : theme.border, backgroundColor: theme.surface }]}>
       <PressableScale
-        onPress={() => hasBody && setOpen((v) => !v)}
+        onPress={toggleOpen}
         haptic={hasBody}
         scaleTo={0.99}
         style={styles.toolHeader}
       >
-        <Text variant="caption" style={{ color: theme.ok }}>
-          ✓
+        <Text variant="caption" style={{ color: isError ? theme.danger : running ? theme.warn : theme.ok }}>
+          {isError ? '✗' : running ? '●' : '✓'}
         </Text>
         <View style={[styles.toolNameChip, { backgroundColor: theme.surfaceMuted, borderColor: theme.border }]}>
           <Text variant="caption" tone="muted" numberOfLines={1}>
             {name}
           </Text>
         </View>
+        {isError ? (
+          <Text variant="caption" style={{ color: theme.danger }}>
+            {i18n.t('chat.toolFailed')}
+          </Text>
+        ) : null}
         {headline ? (
           <Text variant="caption" tone="faint" numberOfLines={1} style={[styles.toolHeadline, typeScale.mono]}>
             {headline}
@@ -691,10 +732,72 @@ function ToolCard({ tool }: { tool: ToolData }) {
 
       {open ? (
         <View style={styles.toolBody}>
-          {showArg ? <ToolCode text={clamp(arg)} color={theme.textMuted} /> : null}
-          {result ? <ToolCode text={clamp(result)} color={theme.text} /> : null}
+          {showPatchArg ? (
+            <PatchBlock text={clamp(patchArg)} />
+          ) : command && !commandRedundant ? (
+            <ToolCode text={clamp(command)} color={theme.textMuted} />
+          ) : bodyContent ? (
+            <ToolCode text={clamp(bodyContent)} color={theme.textMuted} />
+          ) : genericArg ? (
+            <ToolCode text={clamp(genericArg)} color={theme.textMuted} />
+          ) : null}
+          {hasDiff && editDiff ? (
+            <DiffBlock oldText={clamp(editDiff.old)} newText={clamp(editDiff.new)} />
+          ) : displayResult ? (
+            <ToolCode text={clamp(displayResult)} color={isError ? theme.danger : theme.text} />
+          ) : null}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+// Edit old→new as red/green line rows (mirrors web's diff rendering) in a
+// horizontally-scrolling block — long lines never soft-wrap.
+function DiffBlock({ oldText, newText }: { oldText: string; newText: string }) {
+  const theme = useTheme();
+  return (
+    <View style={[styles.toolCode, { backgroundColor: theme.surfaceMuted, borderColor: theme.border }]}>
+      <ScrollView horizontal style={{ width: '100%' }}>
+        <View>
+          {oldText ? oldText.split('\n').map((line, i) => (
+            <Text key={`o${i}`} selectable style={[typeScale.mono, styles.diffLine, { color: theme.danger, backgroundColor: theme.danger + '14' }, Platform.OS === 'web' ? ({ whiteSpace: 'pre' } as any) : null]}>
+              {`- ${line}`}
+            </Text>
+          )) : null}
+          {newText ? newText.split('\n').map((line, i) => (
+            <Text key={`n${i}`} selectable style={[typeScale.mono, styles.diffLine, { color: theme.ok, backgroundColor: theme.ok + '14' }, Platform.OS === 'web' ? ({ whiteSpace: 'pre' } as any) : null]}>
+              {`+ ${line}`}
+            </Text>
+          )) : null}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+// codex apply_patch text with per-line add/remove coloring; markers and hunk
+// headers are dropped (mirrors web's renderPatchLine).
+function PatchBlock({ text }: { text: string }) {
+  const theme = useTheme();
+  const lines = text.split('\n').filter((l) => !l.startsWith('*** Begin Patch') && !l.startsWith('*** End Patch') && !l.startsWith('@@'));
+  return (
+    <View style={[styles.toolCode, { backgroundColor: theme.surfaceMuted, borderColor: theme.border }]}>
+      <ScrollView horizontal style={{ width: '100%' }}>
+        <View>
+          {lines.map((line, i) => {
+            const kind = line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : line.startsWith('*** ') ? 'marker' : 'ctx';
+            const color = kind === 'add' ? theme.ok : kind === 'del' ? theme.danger : kind === 'marker' ? theme.text : theme.textFaint;
+            const bg = kind === 'add' ? theme.ok + '14' : kind === 'del' ? theme.danger + '14' : 'transparent';
+            const shown = kind === 'marker' ? line.replace('*** Update File:', 'Update:') : line;
+            return (
+              <Text key={i} selectable style={[typeScale.mono, styles.diffLine, { color, backgroundColor: bg }, Platform.OS === 'web' ? ({ whiteSpace: 'pre' } as any) : null]}>
+                {shown || ' '}
+              </Text>
+            );
+          })}
+        </View>
+      </ScrollView>
     </View>
   );
 }
@@ -1233,6 +1336,10 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
+  },
+  diffLine: {
+    paddingHorizontal: spacing.xs,
+    lineHeight: 18,
   },
   codeBlock: {
     borderRadius: radius.md,
