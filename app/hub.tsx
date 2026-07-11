@@ -295,10 +295,11 @@ function HubChat({ agent, hubToken }: { agent: HubAgent; hubToken: string }) {
   const [composerH, setComposerH] = useState(96);
 
   const shortWid = agent.wid.split(':')[0];
-  // Reach the node with our hubToken via ?token= (Bearer 401s under the hub's
-  // security model; agent.token no longer exists).
+  // Reach the node with our hubToken via the normal Authorization: Bearer header
+  // (the node accepts it now) — keeps the token out of the URL. (The chat WS
+  // still carries it as ?token= — browser WebSocket can't set headers.)
   const endpoint = useMemo<Endpoint>(
-    () => ({ serverUrl: agent.reach_url, token: hubToken, queryToken: true }),
+    () => ({ serverUrl: agent.reach_url, token: hubToken }),
     [agent.reach_url, hubToken],
   );
   const agentApi = useMemo(() => createApi(endpoint), [endpoint]);
