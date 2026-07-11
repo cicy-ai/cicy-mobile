@@ -70,8 +70,7 @@ export function TeamDrawer({ open, onClose }: Props) {
   const currentTeamId = useAuthStore((s) => s.currentTeamId);
   const switchTeam = useAuthStore((s) => s.switchTeam);
   const removeTeam = useAuthStore((s) => s.removeTeam);
-  const hub = useAuthStore((s) => s.hub);
-  const disconnectHub = useAuthStore((s) => s.disconnectHub);
+  const hubs = useAuthStore((s) => s.hubs);
   const session = useAuthStore((s) => s.session);
   const userEmail = useAuthStore((s) => s.userEmail);
   const tier = useAuthStore((s) => s.tier);
@@ -121,7 +120,6 @@ export function TeamDrawer({ open, onClose }: Props) {
   // Long-press a team → in-app confirm overlay (RN-web's Alert.alert with
   // buttons is a no-op, so a real modal is the only cross-platform way).
   const [confirmTeam, setConfirmTeam] = useState<Team | null>(null);
-  const [confirmHub, setConfirmHub] = useState(false);
 
   async function onConfirmRemove() {
     const team = confirmTeam;
@@ -179,17 +177,13 @@ export function TeamDrawer({ open, onClose }: Props) {
           </View>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list}>
-            {/* Hub — parallel to teams, pinned above them. Tap when connected →
-                the big Hub chat; tap when not → scan a hub QR. Long-press a
-                connected hub → disconnect. */}
+            {/* Hubs — teams below come from them. Tap to scan and add another
+                hub (the app supports several). */}
             <PressableScale
               onPress={() => {
                 onClose();
-                // Hub is the app home — navigate() pops back to it instead of
-                // stacking a second /hub on top of the teams screen.
-                setTimeout(() => (hub ? router.navigate('/hub') : router.push('/scan')), 80);
+                setTimeout(() => router.push('/scan'), 80);
               }}
-              onLongPress={hub ? () => setConfirmHub(true) : undefined}
               haptic
               scaleTo={0.97}
               style={styles.teamRow}
@@ -197,13 +191,13 @@ export function TeamDrawer({ open, onClose }: Props) {
               <View
                 style={[
                   styles.hubIcon,
-                  { backgroundColor: hub ? theme.accent : theme.surface, borderColor: theme.border },
+                  { backgroundColor: hubs.length ? theme.accent : theme.surface, borderColor: theme.border },
                 ]}
               >
                 <Ionicons
                   name="git-network-outline"
                   size={20}
-                  color={hub ? theme.accentText : theme.textMuted}
+                  color={hubs.length ? theme.accentText : theme.textMuted}
                 />
               </View>
               <View style={{ flex: 1, gap: 2 }}>
@@ -211,14 +205,12 @@ export function TeamDrawer({ open, onClose }: Props) {
                   {t('hub.title')}
                 </Text>
                 <Text variant="caption" tone="faint" numberOfLines={1} ellipsizeMode="middle">
-                  {hub ? t('hub.connected') : t('hub.notConnected')}
+                  {hubs.length
+                    ? t('hub.hubCount', { count: hubs.length, defaultValue: '{{count}} connected · scan to add' })
+                    : t('hub.notConnected')}
                 </Text>
               </View>
-              <Ionicons
-                name={hub ? 'ellipse' : 'scan-outline'}
-                size={hub ? 10 : 16}
-                color={hub ? theme.accent : theme.textFaint}
-              />
+              <Ionicons name="add" size={18} color={theme.accent} />
             </PressableScale>
 
             <View style={[styles.sectionDivider, { backgroundColor: theme.border }]} />
@@ -230,7 +222,7 @@ export function TeamDrawer({ open, onClose }: Props) {
                   onPress={() => onPickTeam(team)}
                   // The built-in default team can't be removed — sign out of
                   // the cloud account below instead.
-                  onLongPress={team.builtin ? undefined : () => setConfirmTeam(team)}
+                  onLongPress={team.builtin || team.kind === 'hub' ? undefined : () => setConfirmTeam(team)}
                   haptic
                   scaleTo={0.97}
                   style={styles.teamRow}
@@ -349,20 +341,6 @@ export function TeamDrawer({ open, onClose }: Props) {
           destructive
           onConfirm={() => void onConfirmRemove()}
           onCancel={() => setConfirmTeam(null)}
-        />
-
-        <ConfirmModal
-          open={confirmHub}
-          title={t('hub.disconnectConfirmTitle')}
-          body={t('hub.disconnectConfirmBody')}
-          confirmText={t('hub.disconnect')}
-          cancelText={t('common.cancel')}
-          destructive
-          onConfirm={() => {
-            setConfirmHub(false);
-            void disconnectHub();
-          }}
-          onCancel={() => setConfirmHub(false)}
         />
 
         <ConfirmModal

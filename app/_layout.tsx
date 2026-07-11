@@ -14,6 +14,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { useColorScheme } from 'react-native';
+import { HubConnector } from '@/src/components/HubConnector';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { darkTheme, lightTheme } from '@/src/theme/tokens';
 import { useAuthStore } from '@/src/store/auth';
@@ -149,6 +150,9 @@ export default function RootLayout() {
         {/* Translucent — SystemUI paints theme.bg behind. Icon color tracks
             the active theme so it stays readable against that bg. */}
         <StatusBar style={isDark ? 'light' : 'dark'} />
+        {/* Root-mounted: keeps a WS per connected hub alive across all screens,
+            feeding the team list. Renders nothing. */}
+        <HubConnector />
       </ThemeProvider>
     </SafeAreaProvider>
     </GestureHandlerRootView>

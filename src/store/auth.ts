@@ -56,6 +56,14 @@ type Persisted = {
   currentTeamId: string | null;
 };
 
+// A scanned Hub connection. The app can hold several; teams are sourced from
+// the union of their directories (each reached with that hub's token).
+export type HubConn = { id: string; url: string; token: string; title?: string };
+
+// One hub's latest directory snapshot, handed to setHubTeams by the persistent
+// HubConnector so the team list can be rebuilt across ALL connected hubs.
+export type HubDirEntry = { hubId: string; hubToken: string; agents: HubAgent[] };
+
 export type CloudAccount = {
   email: string;
   /** sk-sess-… login session for this account. */
@@ -102,7 +110,7 @@ type AuthState = {
   /** Replace the team list with the connected Hub's teams — one per `<team>`
    *  group in the directory, reached at the node base with the hubToken via
    *  `?token=`. Called by the HubScreen whenever the directory changes. */
-  setHubTeams: (agents: HubAgent[], hubToken: string) => Promise<void>;
+  setHubTeams: (entries: HubDirEntry[]) => Promise<void>;
   /** Add a new team and select it. Returns the new team id. */
   addTeam: (input: { serverUrl: string; token: string; title?: string }) => Promise<string>;
   /** Remove a team. If it was the current one, falls back to the first remaining team or null. */
@@ -114,13 +122,13 @@ type AuthState = {
   /** Wipe everything — sign out completely. */
   clear: () => Promise<void>;
 
-  // ── Hub (parallel to teams; one scanned connection per device) ──
-  /** The scanned Hub connection, or null when not connected. */
-  hub: { url: string; token: string } | null;
-  /** Persist a scanned Hub connection (from a hub QR). Replaces any existing one. */
-  connectHub: (p: { url: string; token: string }) => Promise<void>;
-  /** Forget the Hub connection. */
-  disconnectHub: () => Promise<void>;
+  // ── Hubs (several scanned connections; teams are sourced from them) ──
+  /** Every scanned Hub connection on this device. */
+  hubs: HubConn[];
+  /** Add a scanned Hub connection (from a hub QR). Appends; de-dupes by url. */
+  connectHub: (p: { url: string; token: string; title?: string }) => Promise<void>;
+  /** Forget one Hub connection by id. */
+  disconnectHub: (id: string) => Promise<void>;
 };
 
 function makeClientId() {
@@ -129,6 +137,10 @@ function makeClientId() {
 
 function makeTeamId() {
   return `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function makeHubId() {
+  return `h-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 // Default title for a team added without one — localized "My Team". The
@@ -305,25 +317,30 @@ function buildCloudTeams(session: string, now: number, fetched: any[], prev: Tea
 // shared by every agent in that team; the hubToken is the team's token, sent via
 // the normal Bearer header (the node accepts it). addedAt is preserved from an
 // existing row of the same id so re-syncs don't reshuffle the drawer order.
-function buildHubTeams(agents: HubAgent[], hubToken: string, now: number, prev: Team[]): Team[] {
+function buildHubTeams(entries: HubDirEntry[], now: number, prev: Team[]): Team[] {
   const prevById = new Map(prev.map((t) => [t.id, t]));
   const out: Team[] = [];
   const seen = new Set<string>();
-  for (const a of agents) {
-    const team = a.team;
-    if (!team || seen.has(team)) continue;
-    const serverUrl = String(a.reach_url || '').replace(/\/+$/, '');
-    if (!serverUrl) continue;
-    seen.add(team);
-    const id = `hub-${team}`;
-    out.push({
-      id,
-      title: team,
-      serverUrl,
-      token: hubToken,
-      addedAt: prevById.get(id)?.addedAt ?? now,
-      kind: 'hub',
-    });
+  for (const { hubId, hubToken, agents } of entries) {
+    for (const a of agents) {
+      const team = a.team;
+      if (!team) continue;
+      // Team id is scoped to its hub so the same team name on two hubs doesn't
+      // collide (and disconnectHub can prune by the `hub:<hubId>:` prefix).
+      const id = `hub:${hubId}:${team}`;
+      if (seen.has(id)) continue;
+      const serverUrl = String(a.reach_url || '').replace(/\/+$/, '');
+      if (!serverUrl) continue;
+      seen.add(id);
+      out.push({
+        id,
+        title: team,
+        serverUrl,
+        token: hubToken,
+        addedAt: prevById.get(id)?.addedAt ?? now,
+        kind: 'hub',
+      });
+    }
   }
   return out;
 }
@@ -339,22 +356,35 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   accounts: [],
   serverUrl: null,
   token: null,
-  hub: null,
+  hubs: [],
 
   connectHub: async (p) => {
-    const hub = { url: p.url.replace(/\/+$/, ''), token: p.token };
-    await storage.setItem(HUB_KEY, JSON.stringify(hub));
-    set({ hub });
+    const url = p.url.replace(/\/+$/, '');
+    const existing = get().hubs.find((h) => h.url === url);
+    // Re-scanning a known hub refreshes its token in place (no duplicate row).
+    const hubs = existing
+      ? get().hubs.map((h) => (h.url === url ? { ...h, token: p.token, title: p.title ?? h.title } : h))
+      : [...get().hubs, { id: makeHubId(), url, token: p.token, title: p.title }];
+    await storage.setItem(HUB_KEY, JSON.stringify(hubs));
+    set({ hubs });
   },
-  disconnectHub: async () => {
-    await storage.removeItem(HUB_KEY).catch(() => {});
-    set({ hub: null });
+  disconnectHub: async (id) => {
+    const hubs = get().hubs.filter((h) => h.id !== id);
+    await storage.setItem(HUB_KEY, JSON.stringify(hubs));
+    set({ hubs });
+    // Its teams disappear on the connector's next recompute; also prune now so
+    // the drawer updates immediately even if that hub's socket is already gone.
+    const teams = get().teams.filter((tm) => !tm.id.startsWith(`hub:${id}:`));
+    let currentTeamId = get().currentTeamId;
+    if (!teams.some((tm) => tm.id === currentTeamId)) currentTeamId = teams[0]?.id ?? null;
+    await persist(teams, currentTeamId);
+    set({ teams, currentTeamId, ...selectCurrent(teams, currentTeamId) });
   },
 
-  setHubTeams: async (agents, hubToken) => {
+  setHubTeams: async (entries) => {
     const prev = get().teams;
     const now = Date.now();
-    const hubTeams = buildHubTeams(agents, hubToken, now, prev);
+    const hubTeams = buildHubTeams(entries, now, prev);
     // The directory streams agent_upsert frames on every metric tick — rebuild
     // only writes the store when the TEAM SET actually changed (id+url+token),
     // otherwise each tick would churn the team list and loop React updates.
@@ -380,12 +410,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       loadAccounts(),
       storage.getItem(HUB_KEY),
     ]);
-    let hub: { url: string; token: string } | null = null;
+    let hubs: HubConn[] = [];
     try {
-      const h = hubRaw ? JSON.parse(hubRaw) : null;
-      if (h?.url && h?.token) hub = { url: String(h.url), token: String(h.token) };
+      const parsed = hubRaw ? JSON.parse(hubRaw) : null;
+      // New format: an array of HubConn. Legacy: a single { url, token } object.
+      const rows = Array.isArray(parsed) ? parsed : parsed?.url ? [parsed] : [];
+      hubs = rows
+        .filter((h: any) => h?.url && h?.token)
+        .map((h: any) => ({
+          id: String(h.id || makeHubId()),
+          url: String(h.url).replace(/\/+$/, ''),
+          token: String(h.token),
+          title: h.title ? String(h.title) : undefined,
+        }));
     } catch { /* ignore corrupt */ }
-    set({ hub });
+    set({ hubs });
     // Migration: devices signed in before the account switcher existed have a
     // session but an empty ACCOUNTS_KEY — seed the list with the active account.
     let accounts = accountsLoaded;
@@ -515,29 +554,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       storage.setItem(USER_ID_KEY, s.userId),
       saveAccounts(accounts),
     ]);
-    set({ accounts });
-
-    // The cloud is the source of truth: mirror exactly the teams the server
-    // returns (NO client-fabricated default team — the retired default team no
-    // longer exists cloud-side, so it must not be synthesized locally). Custom
-    // (QR-scanned) teams are isolated PER ACCOUNT — load only THIS account's, so a
-    // different user never inherits them and switching back restores your own.
-    const now = Date.now();
-    const customs = await loadAccountCustoms(s.email);
-    let cloudTeams: Team[] = [];
-    try {
-      cloudTeams = buildCloudTeams(s.token, now, await fetchCloudTeams(s.token), get().teams);
-    } catch {
-      // leave cloudTeams empty — the drawer shows customs only until a resync
-    }
-    // A locally QR-scanned row for a node the cloud also mirrors would duplicate
-    // it — the mirrored row wins (cloud is the source of truth).
-    const mirrored = new Set(cloudTeams.map((tm) => tm.serverUrl));
-    const teams = [...cloudTeams, ...customs.filter((tm) => !mirrored.has(tm.serverUrl))];
-    const currentTeamId = teams[0]?.id ?? null;
-    await persist(teams, currentTeamId);
-    const sel = selectCurrent(teams, currentTeamId);
-    set({ teams, currentTeamId, session: s.token, userEmail: s.email, tier: null, ...sel });
+    // Teams come from the connected Hubs now — NOT from /api/teams. Cloud login
+    // only drives the account switcher + device liveness + the tier badge; the
+    // team list is left to the HubConnector. (buildCloudTeams / fetchCloudTeams
+    // are retired here on purpose.)
+    set({ session: s.token, userEmail: s.email, tier: null });
     startCloudHeartbeat();
   },
 
@@ -614,9 +635,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       storage.removeItem(USER_EMAIL_KEY).catch(() => {}),
       storage.removeItem(USER_ID_KEY).catch(() => {}),
       storage.removeItem(ACCOUNTS_KEY).catch(() => {}),
+      storage.removeItem(HUB_KEY).catch(() => {}),
     ]);
     await persist([], null);
     stopCloudHeartbeat();
-    set({ teams: [], currentTeamId: null, session: null, userEmail: null, tier: null, accounts: [], serverUrl: null, token: null });
+    set({ teams: [], currentTeamId: null, session: null, userEmail: null, tier: null, accounts: [], serverUrl: null, token: null, hubs: [] });
   },
 }));
