@@ -279,10 +279,17 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
   }
 
   const isEmpty = displayItems.length === 0 && !liveVisible;
-  // Optimistic q shows until the real committed q (id > baseline) lands.
+  // Optimistic q shows until the real committed q lands — by id (> baseline) or,
+  // as a fallback for attachment-only sends whose id races the poll, by matching
+  // the committed user turn's text (else the file bubble shows duplicated).
   const optimisticPending =
     !!optimisticQ &&
-    !displayItems.some((t) => t?.role === 'user' && Number(t?.history_id ?? 0) > optimisticBaselineUserIdRef.current);
+    !displayItems.some(
+      (t) =>
+        t?.role === 'user' &&
+        (Number(t?.history_id ?? 0) > optimisticBaselineUserIdRef.current ||
+          String(t?.q ?? '').trim() === optimisticQ.text.trim()),
+    );
 
   return (
     <View style={{ flex: 1 }}>

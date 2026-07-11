@@ -130,9 +130,14 @@ export default function HubScreen() {
   // ── The single chat, bound to the primary agent (may be null while the hub
   // directory is still loading — the composer stays visible but disabled). ──
   const shortWid = primary ? primary.wid.split(':')[0] : '';
+  // Per w-10122's security change: the hub no longer hands out per-agent node
+  // tokens. Reaching a node (history/send + the http upload) authenticates with
+  // OUR hubToken (the one used for /_client); the hub validates it and the node
+  // dialer swaps in the local token internally. api_token is now 401 on the
+  // public net, so never use agent.token.
   const endpoint = useMemo<Endpoint | null>(
-    () => (primary ? { serverUrl: primary.reach_url, token: primary.token } : null),
-    [primary?.reach_url, primary?.token],
+    () => (primary && hub ? { serverUrl: primary.reach_url, token: hub.token } : null),
+    [primary?.reach_url, hub?.token],
   );
   const agentApi = useMemo(() => (endpoint ? createApi(endpoint) : null), [endpoint]);
 

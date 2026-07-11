@@ -763,7 +763,14 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
     if (!optimisticQ) return;
     let maxUserId = 0;
     for (const it of items) if (it?.role === 'user') maxUserId = Math.max(maxUserId, Number(it?.history_id || 0));
-    if (maxUserId > optimisticBaselineUserIdRef.current) {
+    // Content-match fallback: an attachment-only send (`[file](abs)` / `![img](abs)`)
+    // can commit as a user turn whose history_id doesn't clear the baseline check
+    // (id assignment races the poll), leaving the optimistic bubble duplicated
+    // below the committed one. Also drop it when a committed user turn's text
+    // equals the optimistic text.
+    const optText = optimisticQ.text.trim();
+    const textLanded = !!optText && items.some((it) => it?.role === 'user' && String(it?.q ?? '').trim() === optText);
+    if (maxUserId > optimisticBaselineUserIdRef.current || textLanded) {
       setOptimisticQ(null);
       return;
     }
