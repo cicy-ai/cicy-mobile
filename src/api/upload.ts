@@ -29,15 +29,17 @@ export async function uploadAttachment(
   mime: string,
   endpoint?: { serverUrl: string; token: string; queryToken?: boolean } | null,
 ): Promise<UploadResult> {
-  const { serverUrl, token } = endpoint ?? useAuthStore.getState();
+  const creds = endpoint ?? useAuthStore.getState();
+  const { serverUrl, token } = creds;
   if (!serverUrl || !token) throw new Error('not authenticated');
 
   const safeName = sanitizeName(name);
   const form = new FormData();
   form.append('file', { uri: fileUri, name: safeName, type: mime } as any);
 
-  // Hub endpoints authenticate the hubToken via `?token=` (Bearer 401s).
-  const queryAuth = !!endpoint?.queryToken;
+  // Hub endpoints (and hub-derived active teams) authenticate the hubToken via
+  // `?token=` (Bearer 401s).
+  const queryAuth = !!(creds as { queryToken?: boolean }).queryToken;
   const url = `${serverUrl}/assets/files?pane=${encodeURIComponent(agentId)}${queryAuth ? `&token=${encodeURIComponent(token)}` : ''}`;
 
   let res: Response;

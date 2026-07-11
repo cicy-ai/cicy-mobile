@@ -22,11 +22,11 @@ import type {
 // that header, which the hub no longer exposes). Set it for hub endpoints.
 export type Endpoint = { serverUrl: string; token: string; queryToken?: boolean };
 
-function requireAuth(endpoint?: Endpoint) {
+function requireAuth(endpoint?: Endpoint): Endpoint {
   if (endpoint) return endpoint;
-  const { serverUrl, token } = useAuthStore.getState();
+  const { serverUrl, token, queryToken } = useAuthStore.getState();
   if (!serverUrl || !token) throw new Error('not authenticated');
-  return { serverUrl, token };
+  return { serverUrl, token, queryToken };
 }
 
 // Hard cap on any API request. Without it, a request the tunnel stalls hangs
@@ -37,12 +37,14 @@ function requireAuth(endpoint?: Endpoint) {
 const REQUEST_TIMEOUT_MS = 15000;
 
 async function request<T>(path: string, init?: RequestInit, endpoint?: Endpoint): Promise<T> {
-  const { serverUrl, token } = requireAuth(endpoint);
+  const auth = requireAuth(endpoint);
+  const { serverUrl, token } = auth;
   const ctrl = new AbortController();
   const killer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
-  // Hub endpoints authenticate the hubToken via `?token=` (Bearer 401s). Append
-  // it to the URL and skip the Bearer/X-Cicy-Token headers entirely.
-  const queryAuth = !!endpoint?.queryToken;
+  // Hub endpoints (and hub-derived active teams) authenticate the hubToken via
+  // `?token=` (Bearer 401s). Append it to the URL and skip the Bearer/X-Cicy-Token
+  // headers entirely.
+  const queryAuth = !!auth.queryToken;
   const url = queryAuth
     ? `${serverUrl}${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
     : `${serverUrl}${path}`;

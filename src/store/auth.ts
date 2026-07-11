@@ -5,6 +5,7 @@ import { create } from 'zustand';
 
 import i18n from '@/src/i18n';
 import { fetchCloudTeams, type CloudSession } from '@/src/api/cloudAuth';
+import type { HubAgent } from '@/src/api/hubws';
 import { fetchTier, registerDevice } from '@/src/api/cloudDevice';
 import { storage } from './storage';
 
@@ -35,8 +36,12 @@ export type Team = {
   token: string;
   /** epoch ms — used to seed default order in the drawer. */
   addedAt: number;
-  /** cloud = came from cicy-cloud (token is the session); custom = QR-scanned. */
-  kind?: 'cloud' | 'custom';
+  /** cloud = came from cicy-cloud (token is the session); custom = QR-scanned;
+   *  hub = derived from the connected Hub's directory (token is the hubToken). */
+  kind?: 'cloud' | 'custom' | 'hub';
+  /** Authenticate this team's node with the token via `?token=` instead of a
+   *  Bearer header. Hub-derived teams need this (the node 401s on Bearer). */
+  queryToken?: boolean;
   /**
    * The server-side team_kind of a mirrored row ('cloud' | 'custom' | 'private'
    * | 'local'). Only true cloud-hosted tenants ('cloud') use the panes-only
@@ -96,6 +101,12 @@ type AuthState = {
   // and `requireAuth()` in http.ts throws as it always did.
   serverUrl: string | null;
   token: string | null;
+  /** Whether the selected team authenticates via `?token=` (hub-derived teams). */
+  queryToken: boolean;
+  /** Replace the team list with the connected Hub's teams — one per `<team>`
+   *  group in the directory, reached at the node base with the hubToken via
+   *  `?token=`. Called by the HubScreen whenever the directory changes. */
+  setHubTeams: (agents: HubAgent[], hubToken: string) => Promise<void>;
   /** Add a new team and select it. Returns the new team id. */
   addTeam: (input: { serverUrl: string; token: string; title?: string }) => Promise<string>;
   /** Remove a team. If it was the current one, falls back to the first remaining team or null. */
@@ -205,6 +216,7 @@ function selectCurrent(teams: Team[], currentTeamId: string | null) {
   return {
     serverUrl: cur?.serverUrl ?? null,
     token: cur?.token ?? null,
+    queryToken: !!cur?.queryToken,
   };
 }
 
@@ -224,7 +236,8 @@ async function cloudBeat() {
     return;
   }
   await registerDevice(session).catch(() => {});
-  await st.syncCloudTeams().catch(() => {});
+  // Teams come from the connected Hub now — no longer mirrored from /api/teams.
+  // (The cloud session still drives device liveness + the account tier badge.)
   try {
     const tier = await fetchTier(session);
     // Guard against a race: only apply if the same account is still active.
@@ -292,6 +305,35 @@ function buildCloudTeams(session: string, now: number, fetched: any[], prev: Tea
   return out;
 }
 
+// Map the connected Hub's directory into local Team rows — one per `<team>`
+// group. The node base is the agent's reach_url (https://<team>.hub.cicy-ai.com),
+// shared by every agent in that team; the hubToken authenticates via `?token=`
+// (queryToken:true). addedAt is preserved from an existing row of the same id so
+// re-syncs don't reshuffle the drawer order.
+function buildHubTeams(agents: HubAgent[], hubToken: string, now: number, prev: Team[]): Team[] {
+  const prevById = new Map(prev.map((t) => [t.id, t]));
+  const out: Team[] = [];
+  const seen = new Set<string>();
+  for (const a of agents) {
+    const team = a.team;
+    if (!team || seen.has(team)) continue;
+    const serverUrl = String(a.reach_url || '').replace(/\/+$/, '');
+    if (!serverUrl) continue;
+    seen.add(team);
+    const id = `hub-${team}`;
+    out.push({
+      id,
+      title: team,
+      serverUrl,
+      token: hubToken,
+      queryToken: true,
+      addedAt: prevById.get(id)?.addedAt ?? now,
+      kind: 'hub',
+    });
+  }
+  return out;
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   teams: [],
   currentTeamId: null,
@@ -303,6 +345,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   accounts: [],
   serverUrl: null,
   token: null,
+  queryToken: false,
   hub: null,
 
   connectHub: async (p) => {
@@ -313,6 +356,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   disconnectHub: async () => {
     await storage.removeItem(HUB_KEY).catch(() => {});
     set({ hub: null });
+  },
+
+  setHubTeams: async (agents, hubToken) => {
+    const now = Date.now();
+    const hubTeams = buildHubTeams(agents, hubToken, now, get().teams);
+    // The Hub is the sole source of teams now — replace the list entirely.
+    // Keep the current selection if that team is still present, else pick the
+    // first (the coordinator's team tends to sort first in the directory).
+    let currentTeamId = get().currentTeamId;
+    if (!hubTeams.some((tm) => tm.id === currentTeamId)) currentTeamId = hubTeams[0]?.id ?? null;
+    await persist(hubTeams, currentTeamId);
+    const sel = selectCurrent(hubTeams, currentTeamId);
+    set({ teams: hubTeams, currentTeamId, ...sel });
   },
 
   hydrate: async () => {

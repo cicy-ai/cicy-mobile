@@ -62,6 +62,7 @@ export default function HubScreen() {
   const { t } = useTranslation();
   const theme = useTheme();
   const hub = useAuthStore((s) => s.hub);
+  const setHubTeams = useAuthStore((s) => s.setHubTeams);
   const { width } = useWindowDimensions();
   const isWide = width >= WIDE_BP;
 
@@ -87,7 +88,12 @@ export default function HubScreen() {
     if (!hub) return;
     const client = new HubWsClient({ hubUrl: hub.url, hubToken: hub.token });
     clientRef.current = client;
-    const offDir = client.onDirectory((d) => setDirectory(d));
+    const offDir = client.onDirectory((d) => {
+      setDirectory(d);
+      // Mirror the hub's teams into the team list so the drawer + /agents see
+      // them (each <team> group → a queryToken team reached at the node base).
+      void setHubTeams(d, hub.token);
+    });
     const offStatus = client.onStatus((s) => setStatus(s));
     client.connect();
     return () => {
