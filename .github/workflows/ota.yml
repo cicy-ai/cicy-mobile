@@ -31,8 +31,11 @@ jobs:
       # Use the newest v* tag — that's the APK generation this JS runs on.
       - name: Sync version from latest release tag
         run: |
-          git fetch --tags --quiet
+          # --force: a redundant tag fetch must never fail the build on a
+          # "would clobber existing tag"; --quiet hid that error before.
+          git fetch --tags --force
           VER=$(git describe --tags --match 'v*' --abbrev=0 | sed 's/^v//')
+          echo "Resolved release version: $VER"
           node scripts/sync-version.mjs "$VER"
       - name: Export update bundles (android + ios)
         run: npx expo export -p android -p ios
@@ -59,8 +62,11 @@ jobs:
         run: npm ci
       - name: Sync version from latest release tag
         run: |
-          git fetch --tags --quiet
+          # --force: a redundant tag fetch must never fail the build on a
+          # "would clobber existing tag"; --quiet hid that error before.
+          git fetch --tags --force
           VER=$(git describe --tags --match 'v*' --abbrev=0 | sed 's/^v//')
+          echo "Resolved release version: $VER"
           node scripts/sync-version.mjs "$VER"
       - name: Build web export
         run: npx expo export -p web
