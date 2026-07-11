@@ -37,11 +37,9 @@ export type Team = {
   /** epoch ms — used to seed default order in the drawer. */
   addedAt: number;
   /** cloud = came from cicy-cloud (token is the session); custom = QR-scanned;
-   *  hub = derived from the connected Hub's directory (token is the hubToken). */
+   *  hub = derived from the connected Hub's directory (token is the hubToken,
+   *  sent via the normal Bearer header — the node accepts it). */
   kind?: 'cloud' | 'custom' | 'hub';
-  /** Authenticate this team's node with the token via `?token=` instead of a
-   *  Bearer header. Hub-derived teams need this (the node 401s on Bearer). */
-  queryToken?: boolean;
   /**
    * The server-side team_kind of a mirrored row ('cloud' | 'custom' | 'private'
    * | 'local'). Only true cloud-hosted tenants ('cloud') use the panes-only
@@ -101,8 +99,6 @@ type AuthState = {
   // and `requireAuth()` in http.ts throws as it always did.
   serverUrl: string | null;
   token: string | null;
-  /** Whether the selected team authenticates via `?token=` (hub-derived teams). */
-  queryToken: boolean;
   /** Replace the team list with the connected Hub's teams — one per `<team>`
    *  group in the directory, reached at the node base with the hubToken via
    *  `?token=`. Called by the HubScreen whenever the directory changes. */
@@ -216,7 +212,6 @@ function selectCurrent(teams: Team[], currentTeamId: string | null) {
   return {
     serverUrl: cur?.serverUrl ?? null,
     token: cur?.token ?? null,
-    queryToken: !!cur?.queryToken,
   };
 }
 
@@ -307,9 +302,9 @@ function buildCloudTeams(session: string, now: number, fetched: any[], prev: Tea
 
 // Map the connected Hub's directory into local Team rows — one per `<team>`
 // group. The node base is the agent's reach_url (https://<team>.hub.cicy-ai.com),
-// shared by every agent in that team; the hubToken authenticates via `?token=`
-// (queryToken:true). addedAt is preserved from an existing row of the same id so
-// re-syncs don't reshuffle the drawer order.
+// shared by every agent in that team; the hubToken is the team's token, sent via
+// the normal Bearer header (the node accepts it). addedAt is preserved from an
+// existing row of the same id so re-syncs don't reshuffle the drawer order.
 function buildHubTeams(agents: HubAgent[], hubToken: string, now: number, prev: Team[]): Team[] {
   const prevById = new Map(prev.map((t) => [t.id, t]));
   const out: Team[] = [];
@@ -326,7 +321,6 @@ function buildHubTeams(agents: HubAgent[], hubToken: string, now: number, prev: 
       title: team,
       serverUrl,
       token: hubToken,
-      queryToken: true,
       addedAt: prevById.get(id)?.addedAt ?? now,
       kind: 'hub',
     });
@@ -345,7 +339,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   accounts: [],
   serverUrl: null,
   token: null,
-  queryToken: false,
   hub: null,
 
   connectHub: async (p) => {
