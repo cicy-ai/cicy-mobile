@@ -28,6 +28,7 @@ export default function ScanWeb() {
   const session = useAuthStore((s) => s.session);
   const canGoBack = teams.length > 0;
   const addTeam = useAuthStore((s) => s.addTeam);
+  const connectHub = useAuthStore((s) => s.connectHub);
 
   // This screen IS the first content when no team exists — drop the splash.
   useEffect(() => {
@@ -50,6 +51,19 @@ export default function ScanWeb() {
   async function join(raw: string) {
     setError(null);
     const parsed = parsePayload(raw);
+    // Hub payload (cicy://hub?... or JSON {type:'hub',...}) → connect the Hub.
+    // Web has no camera, so this pasted/URL path is the only way to join a hub.
+    if (parsed?.hub) {
+      setBusy(true);
+      try {
+        await connectHub(parsed.hub);
+        router.replace('/hub');
+      } catch (e: any) {
+        setError(String(e?.message ?? e));
+        setBusy(false);
+      }
+      return;
+    }
     if (!parsed || !parsed.server || !parsed.token) {
       setError(t('scan.invalidBody', { raw: raw.slice(0, 80) }));
       return;
