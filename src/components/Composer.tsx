@@ -243,6 +243,19 @@ export function Composer({
               // web ONLY — on native numberOfLines can CAP visible lines, which
               // we must not do. maxHeight:140 still caps growth on both.
               {...(IS_WEB ? { numberOfLines: 1 } : {})}
+              // Web: Enter sends, Shift+Enter inserts a newline (chat convention).
+              // Native keeps Enter = newline (send is the button / voice).
+              onKeyPress={
+                IS_WEB
+                  ? (e: any) => {
+                      const ne = e?.nativeEvent ?? {};
+                      if (ne.key === 'Enter' && !ne.shiftKey) {
+                        e.preventDefault?.();
+                        if (!disabled && !sending && (hasText || canSendEmpty)) onSubmit();
+                      }
+                    }
+                  : undefined
+              }
               editable={!disabled}
               style={[styles.input, typeScale.body, { color: theme.text }]}
             />
