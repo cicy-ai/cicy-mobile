@@ -359,8 +359,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   setHubTeams: async (agents, hubToken) => {
+    const prev = get().teams;
     const now = Date.now();
-    const hubTeams = buildHubTeams(agents, hubToken, now, get().teams);
+    const hubTeams = buildHubTeams(agents, hubToken, now, prev);
+    // The directory streams agent_upsert frames on every metric tick — rebuild
+    // only writes the store when the TEAM SET actually changed (id+url+token),
+    // otherwise each tick would churn the team list and loop React updates.
+    const sig = (ts: Team[]) => ts.map((t) => `${t.id}|${t.serverUrl}|${t.token}`).sort().join(',');
+    if (sig(prev) === sig(hubTeams)) return;
     // The Hub is the sole source of teams now — replace the list entirely.
     // Keep the current selection if that team is still present, else pick the
     // first (the coordinator's team tends to sort first in the directory).
