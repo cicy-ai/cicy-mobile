@@ -38,5 +38,13 @@ const HARNESS_BLOCK_GLOBAL_RE = new RegExp(`<(${TAGS})>[\\s\\S]*?</\\1>`, 'g');
 export function stripHarnessNoise(text: string): string {
   let s = splitLeadingHarnessBlocks(text).remaining;
   s = s.replace(HARNESS_BLOCK_GLOBAL_RE, '');
+  // Images shared from the phone bridge arrive wrapped as
+  // `<bash-input>[img.png](path)</bash-input>` followed by a bash echo/eval
+  // error. Unwrap the input so the attachment link surfaces (and renders as a
+  // thumbnail), and drop the stdout/stderr echo noise — plus any orphan bash
+  // tags left by message-splitting (e.g. a lone `</bash-stderr>`).
+  s = s.replace(/<bash-input>([\s\S]*?)<\/bash-input>/g, '$1');
+  s = s.replace(/<bash-(stdout|stderr)>[\s\S]*?<\/bash-\1>/g, '');
+  s = s.replace(/<\/?bash-(input|stdout|stderr)>/g, '');
   return s.trim();
 }

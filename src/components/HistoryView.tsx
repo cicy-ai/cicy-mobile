@@ -418,8 +418,16 @@ function splitQuestionMedia(text: string): { body: string; media: QMedia[] } {
     if (m) {
       const url = m[3];
       const isVideo = /\.(mp4|mov|m4v|webm|3gp|mkv)(\?|$)/i.test(url) || m[2].startsWith('🎬');
-      if (isAssetRef(url) || (/^https?:/.test(url) && (m[1] === '!' || isVideo))) {
-        media.push({ url, name: m[2].replace(/^🎬\s*/, ''), isImage: m[1] === '!' && !isVideo, isVideo });
+      // An image shared into the composer can arrive as a plain markdown LINK
+      // `[foo.png](path)` (no `!`) — treat any asset/link whose name or url has
+      // an image extension as an image so it renders as a thumbnail, not a
+      // blank file card.
+      const looksImage =
+        !isVideo &&
+        (/\.(png|jpe?g|gif|webp|heic|heif|bmp|svg)(\?|$)/i.test(url) ||
+          /\.(png|jpe?g|gif|webp|heic|heif|bmp|svg)$/i.test(m[2]));
+      if (isAssetRef(url) || (/^https?:/.test(url) && (m[1] === '!' || isVideo || looksImage))) {
+        media.push({ url, name: m[2].replace(/^🎬\s*/, ''), isImage: (m[1] === '!' || looksImage) && !isVideo, isVideo });
         continue;
       }
     }
@@ -1069,10 +1077,16 @@ function MarkdownBlocks({ text, theme }: { text: string; theme: ReturnType<typeo
     //   [name](/assets/…)  → file card (tap → open)
     const media = /^\s*(!?)\[([^\]]*)\]\(([^)]+)\)\s*$/.exec(line);
     if (media) {
-      const isImage = media[1] === '!';
       const label = media[2].replace(/^🎬\s*/, '');
       const url = media[3];
       const isVideo = /\.(mp4|mov|m4v|webm|3gp|mkv)(\?|$)/i.test(url) || media[2].startsWith('🎬');
+      // An image shared as a plain markdown link `[foo.png](path)` (no `!`) still
+      // renders as a thumbnail — detect it by the image extension.
+      const isImage =
+        !isVideo &&
+        (media[1] === '!' ||
+          /\.(png|jpe?g|gif|webp|heic|heif|bmp|svg)(\?|$)/i.test(url) ||
+          /\.(png|jpe?g|gif|webp|heic|heif|bmp|svg)$/i.test(media[2]));
       // Render as an attachment block when it targets one of our uploaded assets
       // (servable /assets/files/ URL OR an absolute /…/cicy-ai/assets/ host path,
       // which is what a file attachment is now embedded as — agent-readable), or
