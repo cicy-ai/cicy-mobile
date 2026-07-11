@@ -136,7 +136,7 @@ export default function HubScreen() {
   // dialer swaps in the local token internally. api_token is now 401 on the
   // public net, so never use agent.token.
   const endpoint = useMemo<Endpoint | null>(
-    () => (primary && hub ? { serverUrl: primary.reach_url, token: hub.token } : null),
+    () => (primary && hub ? { serverUrl: primary.reach_url, token: hub.token, queryToken: true } : null),
     [primary?.reach_url, hub?.token],
   );
   const agentApi = useMemo(() => (endpoint ? createApi(endpoint) : null), [endpoint]);

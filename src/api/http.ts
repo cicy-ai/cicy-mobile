@@ -15,9 +15,12 @@ import type {
 } from './types';
 
 // An explicit server base + token, used when the caller is NOT the current
-// team — e.g. a Hub agent, whose reach_url + node api_token come from the hub
-// directory. Omit it and the request falls back to the active team in the store.
-export type Endpoint = { serverUrl: string; token: string };
+// team — e.g. a Hub agent, reached at its `reach_url`. Omit it and the request
+// falls back to the active team in the store.
+// `queryToken`: the hub authenticates node HTTP with the hubToken passed as
+// `?token=` (Bearer hubToken 401s — the node only accepts its own api_token on
+// that header, which the hub no longer exposes). Set it for hub endpoints.
+export type Endpoint = { serverUrl: string; token: string; queryToken?: boolean };
 
 function requireAuth(endpoint?: Endpoint) {
   if (endpoint) return endpoint;
@@ -37,9 +40,15 @@ async function request<T>(path: string, init?: RequestInit, endpoint?: Endpoint)
   const { serverUrl, token } = requireAuth(endpoint);
   const ctrl = new AbortController();
   const killer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  // Hub endpoints authenticate the hubToken via `?token=` (Bearer 401s). Append
+  // it to the URL and skip the Bearer/X-Cicy-Token headers entirely.
+  const queryAuth = !!endpoint?.queryToken;
+  const url = queryAuth
+    ? `${serverUrl}${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+    : `${serverUrl}${path}`;
   let res: Response;
   try {
-    res = await fetch(`${serverUrl}${path}`, {
+    res = await fetch(url, {
       ...init,
       signal: ctrl.signal,
       headers: {
@@ -49,8 +58,8 @@ async function request<T>(path: string, init?: RequestInit, endpoint?: Endpoint)
         // blocks the request ("Failed to fetch"). The server authenticates via
         // Authorization: Bearer anyway (X-Cicy-Token on its own returns 401), so we
         // only send it on native, where there's no CORS to satisfy.
-        ...(Platform.OS === 'web' ? {} : { 'X-Cicy-Token': token }),
-        Authorization: `Bearer ${token}`,
+        ...(queryAuth || Platform.OS === 'web' ? {} : { 'X-Cicy-Token': token }),
+        ...(queryAuth ? {} : { Authorization: `Bearer ${token}` }),
         ...(init?.headers ?? {}),
       },
     });

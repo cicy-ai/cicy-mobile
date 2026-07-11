@@ -27,7 +27,7 @@ export async function uploadAttachment(
   fileUri: string,
   name: string,
   mime: string,
-  endpoint?: { serverUrl: string; token: string } | null,
+  endpoint?: { serverUrl: string; token: string; queryToken?: boolean } | null,
 ): Promise<UploadResult> {
   const { serverUrl, token } = endpoint ?? useAuthStore.getState();
   if (!serverUrl || !token) throw new Error('not authenticated');
@@ -36,13 +36,15 @@ export async function uploadAttachment(
   const form = new FormData();
   form.append('file', { uri: fileUri, name: safeName, type: mime } as any);
 
-  const url = `${serverUrl}/assets/files?pane=${encodeURIComponent(agentId)}`;
+  // Hub endpoints authenticate the hubToken via `?token=` (Bearer 401s).
+  const queryAuth = !!endpoint?.queryToken;
+  const url = `${serverUrl}/assets/files?pane=${encodeURIComponent(agentId)}${queryAuth ? `&token=${encodeURIComponent(token)}` : ''}`;
 
   let res: Response;
   try {
     res = await fetch(url, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: queryAuth ? {} : { Authorization: `Bearer ${token}` },
       body: form as any,
     });
   } catch (e: any) {
