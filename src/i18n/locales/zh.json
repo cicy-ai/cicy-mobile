@@ -66,6 +66,7 @@
     "signOutConfirmBody": "云端团队将从此设备移除;扫码添加的团队保留。"
   },
   "account": {
+    "switchTitle": "账号",
     "add": "添加账号",
     "remove": "移除",
     "removeConfirmTitle": "移除账号?",
@@ -87,7 +88,8 @@
     "title": "Hub",
     "connected": "已连接",
     "notConnected": "扫码连接 Hub",
-    "scanToConnect": "扫码连接",
+    "scanToConnect": "扫码连接 Hub",
+    "addHub": "添加 Hub",
     "disconnect": "断开",
     "disconnectConfirmTitle": "断开 Hub？",
     "disconnectConfirmBody": "将从此设备移除该 Hub 连接。可重新扫码恢复。",

@@ -20,12 +20,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Ionicons } from '@expo/vector-icons';
 
+import { AccountSwitcher } from './AccountSwitcher';
 import { ConfirmModal } from './ConfirmModal';
 import { PressableScale } from './PressableScale';
 import { TeamAvatar } from './TeamAvatar';
 import { Text } from './Text';
 import { runningOtaLabel } from '@/src/lib/otaInfo';
-import { useAuthStore, type Team } from '@/src/store/auth';
+import { useAuthStore, type HubConn, type Team } from '@/src/store/auth';
 import { radius, spacing, useTheme } from '@/src/theme';
 
 type Props = {
@@ -71,14 +72,12 @@ export function TeamDrawer({ open, onClose }: Props) {
   const switchTeam = useAuthStore((s) => s.switchTeam);
   const removeTeam = useAuthStore((s) => s.removeTeam);
   const hubs = useAuthStore((s) => s.hubs);
+  const disconnectHub = useAuthStore((s) => s.disconnectHub);
   const session = useAuthStore((s) => s.session);
   const userEmail = useAuthStore((s) => s.userEmail);
   const tier = useAuthStore((s) => s.tier);
-  const accounts = useAuthStore((s) => s.accounts);
-  const switchAccount = useAuthStore((s) => s.switchAccount);
-  const removeAccount = useAuthStore((s) => s.removeAccount);
-  const [confirmAccount, setConfirmAccount] = useState<string | null>(null);
-  const [switching, setSwitching] = useState<string | null>(null);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [confirmHub, setConfirmHub] = useState<HubConn | null>(null);
 
   // Built-in default team pinned first, then cloud teams, then scanned customs
   // (each group keeps its addedAt order).
@@ -177,8 +176,26 @@ export function TeamDrawer({ open, onClose }: Props) {
           </View>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list}>
-            {/* Hubs — teams below come from them. Tap to scan and add another
-                hub (the app supports several). */}
+            {/* Hubs — teams below are sourced from these. ✕ disconnects one;
+                the ＋ row scans another (the app supports several). */}
+            {hubs.map((h) => (
+              <View key={h.id} style={styles.teamRow}>
+                <View style={[styles.hubIcon, { backgroundColor: theme.accent, borderColor: theme.border }]}>
+                  <Ionicons name="git-network-outline" size={20} color={theme.accentText} />
+                </View>
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Text variant="callout" numberOfLines={1}>
+                    {h.title || t('hub.title')}
+                  </Text>
+                  <Text variant="caption" tone="faint" numberOfLines={1} ellipsizeMode="middle">
+                    {h.url.replace(/^https?:\/\//, '')}
+                  </Text>
+                </View>
+                <PressableScale onPress={() => setConfirmHub(h)} haptic hitSlop={10}>
+                  <Ionicons name="close-circle-outline" size={18} color={theme.textFaint} />
+                </PressableScale>
+              </View>
+            ))}
             <PressableScale
               onPress={() => {
                 onClose();
@@ -188,29 +205,12 @@ export function TeamDrawer({ open, onClose }: Props) {
               scaleTo={0.97}
               style={styles.teamRow}
             >
-              <View
-                style={[
-                  styles.hubIcon,
-                  { backgroundColor: hubs.length ? theme.accent : theme.surface, borderColor: theme.border },
-                ]}
-              >
-                <Ionicons
-                  name="git-network-outline"
-                  size={20}
-                  color={hubs.length ? theme.accentText : theme.textMuted}
-                />
+              <View style={[styles.hubIcon, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                <Ionicons name="add" size={20} color={theme.accent} />
               </View>
-              <View style={{ flex: 1, gap: 2 }}>
-                <Text variant="callout" numberOfLines={1}>
-                  {t('hub.title')}
-                </Text>
-                <Text variant="caption" tone="faint" numberOfLines={1} ellipsizeMode="middle">
-                  {hubs.length
-                    ? t('hub.hubCount', { count: hubs.length, defaultValue: '{{count}} connected · scan to add' })
-                    : t('hub.notConnected')}
-                </Text>
-              </View>
-              <Ionicons name="add" size={18} color={theme.accent} />
+              <Text variant="callout" style={{ color: theme.accent, flex: 1 }}>
+                {hubs.length ? t('hub.addHub', { defaultValue: 'Add hub' }) : t('hub.scanToConnect')}
+              </Text>
             </PressableScale>
 
             <View style={[styles.sectionDivider, { backgroundColor: theme.border }]} />
@@ -244,79 +244,41 @@ export function TeamDrawer({ open, onClose }: Props) {
             })}
           </ScrollView>
 
-          {/* cicy-cloud accounts — every account signed in on this device.
-              Tap → switch (rebuilds the team list for that account); long-press
-              → remove from the device; ＋ row → email login for another one. */}
+          {/* Current account only — the small ⇄ button opens the global account
+              switcher (WeChat-style) to switch / add / remove others. */}
           <View style={[styles.accounts, { borderTopColor: theme.border }]}>
-            {accounts.map((acct) => {
-              const active = session != null && acct.email.toLowerCase() === (userEmail || '').toLowerCase();
-              const busy = switching === acct.email;
-              return (
-                <PressableScale
-                  key={acct.email.toLowerCase()}
-                  onPress={() => {
-                    if (active || switching) return;
-                    setSwitching(acct.email);
-                    void (async () => {
-                      try {
-                        await switchAccount(acct.email);
-                      } finally {
-                        setSwitching(null);
-                        onClose();
-                      }
-                    })();
-                  }}
-                  onLongPress={() => setConfirmAccount(acct.email)}
-                  haptic
-                  scaleTo={0.97}
-                  style={styles.accountRow}
-                >
-                  <Ionicons
-                    name={active ? 'cloud-done-outline' : 'cloud-outline'}
-                    size={18}
-                    color={active ? theme.accent : theme.textFaint}
-                  />
-                  <Text
-                    variant="caption"
-                    tone={active ? undefined : 'muted'}
-                    numberOfLines={1}
-                    style={{ flex: 1 }}
-                  >
-                    {acct.email}
-                  </Text>
-                  {active && tierLabel(tier) ? (
-                    <View style={[styles.tierBadge, { backgroundColor: theme.accent + '22', borderColor: theme.accent + '55' }]}>
-                      <Text variant="caption" style={{ color: theme.accent, fontSize: 10, fontWeight: '600' }}>
-                        {tierLabel(tier)}
-                      </Text>
-                    </View>
-                  ) : null}
-                  {busy ? (
-                    <Text variant="caption" tone="faint">…</Text>
-                  ) : active ? (
-                    <Ionicons name="checkmark" size={16} color={theme.accent} />
-                  ) : null}
-                </PressableScale>
-              );
-            })}
-            <PressableScale
-              onPress={() => {
-                onClose();
-                setTimeout(() => router.push('/login'), 80);
-              }}
-              haptic
-              scaleTo={0.97}
-              style={styles.accountRow}
-            >
+            <View style={styles.accountRow}>
               <Ionicons
-                name={accounts.length ? 'add-circle-outline' : 'cloud-outline'}
+                name={session ? 'cloud-done-outline' : 'cloud-outline'}
                 size={18}
-                color={theme.accent}
+                color={session ? theme.accent : theme.textFaint}
               />
-              <Text variant="callout" style={{ color: theme.accent }}>
-                {accounts.length ? t('account.add') : t('login.entry')}
+              <Text variant="caption" tone={session ? undefined : 'muted'} numberOfLines={1} style={{ flex: 1 }}>
+                {session ? userEmail || t('login.entry') : t('login.entry')}
               </Text>
-            </PressableScale>
+              {session && tierLabel(tier) ? (
+                <View style={[styles.tierBadge, { backgroundColor: theme.accent + '22', borderColor: theme.accent + '55' }]}>
+                  <Text variant="caption" style={{ color: theme.accent, fontSize: 10, fontWeight: '600' }}>
+                    {tierLabel(tier)}
+                  </Text>
+                </View>
+              ) : null}
+              <PressableScale
+                onPress={() => {
+                  if (session) setSwitcherOpen(true);
+                  else {
+                    onClose();
+                    setTimeout(() => router.push('/login'), 80);
+                  }
+                }}
+                haptic
+                scaleTo={0.94}
+                hitSlop={10}
+                style={[styles.switchBtn, { borderColor: theme.border }]}
+              >
+                <Ionicons name="swap-horizontal" size={18} color={theme.accent} />
+              </PressableScale>
+            </View>
           </View>
 
           {/* 会议实录 is shelved — switch hidden on request (store kept, so
@@ -344,27 +306,21 @@ export function TeamDrawer({ open, onClose }: Props) {
         />
 
         <ConfirmModal
-          open={!!confirmAccount}
-          title={t('account.removeConfirmTitle')}
-          body={confirmAccount ? t('account.removeConfirmBody', { email: confirmAccount }) : undefined}
-          confirmText={t('account.remove')}
+          open={!!confirmHub}
+          title={t('hub.disconnectConfirmTitle')}
+          body={t('hub.disconnectConfirmBody')}
+          confirmText={t('hub.disconnect')}
           cancelText={t('common.cancel')}
           destructive
           onConfirm={() => {
-            const email = confirmAccount;
-            setConfirmAccount(null);
-            if (!email) return;
-            void (async () => {
-              await removeAccount(email);
-              const remaining = useAuthStore.getState().teams;
-              if (remaining.length === 0) {
-                onClose();
-                setTimeout(() => router.replace('/scan'), 50);
-              }
-            })();
+            const h = confirmHub;
+            setConfirmHub(null);
+            if (h) void disconnectHub(h.id);
           }}
-          onCancel={() => setConfirmAccount(null)}
+          onCancel={() => setConfirmHub(null)}
         />
+
+        <AccountSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
       </View>
     </Modal>
   );
@@ -386,6 +342,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.xs,
     paddingBottom: spacing.lg,
+  },
+  switchBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   scanBtn: {
     width: 38,

@@ -66,6 +66,7 @@
     "signOutConfirmBody": "Cloud teams will be removed from this device; QR-scanned teams stay."
   },
   "account": {
+    "switchTitle": "Accounts",
     "add": "Add account",
     "remove": "Remove",
     "removeConfirmTitle": "Remove account?",
@@ -87,7 +88,8 @@
     "title": "Hub",
     "connected": "Connected",
     "notConnected": "Scan to connect a Hub",
-    "scanToConnect": "Scan to connect",
+    "scanToConnect": "Scan to connect a hub",
+    "addHub": "Add hub",
     "disconnect": "Disconnect",
     "disconnectConfirmTitle": "Disconnect Hub?",
     "disconnectConfirmBody": "This Hub connection will be removed from this device. You can re-add it by scanning again.",
