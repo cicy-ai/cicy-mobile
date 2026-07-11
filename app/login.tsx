@@ -92,7 +92,8 @@ export default function Login() {
     setPhase('joining');
     try {
       await loginCloud(outcome.session);
-      router.replace('/agents');
+      // Back through the index gate: no hub yet → scan one; otherwise /agents.
+      router.replace('/');
     } catch (e: any) {
       setPhase('idle');
       setError(String(e?.message ?? e));
