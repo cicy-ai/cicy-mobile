@@ -27,7 +27,7 @@ import { storage } from '@/src/store/storage';
 import { radius, spacing, useTheme } from '@/src/theme';
 
 const URL_KEY = 'sherlly.petUrl';
-const DEFAULT_URL = 'http://192.168.253.244:13004/pet.html';
+const DEFAULT_URL = 'https://pet.cicy-ai.com/pet.html';
 
 export default function PetScreen() {
   const theme = useTheme();
