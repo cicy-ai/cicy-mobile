@@ -146,6 +146,7 @@ export default function RootLayout() {
           <Stack.Screen name="login" options={{ headerShown: false }} />
           {/* Hub — draws its own nav row (directory + big chat). */}
           <Stack.Screen name="hub" options={{ headerShown: false }} />
+          <Stack.Screen name="pet" options={{ headerShown: false }} />
         </Stack>
         {/* Translucent — SystemUI paints theme.bg behind. Icon color tracks
             the active theme so it stays readable against that bg. */}

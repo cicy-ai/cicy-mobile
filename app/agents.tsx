@@ -587,6 +587,17 @@ export default function Agents() {
         )}
       </View>
 
+      {/* 🪐 雪莉 — 住在手机里的桌宠(WebView 直连桌面机 cicy-pet 服务) */}
+      <PressableScale
+        onPress={() => router.push('/pet')}
+        haptic
+        scaleTo={0.94}
+        style={[styles.iconBtnFallback, { backgroundColor: theme.surface, borderColor: theme.border, marginRight: 8 }]}
+        hitSlop={6}
+      >
+        <Ionicons name="planet-outline" size={20} color={theme.text} />
+      </PressableScale>
+
       {/* ⊕ — TeamPanel-toolbar parity: create new OR bind an existing unbound
           pane. Cloud tenants have no bindings, so ⊕ goes straight to create.
           (Adding a TEAM lives in the drawer: scan top-right / cloud login.) */}
