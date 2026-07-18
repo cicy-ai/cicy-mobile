@@ -39,7 +39,7 @@ export default function PetScreen() {
   const [override, setOverride] = useState<string | null>(null);   // 手动填的自定义地址(优先)
   const [ready, setReady] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
-  const [remote, setRemote] = useState(false);   // false=看她(pet.html) true=导演台(remote.html)
+  const [view, setView] = useState<'pet' | 'remote' | 'config'>('pet');   // 看她 / 导演台 / 设置
   const [draft, setDraft] = useState('');
   const webRef = useRef<WebView>(null);
 
@@ -49,13 +49,16 @@ export default function PetScreen() {
     return h?.token ?? '';
   }, [hubs]);
 
-  // 最终地址:自定义覆盖 > hub 域名(带 token)。remote 只是换文件名。
+  const PAGE = { pet: 'pet.html', remote: 'remote.html', config: 'config.html' } as const;
+  const TITLE = { pet: '雪莉', remote: '雪莉 · 导演台', config: '雪莉 · 设置' } as const;
+
+  // 最终地址:自定义覆盖 > hub 域名(带 token)。三个视图只换文件名。
   const url = useMemo(() => {
-    const page = remote ? 'remote.html' : 'pet.html';
-    if (override) return override.replace(/(pet|remote)\.html.*/, page);
+    const page = PAGE[view];
+    if (override) return override.replace(/(pet|remote|config)\.html.*/, page);
     if (!hubToken) return null;   // 还没连 hub → 提示去扫码加 hub
     return `${HUB_BASE}/${page}?token=${encodeURIComponent(hubToken)}`;
-  }, [override, hubToken, remote]);
+  }, [override, hubToken, view]);
 
   useEffect(() => {
     (async () => {
@@ -85,11 +88,19 @@ export default function PetScreen() {
           <Ionicons name="chevron-back" size={22} color="#cfe4ff" />
         </PressableScale>
         <View style={{ flex: 1, alignItems: 'center' }}>
-          <Text variant="h3" style={{ color: '#cfe4ff' }}>{remote ? '雪莉 · 导演台' : '雪莉'}</Text>
+          <Text variant="h3" style={{ color: '#cfe4ff' }}>{TITLE[view]}</Text>
         </View>
-        {/* 看她 ↔ 导演台(遥控桌面上的她:开拍/动作/让她说话) */}
-        <PressableScale onPress={() => setRemote((v) => !v)} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name={remote ? 'eye-outline' : 'game-controller-outline'} size={20} color="#8cdcff" />
+        {/* 看她 */}
+        <PressableScale onPress={() => setView('pet')} hitSlop={6} style={styles.iconBtn}>
+          <Ionicons name="eye-outline" size={20} color={view === 'pet' ? '#8cdcff' : '#4a6a9a'} />
+        </PressableScale>
+        {/* 导演台(遥控:开拍/动作/让她说话) */}
+        <PressableScale onPress={() => setView('remote')} hitSlop={6} style={styles.iconBtn}>
+          <Ionicons name="game-controller-outline" size={20} color={view === 'remote' ? '#8cdcff' : '#4a6a9a'} />
+        </PressableScale>
+        {/* 设置(换形象/换音色/试听) */}
+        <PressableScale onPress={() => setView('config')} hitSlop={6} style={styles.iconBtn}>
+          <Ionicons name="options-outline" size={20} color={view === 'config' ? '#8cdcff' : '#4a6a9a'} />
         </PressableScale>
         <PressableScale
           onPress={() => { setDraft(override ?? ''); setEditOpen(true); }}
