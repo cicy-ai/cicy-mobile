@@ -49,15 +49,17 @@ export default function PetScreen() {
     return h?.token ?? '';
   }, [hubs]);
 
-  const PAGE = { pet: 'pet.html', remote: 'remote.html', config: 'config.html' } as const;
+  // pet 视图带 device=phone:漫游时她"飞到手机"就在这台就地渲染+发声+对口型
+  const PAGE = { pet: 'pet.html?device=phone', remote: 'remote.html', config: 'config.html' } as const;
   const TITLE = { pet: '雪莉', remote: '雪莉 · 导演台', config: '雪莉 · 设置' } as const;
 
-  // 最终地址:自定义覆盖 > hub 域名(带 token)。三个视图只换文件名。
+  // 最终地址:自定义覆盖 > hub 域名(带 token)。三个视图换文件名;token 用 & 或 ? 正确拼。
   const url = useMemo(() => {
     const page = PAGE[view];
     if (override) return override.replace(/(pet|remote|config)\.html.*/, page);
     if (!hubToken) return null;   // 还没连 hub → 提示去扫码加 hub
-    return `${HUB_BASE}/${page}?token=${encodeURIComponent(hubToken)}`;
+    const sep = page.includes('?') ? '&' : '?';
+    return `${HUB_BASE}/${page}${sep}token=${encodeURIComponent(hubToken)}`;
   }, [override, hubToken, view]);
 
   useEffect(() => {
