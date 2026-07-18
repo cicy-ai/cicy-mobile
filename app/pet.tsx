@@ -7,7 +7,7 @@
 // 手机端即时生效(hot replace),永远不用重装 App。
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -24,23 +24,44 @@ import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
 import { Text } from '@/src/components/Text';
 import { storage } from '@/src/store/storage';
+import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, useTheme } from '@/src/theme';
 
 const URL_KEY = 'sherlly.petUrl';
-const DEFAULT_URL = 'https://pet.cicy-ai.com/pet.html';
+// 雪莉的皮囊经 hub 网关暴露:pet.hub.cicy-ai.com → 桌面机 :13004。
+// 需带 hub token(App 已存,连 hub 拉 agent 用的同一把);首屏带 ?token= 后
+// hub 种 7 天 cookie,后续同源资源自动放行。token 不硬编码,从 auth store 取。
+const HUB_BASE = 'https://pet.hub.cicy-ai.com';
 
 export default function PetScreen() {
   const theme = useTheme();
-  const [url, setUrl] = useState<string | null>(null);
+  const hubs = useAuthStore((s) => s.hubs);
+  const [override, setOverride] = useState<string | null>(null);   // 手动填的自定义地址(优先)
+  const [ready, setReady] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [remote, setRemote] = useState(false);   // false=看她(pet.html) true=导演台(remote.html)
   const [draft, setDraft] = useState('');
   const webRef = useRef<WebView>(null);
 
+  // hub token:优先 cicy-ai.com 那个 hub,退而取第一个
+  const hubToken = useMemo(() => {
+    const h = hubs.find((x) => x.url.includes('cicy-ai.com')) ?? hubs[0];
+    return h?.token ?? '';
+  }, [hubs]);
+
+  // 最终地址:自定义覆盖 > hub 域名(带 token)。remote 只是换文件名。
+  const url = useMemo(() => {
+    const page = remote ? 'remote.html' : 'pet.html';
+    if (override) return override.replace(/(pet|remote)\.html.*/, page);
+    if (!hubToken) return null;   // 还没连 hub → 提示去扫码加 hub
+    return `${HUB_BASE}/${page}?token=${encodeURIComponent(hubToken)}`;
+  }, [override, hubToken, remote]);
+
   useEffect(() => {
     (async () => {
       const saved = await storage.getItem(URL_KEY);
-      setUrl(saved || DEFAULT_URL);
+      setOverride(saved || null);
+      setReady(true);
     })();
   }, []);
 
@@ -49,7 +70,10 @@ export default function PetScreen() {
     if (v) {
       const normalized = /^https?:\/\//.test(v) ? v : `http://${v}`;
       await storage.setItem(URL_KEY, normalized);
-      setUrl(normalized);
+      setOverride(normalized);
+    } else {
+      await storage.removeItem(URL_KEY);   // 清空 = 回到 hub 默认
+      setOverride(null);
     }
     setEditOpen(false);
   }, [draft]);
@@ -68,7 +92,7 @@ export default function PetScreen() {
           <Ionicons name={remote ? 'eye-outline' : 'game-controller-outline'} size={20} color="#8cdcff" />
         </PressableScale>
         <PressableScale
-          onPress={() => { setDraft(url ?? DEFAULT_URL); setEditOpen(true); }}
+          onPress={() => { setDraft(override ?? ''); setEditOpen(true); }}
           hitSlop={8}
           style={styles.iconBtn}
         >
@@ -76,13 +100,21 @@ export default function PetScreen() {
         </PressableScale>
       </View>
 
-      {url ? (
+      {!ready ? (
+        <View style={styles.loading}>
+          <ActivityIndicator color="#8cdcff" />
+        </View>
+      ) : url ? (
         <WebView
           ref={webRef}
-          source={{ uri: remote ? url.replace(/pet\.html.*/, 'remote.html') : url }}
+          key={url}
+          source={{ uri: url }}
           originWhitelist={['*']}
           javaScriptEnabled
           domStorageEnabled
+          // hub 种的 cookie 要能存下来,子资源才自动放行
+          sharedCookiesEnabled
+          thirdPartyCookiesEnabled
           allowsInlineMediaPlayback
           mediaPlaybackRequiresUserAction={false}
           // 按住雪莉说话要用手机麦克风(getUserMedia)——安卓侧直接放行。
@@ -102,7 +134,7 @@ export default function PetScreen() {
               <Text style={{ color: '#cfe4ff', textAlign: 'center' }}>
                 连不上雪莉的星球{'\n'}
                 <Text variant="caption" style={{ color: '#86a8d8' }}>
-                  确认桌面机 cicy-pet 已启动,手机和它同一 Wi-Fi,右上角改地址
+                  确认桌面机服务已启动,右上角 ⚙️ 可改地址
                 </Text>
               </Text>
             </View>
@@ -111,7 +143,13 @@ export default function PetScreen() {
         />
       ) : (
         <View style={styles.loading}>
-          <ActivityIndicator color="#8cdcff" />
+          <Ionicons name="planet-outline" size={48} color="#2a4a80" />
+          <Text style={{ color: '#cfe4ff', textAlign: 'center', marginTop: spacing.md }}>
+            还没连上雪莉的星球{'\n'}
+            <Text variant="caption" style={{ color: '#86a8d8' }}>
+              先在首页扫码加一个 hub,或右上角 ⚙️ 手动填地址
+            </Text>
+          </Text>
         </View>
       )}
 
@@ -131,7 +169,7 @@ export default function PetScreen() {
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"
-              placeholder={DEFAULT_URL}
+              placeholder="留空=用 hub 默认;或填 http://局域网IP:13004/pet.html"
               placeholderTextColor={theme.textFaint}
               style={[styles.input, { color: theme.text, borderColor: theme.border }]}
             />
