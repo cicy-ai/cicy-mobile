@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:tools="http://schemas.android.com/tools">
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+  <application android:extractNativeLibs="true" tools:replace="android:extractNativeLibs">
+    <service
+      android:name="com.cicy.mobile.code.CicyCodeService"
+      android:exported="false"
+      android:stopWithTask="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="Runs the user's local CiCy agent API while the mobile client is active."/>
+    </service>
+  </application>
+</manifest>

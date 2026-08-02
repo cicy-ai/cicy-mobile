@@ -19,6 +19,7 @@ import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { darkTheme, lightTheme } from '@/src/theme/tokens';
 import { useAuthStore } from '@/src/store/auth';
 import { initWebApp } from '@/src/lib/telegram';
+import { cicyCode } from '@/src/native/cicyCode';
 // Side-effect import: configures i18next with the device locale before any
 // screen renders. Must come after expo-localization (which getDeviceLocale
 // imports) is available.
@@ -71,6 +72,13 @@ export default function RootLayout() {
   // plain browser / native app.
   useEffect(() => {
     initWebApp();
+  }, []);
+
+  // Native Android builds embed the API-only cicy-code runtime. Older APKs
+  // receiving this JS over OTA do not have the module, so availability is
+  // checked before starting and they continue to work unchanged.
+  useEffect(() => {
+    if (cicyCode.available) cicyCode.start().catch(() => {});
   }, []);
 
   // Once auth has hydrated we know which initial screen expo-router will pick,
