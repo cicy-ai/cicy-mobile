@@ -6,12 +6,16 @@ export type CicyCodeConnection = {
   token: string;
   running: boolean;
   home: string;
+  accessibilityEnabled: boolean;
+  mobileBridgeRunning: boolean;
 };
 
 type NativeCicyCode = {
   start(): Promise<boolean>;
   stop(): Promise<boolean>;
   getConnection(): Promise<CicyCodeConnection>;
+  isAccessibilityEnabled(): Promise<boolean>;
+  openAccessibilitySettings(): Promise<boolean>;
 };
 
 const native: NativeCicyCode | undefined = Platform.OS === 'android'
@@ -30,4 +34,6 @@ export const cicyCode = {
   start: () => requireAndroidRuntime().start(),
   stop: () => requireAndroidRuntime().stop(),
   getConnection: () => requireAndroidRuntime().getConnection(),
+  isAccessibilityEnabled: () => requireAndroidRuntime().isAccessibilityEnabled(),
+  openAccessibilitySettings: () => requireAndroidRuntime().openAccessibilitySettings(),
 };

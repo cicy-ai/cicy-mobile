@@ -66,6 +66,7 @@
         }
       ],
       "expo-localization",
+      "./modules/cicy-code-runtime/app.plugin.js",
       [
         "expo-speech-recognition",
         {

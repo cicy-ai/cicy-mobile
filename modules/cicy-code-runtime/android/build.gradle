@@ -4,13 +4,13 @@ plugins {
 }
 
 group = 'com.cicy.mobile.code'
-version = '2.3.336'
+version = '2.3.338'
 
 android {
   namespace 'com.cicy.mobile.code'
   defaultConfig {
     versionCode 1
-    versionName '2.3.336'
+    versionName '2.3.338'
   }
   packagingOptions {
     jniLibs.useLegacyPackaging = true

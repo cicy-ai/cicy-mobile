@@ -1,6 +1,6 @@
 {
   "name": "@cicy/mobile-code-runtime",
-  "version": "2.3.336",
+  "version": "2.3.338",
   "private": true,
   "main": "index.js"
 }

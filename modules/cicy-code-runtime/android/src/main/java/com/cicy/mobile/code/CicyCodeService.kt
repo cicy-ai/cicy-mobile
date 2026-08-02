@@ -43,6 +43,7 @@ class CicyCodeService : Service() {
     super.onCreate()
     createNotificationChannel()
     startForeground(NOTIFICATION_ID, notification("正在启动本地 CiCy"))
+    MobileAccessibilityBridge.start(this)
     launchIfNeeded()
   }
 
@@ -56,6 +57,7 @@ class CicyCodeService : Service() {
   override fun onDestroy() {
     process?.destroy()
     process = null
+    MobileAccessibilityBridge.stop()
     super.onDestroy()
   }
 
@@ -65,6 +67,7 @@ class CicyCodeService : Service() {
     val runtimeHome = File(filesDir, "cicy-code-home").apply { mkdirs() }
     val logFile = File(filesDir, "cicy-code.log")
     try {
+      val mobileBridge = MobileAccessibilityBridge.start(this)
       process = ProcessBuilder(binary.absolutePath, "--port", PORT.toString())
         .directory(runtimeHome)
         .redirectErrorStream(true)
@@ -75,6 +78,8 @@ class CicyCodeService : Service() {
           environment()["CICY_RUNTIME_API_ONLY"] = "1"
           environment()["CICY_API_TOKEN"] = token(this@CicyCodeService)
           environment()["CICY_PPROF_PORT"] = "off"
+          environment()["CICY_MOBILE_BRIDGE_URL"] = mobileBridge.url
+          environment()["CICY_MOBILE_BRIDGE_TOKEN"] = mobileBridge.token
         }
         .start()
       updateNotification("本地 CiCy 正在运行")
