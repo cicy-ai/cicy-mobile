@@ -23,6 +23,23 @@ import type {
 // that header, which the hub no longer exposes). Set it for hub endpoints.
 export type Endpoint = { serverUrl: string; token: string; queryToken?: boolean };
 
+/** Error thrown for a non-2xx response; `body` is the parsed JSON when the
+ *  server sent one (cicy-code's `{detail, pane_updated, restore_input}`). */
+export type HttpError = Error & { status?: number; body?: any };
+
+/**
+ * cicy-code answers a send with 409 "submit not confirmed" when the text
+ * reached the agent's input (`pane_updated`) but its screen-scrape could not
+ * see the prompt line being consumed — typically because the agent was busy
+ * mid-tool and took the message as an interrupt. The message is NOT lost
+ * (`restore_input:false` says so); treat it as delivered-but-unconfirmed
+ * instead of a failure.
+ */
+export function isUnconfirmedSend(e: unknown): boolean {
+  const err = e as HttpError;
+  return err?.status === 409 && !!err?.body?.pane_updated && err?.body?.restore_input === false;
+}
+
 function requireAuth(endpoint?: Endpoint) {
   if (endpoint) return endpoint;
   const { serverUrl, token } = useAuthStore.getState();
@@ -74,7 +91,14 @@ async function request<T>(path: string, init?: RequestInit, endpoint?: Endpoint)
     // never surface raw markup in the UI. Keep short plain-text bodies only.
     if (/<!doctype|<html|<head|<body/i.test(text)) text = '';
     else text = text.trim().slice(0, 200);
-    throw new Error(`${res.status} ${res.statusText}${text ? `: ${text}` : ''}`);
+    const err = new Error(`${res.status} ${res.statusText}${text ? `: ${text}` : ''}`) as HttpError;
+    err.status = res.status;
+    try {
+      err.body = text ? JSON.parse(text) : undefined;
+    } catch {
+      /* not JSON */
+    }
+    throw err;
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
