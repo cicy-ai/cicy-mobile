@@ -13,6 +13,7 @@ import {
   TextInput,
   View,
   type GestureResponderEvent,
+  Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -70,6 +71,13 @@ export function Composer({
   // Voice-first on native (按住说话 is the default prompt); web has no voice
   // stack and stays in text mode.
   const [mode, setMode] = useState<'text' | 'voice'>(IS_WEB ? 'text' : 'voice');
+  // A keyboard on screen while the pill is in voice mode has nothing to type
+  // into (a rename card closing, the system restoring focus): flip to text.
+  useEffect(() => {
+    const ev = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const sub = Keyboard.addListener(ev, () => setMode((m) => (m === 'voice' ? 'text' : m)));
+    return () => sub.remove();
+  }, []);
   const inputRef = useRef<TextInput>(null);
   // Tapping the ⌨ (voice→text) should immediately raise the keyboard, not just
   // swap the UI. Focus once the TextInput is mounted for this mode. Skip the

@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import {
   Animated,
   Easing,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -55,6 +56,10 @@ export function AgentTitleModal({ open, agentId, title, agentType, onClose, onSa
     if (open) {
       setDraft(title);
       setError(null);
+    } else {
+      // The input auto-focused; closing the card must take the keyboard with
+      // it, or it stays up over a composer that is in voice mode.
+      Keyboard.dismiss();
     }
   }, [open, title]);
 
