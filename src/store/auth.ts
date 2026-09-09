@@ -7,7 +7,7 @@ import i18n from '@/src/i18n';
 import {
   fetchInstances,
   hubLogout,
-  isOpenableInstance,
+  isReachableInstance,
   type HubInstance,
   type HubSession,
 } from '@/src/api/hubAuth';
@@ -231,7 +231,9 @@ function buildHubTeams(session: string, instances: HubInstance[], now: number, p
   const prevById = new Map(prev.map((t) => [t.id, t]));
   const out: Team[] = [];
   for (const inst of instances) {
-    if (!isOpenableInstance(inst)) continue;
+    // Only machines that can actually be opened become teams; the rest are
+    // hidden everywhere (list, drawer) until their tunnel comes back.
+    if (!isReachableInstance(inst)) continue;
     const id = `inst:${inst.instanceId}`;
     out.push({
       id,

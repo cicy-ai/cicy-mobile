@@ -19,7 +19,7 @@ import { StatusDot } from '@/src/components/StatusDot';
 import { TeamAvatar } from '@/src/components/TeamAvatar';
 import { TeamDrawer } from '@/src/components/TeamDrawer';
 import { Text } from '@/src/components/Text';
-import { isOpenableInstance, type HubInstance } from '@/src/api/hubAuth';
+import { isReachableInstance, type HubInstance } from '@/src/api/hubAuth';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, useTheme } from '@/src/theme';
@@ -75,9 +75,10 @@ export default function Machines() {
   // Online machines first, then by name (the same order the desktop uses).
   const machines = useMemo(
     () =>
+      // Unreachable machines (offline, or online with the tunnel down) are
+      // filtered out entirely — every row shown can be opened.
       instances
-        .filter(isOpenableInstance)
-        // Reachable (tunnel up) first, then online-but-no-tunnel, then offline.
+        .filter(isReachableInstance)
         .sort((a, b) => rank(b) - rank(a) || a.name.localeCompare(b.name)),
     [instances],
   );

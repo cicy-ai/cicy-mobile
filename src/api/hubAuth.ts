@@ -251,6 +251,13 @@ export function isOpenableInstance(i: HubInstance): boolean {
   return !!i.proxyHost;
 }
 
+/** Openable AND its tunnel answers right now — the only rows the phone lists.
+ *  A node that is offline or whose frp tunnel is down would open into a 503,
+ *  so it is hidden rather than shown greyed out. */
+export function isReachableInstance(i: HubInstance): boolean {
+  return isOpenableInstance(i) && i.proxyAvailable;
+}
+
 export async function hubLogout(token: string): Promise<void> {
   try {
     await hubFetch('/api/logout', { method: 'POST', token });
