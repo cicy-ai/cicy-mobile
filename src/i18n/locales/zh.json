@@ -130,7 +130,9 @@
     "toolExitNoOutput": "退出 · 无输出",
     "toolFailed": "失败",
     "toolTruncated": "已截断,共 {{total}} 字符",
-    "sendUnconfirmed": "已送达，等待 Agent 接收（它正在忙，稍后会处理）"
+    "sendUnconfirmed": "已送达，等待 Agent 接收（它正在忙，稍后会处理）",
+    "statusWorking": "工作中",
+    "statusIdle": "空闲"
   },
   "voice": {
     "holdToTalk": "按住说话",

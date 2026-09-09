@@ -549,19 +549,23 @@ export default function Chat() {
         <PressableScale onPress={goBack} haptic scaleTo={0.94} style={styles.backBtn} hitSlop={6}>
           <Ionicons name="chevron-back" size={26} color={theme.text} />
         </PressableScale>
-        <AgentAvatar agentType={agentMeta.agentType} title={displayTitle} size={36} />
+        <AgentAvatar agentType={agentMeta.agentType} title={displayTitle} size={40} />
+        {/* Title over one tight status line (dot · state · id · machine). Tap
+            anywhere on the block → rename (small pencil marks it editable). */}
         <PressableScale onPress={() => setRenameOpen(true)} haptic scaleTo={0.98} style={styles.headerInfo} hitSlop={4}>
           <View style={styles.headerTitleRow}>
-            <Text variant="bodyMedium" numberOfLines={1} style={{ flexShrink: 1 }}>
+            <Text variant="h3" numberOfLines={1} style={{ flexShrink: 1 }}>
               {displayTitle}
             </Text>
-            <Ionicons name="pencil-outline" size={13} color={theme.textFaint} />
+            <Ionicons name="pencil" size={12} color={theme.textFaint} />
           </View>
-          {/* worker id + current model — id is the stable routing key; the
-              model line only shows when the pane exposes a catalog (cloud). */}
           <View style={styles.headerSubRow}>
-            <Text variant="caption" tone="faint" numberOfLines={1}>
-              {agentMeta.machineLabel ? `${agentId} · ${agentMeta.machineLabel}` : agentId}
+            <View style={[styles.statusDot, { backgroundColor: busy ? theme.warn : theme.ok }]} />
+            <Text variant="caption" tone="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
+              {busy ? t('chat.statusWorking') : t('chat.statusIdle')}
+              {' · '}
+              {agentId}
+              {agentMeta.machineLabel ? ` · ${agentMeta.machineLabel}` : ''}
             </Text>
           </View>
         </PressableScale>
@@ -866,9 +870,18 @@ const styles = StyleSheet.create({
   },
   headerInfo: {
     flex: 1,
-    gap: 2,
+    justifyContent: 'center',
+    gap: 1,
   },
-  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  idChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
   headerSubRow: {
     flexDirection: 'row',
     alignItems: 'center',
