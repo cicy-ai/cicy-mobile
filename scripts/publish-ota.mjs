@@ -2,9 +2,11 @@
 // Copyright 2026 CiCy AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Publish an expo-updates OTA update to Alibaba OSS (self-hosted; no Expo
-// servers — mainland-reachable; todo46 moved this off R2). Run AFTER
-// `npx expo export -p android -p ios`:
+// Publish an expo-updates OTA update to Cloudflare R2 (self-hosted; no Expo
+// servers). It lived on Alibaba OSS for a while (todo46) until OSS started
+// answering 403 to uploads AND public reads (2026-09); R2's public domain is
+// reachable from mainland desktops at ~2 MB/s, so it is the store again. Run
+// AFTER `npx expo export -p android -p ios`:
 //
 //   node scripts/publish-ota.mjs <version-label>
 //
@@ -13,18 +15,17 @@
 // cicy-mobile/updates/<runtime>/manifest-<platform>.json (atomic switch — the
 // worker serves it verbatim, so a check can never see a half-published update).
 //
-// Env: OSS_ACCESS_KEY_ID, OSS_ACCESS_KEY_SECRET. Runtime version read from app.json.
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+// Env: R2_ACCOUNT_ID, R2_API_TOKEN (Cloudflare API token with R2 write).
+// Runtime version read from app.json.
+import { createHash, randomUUID } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const OSS_BUCKET = 'cicy-1372193042-cn';
-const OSS_ENDPOINT = 'oss-cn-shanghai.aliyuncs.com';
-const OSS_HOST = `${OSS_BUCKET}.${OSS_ENDPOINT}`;
+const R2_BUCKET = 'cicy-assets-poc';
 // Public read URL prefix — the bundle `url`s baked into the manifest, and where
 // the worker's dualRead() finds the manifests.
-const CDN = `https://${OSS_HOST}`;
+const CDN = 'https://r2.deepfetch.de5.net';
 
 const MIME = {
   hbc: 'application/javascript', js: 'application/javascript', bundle: 'application/javascript',
@@ -33,32 +34,26 @@ const MIME = {
   json: 'application/json', mp3: 'audio/mpeg', wav: 'audio/wav',
 };
 
-const { OSS_ACCESS_KEY_ID, OSS_ACCESS_KEY_SECRET } = process.env;
-if (!OSS_ACCESS_KEY_ID || !OSS_ACCESS_KEY_SECRET) { console.error('missing OSS creds'); process.exit(1); }
+const { R2_ACCOUNT_ID, R2_API_TOKEN } = process.env;
+if (!R2_ACCOUNT_ID || !R2_API_TOKEN) { console.error('missing R2 creds (R2_ACCOUNT_ID / R2_API_TOKEN)'); process.exit(1); }
+const R2_API = `https://api.cloudflare.com/client/v4/accounts/${R2_ACCOUNT_ID}/r2/buckets/${R2_BUCKET}/objects`;
 const label = process.argv[2] || 'dev';
 
 const appJson = JSON.parse(readFileSync('app.json', 'utf8'));
 const runtime = String(appJson.expo.runtimeVersion || '1');
 const meta = JSON.parse(readFileSync('dist/metadata.json', 'utf8'));
 
-// Sign + PUT a single object to OSS. Signature is the standard OSS v1 scheme:
-//   StringToSign = "PUT\n\n<Content-Type>\n<Date>\n/<bucket>/<key>"
-//   Authorization: "OSS <keyId>:base64(hmac-sha1(secret, StringToSign))"
-// key is the full object key (e.g. "cicy-mobile/updates/2/<uuid>/bundle.hbc").
+// PUT a single object into R2 through the Cloudflare API (same call the
+// release workflow uses for version.json / the APK). key is the full object
+// key (e.g. "cicy-mobile/updates/2/<uuid>/bundle.hbc").
 async function put(key, buf, contentType) {
   for (let attempt = 1; ; attempt += 1) {
-    const date = new Date().toUTCString();
-    const resource = `/${OSS_BUCKET}/${key}`;
-    const stringToSign = `PUT\n\n${contentType}\n${date}\n${resource}`;
-    const signature = createHmac('sha1', OSS_ACCESS_KEY_SECRET).update(stringToSign, 'utf8').digest('base64');
-    const url = `${CDN}/${key.split('/').map(encodeURIComponent).join('/')}`;
+    const url = `${R2_API}/${key.split('/').map(encodeURIComponent).join('/')}`;
     const res = await fetch(url, {
       method: 'PUT',
       headers: {
-        Host: OSS_HOST,
-        Date: date,
         'Content-Type': contentType,
-        Authorization: `OSS ${OSS_ACCESS_KEY_ID}:${signature}`,
+        Authorization: `Bearer ${R2_API_TOKEN}`,
       },
       body: buf,
     }).catch((e) => ({ ok: false, status: 0, text: async () => String(e) }));
