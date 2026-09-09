@@ -597,15 +597,7 @@ function Turn({
               </Text>
             </PressableScale>
           ) : null}
-          {visibleSteps.map((step, i) => (
-            <Step
-              key={offset + i}
-              step={step}
-              streaming={streaming && offset + i === steps.length - 1}
-              turnKey={turn.history_id ?? 'live'}
-              stepIndex={offset + i}
-            />
-          ))}
+          {renderStepsWithToolRuns(visibleSteps, offset, steps.length, streaming, turn.history_id ?? 'live')}
 
           {/* If the API only sent a flat `a` and no steps, render it as a text block. */}
           {(!turn.steps || turn.steps.length === 0) && turn.a ? <RichText text={turn.a} /> : null}
@@ -677,6 +669,96 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }
 
 type ToolData = { name?: string; arg?: string; result?: string; isError?: boolean };
 
+type ToolRunEntry = { tool: ToolData; toolId: string; running: boolean };
+
+// Port of web's collectToolRuns + ToolRunGroup: CONSECUTIVE tool steps of a
+// turn fold into one run that shows only the newest card, with a ×N pill and a
+// chevron that unfolds the older cards underneath (newest stays on top, so the
+// control never scrolls away). Thinking / text steps break a run.
+function renderStepsWithToolRuns(
+  visibleSteps: HistoryStep[],
+  offset: number,
+  totalSteps: number,
+  streaming: boolean,
+  turnKey: string | number,
+) {
+  const out: React.ReactNode[] = [];
+  let run: { firstIndex: number; entries: ToolRunEntry[] } | null = null;
+  const flush = () => {
+    if (!run || !run.entries.length) { run = null; return; }
+    const groupId = `tool-run:${String(turnKey).replace(/^live-/, '')}:${run.firstIndex}`;
+    out.push(<ToolRunGroup key={groupId} entries={run.entries} groupId={groupId} />);
+    run = null;
+  };
+  visibleSteps.forEach((step, i) => {
+    const stepIndex = offset + i;
+    const stepStreaming = streaming && stepIndex === totalSteps - 1;
+    if (step.type === 'tool' && Array.isArray(step.tools)) {
+      if (!run) run = { firstIndex: stepIndex, entries: [] };
+      (step.tools as ToolData[]).forEach((t, ti) => {
+        const toolId = buildToolCardId(turnKey, stepIndex, t, ti);
+        // In the streaming step, a tool with no result yet is executing right
+        // now (the CLI runs it and feeds the output back next round).
+        const running = stepStreaming && !String(t?.result ?? '').trim() && t?.isError !== true;
+        run!.entries.push({ tool: t, toolId, running });
+      });
+      return;
+    }
+    flush();
+    out.push(<Step key={stepIndex} step={step} streaming={stepStreaming} turnKey={turnKey} stepIndex={stepIndex} />);
+  });
+  flush();
+  return out;
+}
+
+// Open/closed state per run (module-scoped like the tool cards: FlatList
+// recycles rows, so component state alone forgets it on scroll).
+const toolRunOpenState = new Map<string, boolean>();
+
+function ToolRunGroup({ entries, groupId }: { entries: ToolRunEntry[]; groupId: string }) {
+  const theme = useTheme();
+  const [expanded, setExpanded] = useState(() => toolRunOpenState.get(groupId) ?? false);
+  useEffect(() => {
+    setExpanded(toolRunOpenState.get(groupId) ?? false);
+  }, [groupId]);
+  const count = entries.length;
+  const latest = entries[count - 1];
+  if (!latest) return null;
+  const toggleRun = () => {
+    setExpanded((v) => {
+      const next = !v;
+      toolRunOpenState.set(groupId, next);
+      return next;
+    });
+  };
+  const runControl =
+    count > 1 ? (
+      <PressableScale onPress={toggleRun} haptic scaleTo={0.9} hitSlop={8} style={styles.toolRunControl}>
+        <View style={[styles.toolRunCount, { backgroundColor: theme.surfaceMuted }]}>
+          <Text variant="caption" tone="muted" style={{ fontSize: 10 }}>
+            ×{count}
+          </Text>
+        </View>
+        <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={14} color={theme.textFaint} />
+      </PressableScale>
+    ) : null;
+  // Newest card first (carrying the run control), older ones unfold below.
+  const visible = expanded ? [latest, ...entries.slice(0, -1)] : [latest];
+  return (
+    <View style={{ gap: spacing.sm }}>
+      {visible.map((e) => (
+        <ToolCard
+          key={e.toolId}
+          tool={e.tool}
+          toolId={e.toolId}
+          running={e.running}
+          runControl={e.toolId === latest.toolId ? runControl : undefined}
+        />
+      ))}
+    </View>
+  );
+}
+
 const TOOL_BODY_MAX = 4000; // cap expanded text so a huge result can't blow up the row
 
 // Expanded/collapsed state per tool card, keyed by a stable id (turn + step +
@@ -703,7 +785,7 @@ function ToolStrip({ tools, turnKey, stepIndex, streaming }: { tools: ToolData[]
 // (the file / command / pattern the user actually scans for). Tapping expands
 // a HUMANIZED body — command as code, Edit as an old/new diff, patch text as
 // colored lines, JSON args/results as readable key: value lines — never raw JSON.
-function ToolCard({ tool, toolId, running }: { tool: ToolData; toolId: string; running?: boolean }) {
+function ToolCard({ tool, toolId, running, runControl }: { tool: ToolData; toolId: string; running?: boolean; runControl?: React.ReactNode }) {
   const theme = useTheme();
   const [open, setOpen] = useState(() => toolCardOpenState.get(toolId) ?? false);
   useEffect(() => {
@@ -767,6 +849,7 @@ function ToolCard({ tool, toolId, running }: { tool: ToolData; toolId: string; r
         ) : (
           <View style={{ flex: 1 }} />
         )}
+        {runControl}
         {hasBody ? (
           <Text variant="caption" tone="faint">
             {open ? '▾' : '▸'}
@@ -1325,6 +1408,19 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
+  },
+  toolRunControl: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginLeft: 4,
+  },
+  toolRunCount: {
+    minWidth: 22,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 9,
+    alignItems: 'center',
   },
   toolHeader: {
     flexDirection: 'row',
