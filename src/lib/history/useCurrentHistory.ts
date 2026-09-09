@@ -89,6 +89,14 @@ async function getHistoryIDs(a: ApiClient, paneId: string): Promise<any> {
 // cache): one contiguous ranged fetch [lo..hi], returned strictly ascending, with
 // the window low bound `lo` so the caller derives hasMore/nextBefore exactly like
 // web. `fresh` is accepted for signature parity (there is no cache to bypass).
+// Cache key = machine + pane. Agent ids repeat across machines (every node has
+// a w-1001), so a key of the pane alone painted another machine's conversation
+// for a moment when switching machines.
+function historyCacheId(paneId: string): string {
+  const host = String(useAuthStore.getState().serverUrl || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  return host ? `${host}|${paneId}` : paneId;
+}
+
 async function loadWindowItems(
   a: ApiClient,
   paneId: string,
@@ -298,7 +306,7 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
     let cancelled = false;
     const requestSeq = ++requestSeqRef.current;
     shouldStickBottomRef.current = true;
-    const snap = historyCache.get(paneId);
+    const snap = historyCache.get(historyCacheId(paneId));
     const hasSnap = !!(snap && snap.turns.length);
     if (hasSnap && snap) {
       setItems(snap.turns);
@@ -372,7 +380,7 @@ export function useCurrentHistory(opts: UseCurrentHistoryOpts) {
       const id = Number(t?.history_id || 0);
       if (id > 0 && (minId === 0 || id < minId)) minId = id;
     }
-    historyCache.put(paneId, {
+    historyCache.put(historyCacheId(paneId), {
       conversationId,
       maxId: maxLoadedIdRef.current,
       minId,
