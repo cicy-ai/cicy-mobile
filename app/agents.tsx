@@ -140,6 +140,9 @@ export default function Agents() {
   // customs keep the one-master-and-its-workers view.
   const hubMode = currentTeam?.kind === 'hub';
   const [projects, setProjects] = useState<ProjectGroup[]>([]);
+  // Hub machines are two levels: the home lists PROJECTS only; tapping one
+  // lists that project's agents. null = project list.
+  const [openProject, setOpenProject] = useState<string | null>(null);
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -252,7 +255,8 @@ export default function Agents() {
   type ListRow =
     | { kind: 'agent'; agent: Agent; depth: number; forkCount: number; collapsed: boolean }
     | { kind: 'machine'; key: string; label: string }
-    | { kind: 'project'; key: string; label: string; count: number; slug?: string };
+    | { kind: 'project'; key: string; label: string; count: number; slug?: string }
+    | { kind: 'projectCard'; key: string; label: string; count: number; working: number; slug?: string; description?: string };
   const listRows = useMemo<ListRow[]>(() => {
     const wid = (a: Agent) => String(a.name ?? a.id ?? a.pane_id ?? '');
     const master = hubMode ? null : (agents.find((a) => wid(a) === hostPaneId) ?? null);
@@ -325,10 +329,29 @@ export default function Agents() {
       }
       const rest = everyone.filter((a) => !placed.has(wid(a)));
       if (rest.length) sections.push({ key: 'p:ungrouped', label: t('agents.projectUngrouped'), members: rest });
+      const current = openProject ? sections.find((sec) => sec.key === openProject) : null;
+      if (current) {
+        // Inside a project: its agents only, flat (the header names the project).
+        for (const a of current.members) pushTree(a, 0);
+        return rows;
+      }
+      // Home: one card per project.
+      const isWorking = (a: Agent) => {
+        const m = liveMetrics[wid(a)];
+        const st = String((m as any)?.status || a.status || '').toLowerCase();
+        return st === 'working' || st === 'busy' || st === 'running' || st === 'thinking' || st === 'streaming';
+      };
       for (const sec of sections) {
-        const count = sec.members.reduce((n, a) => n + 1 + subtreeCount(wid(a)), 0);
-        rows.push({ kind: 'project', key: sec.key, label: sec.label, count, slug: sec.slug });
-        for (const a of sec.members) pushTree(a, 0);
+        const g = projects.find((x) => `p:${x.id}` === sec.key);
+        rows.push({
+          kind: 'projectCard',
+          key: sec.key,
+          label: sec.label,
+          count: sec.members.length,
+          working: sec.members.filter(isWorking).length,
+          slug: sec.slug,
+          description: g?.description ? String(g.description) : undefined,
+        });
       }
       return rows;
     }
@@ -345,7 +368,7 @@ export default function Agents() {
       for (const a of members) pushTree(a, 0);
     }
     return rows;
-  }, [agents, hostPaneId, collapsedWids, t, hubMode, projects]);
+  }, [agents, hostPaneId, collapsedWids, t, hubMode, projects, openProject, liveMetrics]);
 
   const load = useCallback(async () => {
     if (!currentTeam) {
@@ -498,6 +521,7 @@ export default function Agents() {
   useEffect(() => {
     setAgents([]);
     setProjects([]);
+    setOpenProject(null);
     setError(null);
   }, [currentTeamId]);
 
@@ -613,10 +637,15 @@ export default function Agents() {
 
   // Single header used across every state — keeps menu/title/scan placement
   // consistent so loading/error/empty/list don't shift around.
+  const openProjectLabel = !openProject
+    ? null
+    : openProject === 'p:ungrouped'
+    ? t('agents.projectUngrouped')
+    : projects.find((g) => `p:${g.id}` === openProject)?.name || t('agents.projectUngrouped');
   const renderHeader = () => (
     <View style={styles.headerRow}>
       <PressableScale
-        onPress={() => setDrawerOpen(true)}
+        onPress={() => (hubMode && openProject ? setOpenProject(null) : setDrawerOpen(true))}
         haptic
         scaleTo={0.94}
         style={styles.iconBtn}
@@ -628,12 +657,21 @@ export default function Agents() {
             { backgroundColor: theme.surface, borderColor: theme.border },
           ]}
         >
-          <Ionicons name="menu" size={22} color={theme.text} />
+          <Ionicons name={hubMode && openProject ? 'chevron-back' : 'menu'} size={22} color={theme.text} />
         </View>
       </PressableScale>
 
       <View style={styles.titleWrap}>
-        {currentTeam ? (
+        {currentTeam && hubMode && openProject ? (
+          <PressableScale onPress={() => setOpenProject(null)} haptic={false} scaleTo={0.97} style={styles.titleBtn}>
+            <Text variant="h3" numberOfLines={1} style={{ textAlign: 'center' }}>
+              {openProjectLabel}
+            </Text>
+            <Text variant="caption" tone="faint" numberOfLines={1} ellipsizeMode="middle" style={{ textAlign: 'center', marginTop: 1 }}>
+              {currentTeam.title}
+            </Text>
+          </PressableScale>
+        ) : currentTeam ? (
           <PressableScale
             onPress={() => setTitleModalOpen(true)}
             haptic={false}
@@ -1110,12 +1148,38 @@ export default function Agents() {
           <View style={styles.center}>
             <Ionicons name="terminal-outline" size={48} color={theme.textMuted} />
             <Text tone="muted" variant="callout" style={{ marginTop: spacing.md, textAlign: 'center' }}>
-              {hubMode ? t('agents.noProjects') : t('agents.emptyHint')}
+              {hubMode ? (openProject ? t('agents.projectEmpty') : t('agents.noProjects')) : t('agents.emptyHint')}
             </Text>
           </View>
         }
         renderItem={({ item }) =>
-          item.kind === 'project' ? (
+          item.kind === 'projectCard' ? (
+            <PressableScale
+              onPress={() => setOpenProject(item.key)}
+              haptic
+              scaleTo={0.98}
+              style={[styles.projectCard, { backgroundColor: theme.surface, borderColor: theme.border }]}
+            >
+              <View style={[styles.projectIcon, { backgroundColor: theme.surfaceMuted, borderColor: theme.border }]}>
+                <Ionicons name="folder-open-outline" size={22} color={theme.accent} />
+              </View>
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text variant="callout" numberOfLines={1} style={{ fontWeight: '600' }}>
+                  {item.label}
+                </Text>
+                <Text variant="caption" tone="muted" numberOfLines={1}>
+                  {t('agents.projectAgents', { count: item.count })}
+                  {item.working > 0 ? ` · ${t('agents.projectWorking', { count: item.working })}` : ''}
+                </Text>
+                {item.description ? (
+                  <Text variant="caption" tone="faint" numberOfLines={1}>
+                    {item.description}
+                  </Text>
+                ) : null}
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={theme.textFaint} />
+            </PressableScale>
+          ) : item.kind === 'project' ? (
             <View style={[styles.projectHeader, { borderBottomColor: theme.border }]}>
               <Ionicons name="folder-open-outline" size={14} color={theme.accent} />
               <Text variant="callout" numberOfLines={1} style={{ flex: 1, fontWeight: '600' }}>
@@ -1392,6 +1456,22 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingHorizontal: 4,
     paddingTop: spacing.sm,
+  },
+  projectCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  projectIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   projectHeader: {
     flexDirection: 'row',

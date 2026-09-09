@@ -43,7 +43,9 @@
     "toMachines": "See my machines",
     "projectUngrouped": "Ungrouped",
     "projectAgents": "{{count}} agents",
-    "noProjects": "This machine has no agents yet. Create one in its cicy-code web app."
+    "noProjects": "This machine has no agents yet. Create one in its cicy-code web app.",
+    "projectWorking": "{{count}} working",
+    "projectEmpty": "No agents in this project yet"
   },
   "login": {
     "entry": "Sign in to CiCy Hub",

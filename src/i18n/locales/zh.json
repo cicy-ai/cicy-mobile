@@ -43,7 +43,9 @@
     "toMachines": "查看我的机器",
     "projectUngrouped": "未分组",
     "projectAgents": "{{count}} 个 Agent",
-    "noProjects": "这台机器还没有 Agent。在它的 cicy-code 网页里创建一个。"
+    "noProjects": "这台机器还没有 Agent。在它的 cicy-code 网页里创建一个。",
+    "projectWorking": "{{count}} 个在忙",
+    "projectEmpty": "这个项目里还没有 Agent"
   },
   "login": {
     "entry": "登录 CiCy Hub",
