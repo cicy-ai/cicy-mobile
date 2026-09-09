@@ -273,6 +273,9 @@ export default function Agents() {
     const byParent = new Map<string, Agent[]>();
     const nested = new Set<string>();
     for (const a of workers) {
+      // Hub machines: a flat, one-level list under each project — no fork
+      // tree on the home screen (forks show as ordinary rows).
+      if (hubMode) break;
       if (!isFork(a)) continue;
       const parentWid = String((a as any).source_ref || '').split(':')[0];
       if (!parentWid || !byWid.has(parentWid) || parentWid === wid(a)) continue;
