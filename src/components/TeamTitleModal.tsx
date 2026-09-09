@@ -8,7 +8,6 @@ import {
   Easing,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   StyleSheet,
   TextInput,
