@@ -344,59 +344,64 @@ export default function Agents() {
     // failing team (e.g. 502). Clear the error only once a fetch SUCCEEDS.
     try {
       if (hubMode) {
-        // Hub machine: the whole node. Every master pane + every worker row,
-        // plus the project list so the roster can be sectioned by project.
+        // Hub machine: the whole node. EVERY pane is an agent (masters and
+        // workers alike — on some nodes /api/poll returns nothing at all and
+        // no pane carries role=master, so the roster must come from
+        // /api/panes); /api/poll rows and the WS poll_data pushes only overlay
+        // live fields (status, source_kind/source_ref, machine_label). The
+        // project list sections the roster.
         const [poll, panes, groups] = await Promise.all([
-          api.poll(),
+          api.poll().catch(() => ({ agents: [] }) as any),
           api.getPanes(),
           api.getProjects().catch(() => [] as ProjectGroup[]),
         ]);
         const validPanes = panes.filter((p) => typeof p.pane_id === 'string' && p.pane_id);
         const masterPanes = validPanes.filter((p) => p.role === 'master');
+        const workerRows: any[] = poll.agents ?? [];
         // One socket is registered on a master for the push channel; any will do.
-        const firstMaster = masterPanes[0]?.pane_id.split(':')[0] ?? null;
-        const workerRows = poll.agents ?? [];
-        setHostPaneId(firstMaster ?? workerRows[0]?.pane_id ?? DEFAULT_MASTER);
-        const workspaceByName = new Map<string, string>();
+        const firstMaster = masterPanes[0]?.pane_id.split(':')[0] ?? workerRows[0]?.pane_id ?? null;
+        setHostPaneId(firstMaster ?? validPanes[0]?.pane_id.split(':')[0] ?? DEFAULT_MASTER);
         const gwByName: Record<string, boolean> = {};
+        const base = new Map<string, Agent>();
         for (const p of validPanes) {
-          const key = p.pane_id.split(':')[0];
-          if (p.workspace) workspaceByName.set(key, p.workspace);
-          gwByName[key] = !!p.use_custom_gateway;
-        }
-        setGatewayByName(gwByName);
-        const masters: Agent[] = masterPanes.map((p) => {
           const short = p.pane_id.split(':')[0];
-          return {
+          if (!short || base.has(short)) continue;
+          gwByName[short] = !!p.use_custom_gateway;
+          base.set(short, {
             name: short,
             pane_id: short,
             agent_type: p.agent_type,
             title: p.title || short,
             status: 'active',
             workspace: p.workspace,
-            role: 'master',
-          } as Agent;
-        });
-        const masterSet = new Set(masters.map((m) => m.name));
-        // Workers by wid; a poll_data push (which carries only the registered
-        // master's workers) merges INTO this map so other masters' workers stay.
-        const workersByWid = new Map<string, Agent>();
+            role: p.role,
+          } as Agent);
+        }
+        setGatewayByName(gwByName);
+        // Live overlay by wid; a poll_data push (which carries only the
+        // registered master's workers) merges INTO this map so nothing drops.
+        const live = new Map<string, any>();
         const fold = (rows: any[]) => {
           for (const a of rows) {
             const w = String(a?.name || '');
-            if (!w || masterSet.has(w)) continue;
-            workersByWid.set(w, { ...a, workspace: workspaceByName.get(w) ?? a.workspace });
+            if (w) live.set(w, a);
           }
         };
-        fold(workerRows);
         const compose = (rows: any[]) => {
           fold(rows);
-          setAgents([...masters, ...workersByWid.values()]);
+          const out: Agent[] = [];
+          for (const [w, b] of base) {
+            const l = live.get(w);
+            out.push(l ? { ...l, ...b, title: b.title || l.title, status: l.status || b.status, workspace: b.workspace ?? l.workspace } : b);
+          }
+          // Panes the node knows only via poll (bound elsewhere) still show.
+          for (const [w, l] of live) if (!base.has(w)) out.push({ ...l, workspace: l.workspace });
+          setAgents(out);
         };
         composeFromWorkersRef.current = compose;
         panesRef.current = panes;
         setProjects(groups);
-        setAgents([...masters, ...workersByWid.values()]);
+        compose(workerRows);
         setError(null);
         return;
       }
