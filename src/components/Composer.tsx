@@ -152,11 +152,13 @@ export function Composer({
     </PressableScale>
   );
 
-  // While a reply is streaming, the ⊕ attach slot becomes a stop button
-  // (icon-only) — no separate row above the composer. Idle → the ⊕ attach.
-  const attachOrStop = () => {
-    if (busy && onStop) {
-      return (
+  // The ⊕ attach button is ALWAYS available (an attachment picked while a
+  // reply is streaming uploads right away and queues behind it); while a
+  // reply is in flight a stop button sits next to it.
+  const attachOrStop = () => (
+    <>
+      {canAttach ? iconBtn('add-circle-outline', () => setSheetOpen(true)) : null}
+      {busy && onStop ? (
         <PressableScale
           onPress={onStop}
           haptic
@@ -167,10 +169,9 @@ export function Composer({
         >
           <Ionicons name="stop-circle" size={26} color={theme.danger} />
         </PressableScale>
-      );
-    }
-    return canAttach ? iconBtn('add-circle-outline', () => setSheetOpen(true)) : null;
-  };
+      ) : null}
+    </>
+  );
 
   const recordingBg = cancelIntent ? theme.danger : theme.accent;
 
