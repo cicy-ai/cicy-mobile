@@ -124,7 +124,8 @@
     "toolExitCodeNoOutput": "Exit code {{code}} · no output",
     "toolExitNoOutput": "Exited · no output",
     "toolFailed": "failed",
-    "toolTruncated": "truncated, {{total}} chars total"
+    "toolTruncated": "truncated, {{total}} chars total",
+    "sendUnconfirmed": "Delivered — the agent is busy and will pick it up shortly"
   },
   "voice": {
     "holdToTalk": "Hold to talk",

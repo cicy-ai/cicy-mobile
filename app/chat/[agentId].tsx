@@ -25,7 +25,7 @@ import { LiveRecordBar } from '@/src/components/LiveRecordBar';
 import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
 import { Text } from '@/src/components/Text';
-import { api } from '@/src/api/http';
+import { api, isUnconfirmedSend } from '@/src/api/http';
 import { uploadAttachment } from '@/src/api/upload';
 import type { PendingAttachment } from '@/src/lib/attachments';
 import { isHeadlessCicyAgent } from '@/src/lib/agentType';
@@ -305,9 +305,15 @@ export default function Chat() {
       setPending({ text: trimmed, nonce: Date.now() }); // optimistic: show q now
       await api.sendToAgent(agentId, trimmed, true);
     } catch (e: any) {
+      if (isUnconfirmedSend(e)) {
+        // Delivered, just not confirmed by the pane scrape — keep the bubble
+        // and the busy lock; the reply (or the poll) settles it.
+        setVoiceError(t('chat.sendUnconfirmed'));
+        return;
+      }
       setPending(null); // failed → drop the optimistic q
       setBusy(false);
-      setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
+      setVoiceError(isUnconfirmedSend(e) ? t('chat.sendUnconfirmed') : t('chat.sendFailed', { error: String(e?.message ?? e) }));
     } finally {
       setSending(false);
     }
@@ -362,9 +368,11 @@ export default function Chat() {
       const body = `${caption ? `${caption}\n\n` : ''}${refs.join('\n\n')}`;
       await dispatchBody(body);
     } catch (e: any) {
-      setPending(null);
-      setBusy(false);
-      setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
+      if (!isUnconfirmedSend(e)) {
+        setPending(null);
+        setBusy(false);
+      }
+      setVoiceError(isUnconfirmedSend(e) ? t('chat.sendUnconfirmed') : t('chat.sendFailed', { error: String(e?.message ?? e) }));
     } finally {
       setAttachments([]); // clear the loading cards
       setSending(false);
@@ -389,7 +397,7 @@ export default function Chat() {
       setPending(null);
       setBusy(false);
       setInput((cur) => cur || text); // restore what the user typed
-      setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
+      setVoiceError(isUnconfirmedSend(e) ? t('chat.sendUnconfirmed') : t('chat.sendFailed', { error: String(e?.message ?? e) }));
     } finally {
       setSending(false);
     }
@@ -427,7 +435,7 @@ export default function Chat() {
         flushRetryRef.current += 1;
         setPending(null);
         setBusy(false);
-        setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
+        setVoiceError(isUnconfirmedSend(e) ? t('chat.sendUnconfirmed') : t('chat.sendFailed', { error: String(e?.message ?? e) }));
         // put the batch back so nothing is lost
         setQueue((prev) => [...batch, ...prev]);
       });
