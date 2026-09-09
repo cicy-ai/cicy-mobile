@@ -295,3 +295,51 @@ export function turnSig(t: HistoryTurn): string {
   for (const s of steps) len += String(s?.text || '').length + (Array.isArray(s?.tools) ? s.tools.length * 7 : 0);
   return `${t?.history_id || 0}|${(t as any)?.status || ''}|${steps.length}|${len}`;
 }
+
+// ── render-time folding (port of web's lib/renderTurns.ts) ───────────────────
+// Providers persist ONE tool loop as SEVERAL consecutive assistant records (one
+// per tool round), while the live/reply path keeps the same tools in one
+// record. For the list they must be one visual run — otherwise every older,
+// committed tool call is its own card and never folds into a ×N group. System
+// notices that were interleaved between the rounds (Claude Code attaches one
+// to every tool_result) are moved AFTER the run so it stays a single group.
+// Only the render copy changes: pagination, committed ids and live de-duping
+// keep using the untouched items.
+export function isToolOnlyAssistantTurn(turn: HistoryTurn): boolean {
+  if (turn?.role !== 'assistant' || (turn as any)?.outcome) return false;
+  const steps = getVisibleHistorySteps(turn, false) || [];
+  return steps.length > 0 && steps.every((step: any) => step?.type === 'tool');
+}
+
+export function prepareRenderTurns(turns: HistoryTurn[]): HistoryTurn[] {
+  const merged: HistoryTurn[] = [];
+  let pendingSystem: HistoryTurn[] = [];
+  const flush = () => {
+    if (!pendingSystem.length) return;
+    merged.push(...pendingSystem);
+    pendingSystem = [];
+  };
+  for (const turn of turns) {
+    const previous = merged[merged.length - 1];
+    if (turn?.role === 'system') {
+      if (previous && isToolOnlyAssistantTurn(previous)) {
+        pendingSystem.push(turn); // inside a run → ride along until it ends
+        continue;
+      }
+      merged.push(turn);
+      continue;
+    }
+    if (isToolOnlyAssistantTurn(turn) && previous && isToolOnlyAssistantTurn(previous)) {
+      merged[merged.length - 1] = {
+        ...previous,
+        status: (turn as any).status || (previous as any).status,
+        steps: [...(previous.steps || []), ...(turn.steps || [])],
+      } as HistoryTurn;
+      continue;
+    }
+    flush();
+    merged.push(turn);
+  }
+  flush();
+  return merged;
+}

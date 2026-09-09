@@ -25,6 +25,7 @@ import {
   toolEditDiff,
   toolHeadline,
 } from '@/src/lib/history/toolFormat';
+import { prepareRenderTurns } from '@/src/lib/history/turns';
 import { normalizeAgentType } from '@/src/lib/agentType';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 import { ImageLightbox } from './ImageLightbox';
@@ -211,6 +212,13 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
   const showJumpRef = useRef(false);
   const loadMoreFnRef = useRef(loadMore);
   loadMoreFnRef.current = loadMore;
+  // Render copy: consecutive tool-only assistant records fold into one run
+  // (web's prepareRenderTurns) so older, committed tool calls get the same ×N
+  // group as the live tail. Recap responses are dropped before folding.
+  const renderItems = useMemo(
+    () => prepareRenderTurns(displayItems.filter((t) => !recapResponses.has(t))),
+    [displayItems, recapResponses],
+  );
 
   const onScroll = useCallback(
     (e: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
@@ -338,9 +346,8 @@ export function HistoryView({ agentId, pending, onReplyInFlight, onReplyDone, ag
 
         {/* Part 1 — committed turns (recap responses dropped; in-flight assistant
             of the current round suppressed inside displayItems). */}
-        {displayItems.map((t, i) => {
-          if (recapResponses.has(t)) return null;
-          const isLastRow = !liveVisible && i === displayItems.length - 1;
+        {renderItems.map((t, i) => {
+          const isLastRow = !liveVisible && i === renderItems.length - 1;
           return (
             <View key={`row-${t.history_id ?? t.turn_id ?? i}`}>
               <Turn
