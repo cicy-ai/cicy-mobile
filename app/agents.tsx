@@ -24,6 +24,7 @@ import {
 import { Button } from '@/src/components/Button';
 import { ConfirmModal } from '@/src/components/ConfirmModal';
 import { AgentAvatar } from '@/src/components/AgentAvatar';
+import { AgentTitleModal } from '@/src/components/AgentTitleModal';
 import { AgentStatusDot } from '@/src/components/AgentStatusDot';
 import { CtxRing } from '@/src/components/CtxRing';
 import { PressableScale } from '@/src/components/PressableScale';
@@ -164,6 +165,7 @@ export default function Agents() {
   // TeamPanel-parity member management: long-press action sheet + fork/unbind
   // confirms + the ⊕ add menu (create new vs bind an existing unbound pane).
   const [memberMenu, setMemberMenu] = useState<Agent | null>(null);
+  const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
   const [confirmFork, setConfirmFork] = useState<Agent | null>(null);
   const [confirmUnbind, setConfirmUnbind] = useState<Agent | null>(null);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -936,6 +938,7 @@ export default function Agents() {
                 <Text variant="caption" tone="faint" numberOfLines={1}>{wid}</Text>
               </View>
             </View>
+            <Row icon="pencil-outline" label={t('agents.rename')} onPress={() => { close(); setRenameTarget(a); }} />
             {canRestart ? (
               <Row icon="refresh" label={t('agents.restart')} onPress={() => { close(); void restartAgent(wid); }} />
             ) : null}
@@ -1232,6 +1235,19 @@ export default function Agents() {
       {createModalEl}
       {deleteConfirmEl}
       {memberMenuEl}
+      {renameTarget ? (
+        <AgentTitleModal
+          open
+          agentId={String(renameTarget.name ?? renameTarget.pane_id ?? '')}
+          title={renameTarget.title || String(renameTarget.name ?? renameTarget.pane_id ?? '')}
+          agentType={renameTarget.agent_type}
+          onClose={() => setRenameTarget(null)}
+          onSaved={(title) => {
+            const w = String(renameTarget.name ?? renameTarget.pane_id ?? '');
+            setAgents((prev) => prev.map((x) => (String(x.name ?? x.pane_id ?? '') === w ? { ...x, title } : x)));
+          }}
+        />
+      ) : null}
       {forkConfirmEl}
       {unbindConfirmEl}
       {addMenuEl}

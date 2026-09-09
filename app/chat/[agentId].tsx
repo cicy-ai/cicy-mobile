@@ -28,6 +28,7 @@ import { Text } from '@/src/components/Text';
 import { api, isUnconfirmedSend } from '@/src/api/http';
 import { loadQueue, saveQueue } from '@/src/lib/queueStore';
 import { setSttAgent } from '@/src/api/stt';
+import { AgentTitleModal } from '@/src/components/AgentTitleModal';
 import { uploadAttachment } from '@/src/api/upload';
 import type { PendingAttachment } from '@/src/lib/attachments';
 import { isHeadlessCicyAgent } from '@/src/lib/agentType';
@@ -521,6 +522,7 @@ export default function Chat() {
   // was still loading.
   const hasTerminal = !!agentMeta.agentType && !isHeadlessCicyAgent(agentMeta.agentType);
   const displayTitle = agentMeta.title || agentId;
+  const [renameOpen, setRenameOpen] = useState(false);
 
   const openTerminal = () =>
     router.push({
@@ -538,10 +540,13 @@ export default function Chat() {
           <Ionicons name="chevron-back" size={26} color={theme.text} />
         </PressableScale>
         <AgentAvatar agentType={agentMeta.agentType} title={displayTitle} size={36} />
-        <View style={styles.headerInfo}>
-          <Text variant="bodyMedium" numberOfLines={1}>
-            {displayTitle}
-          </Text>
+        <PressableScale onPress={() => setRenameOpen(true)} haptic scaleTo={0.98} style={styles.headerInfo} hitSlop={4}>
+          <View style={styles.headerTitleRow}>
+            <Text variant="bodyMedium" numberOfLines={1} style={{ flexShrink: 1 }}>
+              {displayTitle}
+            </Text>
+            <Ionicons name="pencil-outline" size={13} color={theme.textFaint} />
+          </View>
           {/* worker id + current model — id is the stable routing key; the
               model line only shows when the pane exposes a catalog (cloud). */}
           <View style={styles.headerSubRow}>
@@ -549,7 +554,7 @@ export default function Chat() {
               {agentMeta.machineLabel ? `${agentId} · ${agentMeta.machineLabel}` : agentId}
             </Text>
           </View>
-        </View>
+        </PressableScale>
         {modelInfo && (
           <PressableScale
             onPress={() => setModelSheetOpen(true)}
@@ -793,6 +798,14 @@ export default function Chat() {
           )}
         </View>
       </KeyboardAvoidingView>
+      <AgentTitleModal
+        open={renameOpen}
+        agentId={agentId}
+        title={displayTitle}
+        agentType={agentMeta.agentType}
+        onClose={() => setRenameOpen(false)}
+        onSaved={(title) => setAgentMeta((m) => ({ ...m, title }))}
+      />
     </Screen>
   );
 }
@@ -845,6 +858,7 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 2,
   },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   headerSubRow: {
     flexDirection: 'row',
     alignItems: 'center',

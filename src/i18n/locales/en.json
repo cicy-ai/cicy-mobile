@@ -45,7 +45,10 @@
     "projectAgents": "{{count}} agents",
     "noProjects": "This machine has no agents yet. Create one in its cicy-code web app.",
     "projectWorking": "{{count}} working",
-    "projectEmpty": "No agents in this project yet"
+    "projectEmpty": "No agents in this project yet",
+    "rename": "Rename",
+    "renameTitle": "Rename agent",
+    "titlePlaceholder": "Name this agent"
   },
   "login": {
     "entry": "Sign in to CiCy Hub",

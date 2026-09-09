@@ -45,7 +45,10 @@
     "projectAgents": "{{count}} 个 Agent",
     "noProjects": "这台机器还没有 Agent。在它的 cicy-code 网页里创建一个。",
     "projectWorking": "{{count}} 个在忙",
-    "projectEmpty": "这个项目里还没有 Agent"
+    "projectEmpty": "这个项目里还没有 Agent",
+    "rename": "重命名",
+    "renameTitle": "修改名称",
+    "titlePlaceholder": "给这个 Agent 起个名字"
   },
   "login": {
     "entry": "登录 CiCy Hub",
