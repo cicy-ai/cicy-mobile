@@ -6,7 +6,16 @@ import { File } from 'expo-file-system';
 import { useAuthStore } from '@/src/store/auth';
 import { getDeviceLocale, normalizeChineseVariant } from '@/src/lib/locale';
 
-type STTResult = { text: string };
+type STTResult = { text: string; raw?: string; corrected?: boolean };
+
+// The agent the user is talking to. cicy-code's /api/stt uses it for context:
+// Whisper gets the agent's vocabulary (title / projects / recent prompts) as a
+// prompt, and the transcript goes through an LLM correction pass with the same
+// context. Set by the chat screen; cleared when it unmounts.
+let sttAgentId = '';
+export function setSttAgent(agentId: string | null | undefined) {
+  sttAgentId = String(agentId || '').trim();
+}
 
 // Upload a recorded audio file to /api/stt and return the transcript.
 // Throws on any failure; the MicButton component shows the message to the user.
@@ -41,6 +50,7 @@ export async function transcribeAudio(fileUri: string, opts?: { language?: strin
   } as any);
   const language = opts?.language || getDeviceLocale().whisperLang;
   if (language) form.append('language', language);
+  if (sttAgentId) form.append('agent_id', sttAgentId);
 
   const url = `${serverUrl}/api/stt`;
   console.log('[stt] upload', { url, bytes, uri: fileUri });

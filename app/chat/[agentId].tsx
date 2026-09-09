@@ -27,6 +27,7 @@ import { Screen } from '@/src/components/Screen';
 import { Text } from '@/src/components/Text';
 import { api, isUnconfirmedSend } from '@/src/api/http';
 import { loadQueue, saveQueue } from '@/src/lib/queueStore';
+import { setSttAgent } from '@/src/api/stt';
 import { uploadAttachment } from '@/src/api/upload';
 import type { PendingAttachment } from '@/src/lib/attachments';
 import { isHeadlessCicyAgent } from '@/src/lib/agentType';
@@ -137,6 +138,13 @@ export default function Chat() {
     const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardShown(false));
     return () => { showSub.remove(); hideSub.remove(); };
   }, []);
+
+  // Voice: tell the STT layer which agent this is, so the server can bias
+  // recognition and correct the transcript with this agent's context.
+  useEffect(() => {
+    setSttAgent(agentId);
+    return () => setSttAgent(null);
+  }, [agentId]);
 
   // Reset cross-agent state when switching chats — and restore this agent's
   // outbox (messages queued while it was busy) instead of dropping it. The
