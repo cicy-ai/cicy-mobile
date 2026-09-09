@@ -201,7 +201,7 @@
   },
   "machines": {
     "title": "My machines",
-    "subtitle": "{{count}} machines · {{online}} online",
+    "subtitle": "{{count}} machines · {{online}} reachable",
     "drawerHint": "{{count}} machines",
     "online": "Online",
     "offline": "Offline",
@@ -213,6 +213,7 @@
     "refresh": "Refresh",
     "errorTitle": "Couldn't load machines",
     "sessionLost": "Your sign-in expired — sign in again",
-    "lastSeen": "Last seen {{when}}"
+    "lastSeen": "Last seen {{when}}",
+    "tunnelDown": "Online, tunnel down — cannot be opened yet"
   }
 }

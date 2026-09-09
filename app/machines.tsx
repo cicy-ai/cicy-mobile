@@ -41,6 +41,14 @@ function relTime(iso: string | undefined, t: (k: string, o?: any) => string): st
   return t('time.daysAgo', { defaultValue: '{{n}} d ago', n: Math.floor(h / 24) });
 }
 
+// 2 = openable (its tunnel answers), 1 = the node holds a hub socket but its
+// tunnel is down (opening it gives 503), 0 = offline.
+function rank(i: HubInstance): number {
+  if (i.proxyAvailable) return 2;
+  if (i.online) return 1;
+  return 0;
+}
+
 export default function Machines() {
   const { t } = useTranslation();
   const theme = useTheme();
@@ -69,10 +77,11 @@ export default function Machines() {
     () =>
       instances
         .filter(isOpenableInstance)
-        .sort((a, b) => Number(!!b.online) - Number(!!a.online) || a.name.localeCompare(b.name)),
+        // Reachable (tunnel up) first, then online-but-no-tunnel, then offline.
+        .sort((a, b) => rank(b) - rank(a) || a.name.localeCompare(b.name)),
     [instances],
   );
-  const onlineCount = machines.filter((m) => m.online).length;
+  const onlineCount = machines.filter((m) => m.proxyAvailable).length;
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -122,7 +131,8 @@ export default function Machines() {
       : [];
     const agentCount = Array.isArray(item.agents) ? item.agents.length : null;
     const working = Array.isArray(item.agents) ? item.agents.filter((a) => a.working).length : 0;
-    const reachable = item.proxyAvailable || item.online;
+    const reachable = item.proxyAvailable;
+    const tunnelDown = item.online && !item.proxyAvailable;
     return (
       <PressableScale
         onPress={() => void open(item)}
@@ -136,9 +146,13 @@ export default function Machines() {
             <Text variant="callout" numberOfLines={1} style={{ flexShrink: 1 }}>
               {item.name}
             </Text>
-            <StatusDot tone={item.online ? 'ok' : 'muted'} size={8} pulse={item.online && working > 0} />
-            <Text variant="caption" tone={item.online ? undefined : 'faint'} style={item.online ? { color: theme.ok } : undefined}>
-              {item.online ? t('machines.online') : reachable ? t('machines.offline') : t('machines.unreachable')}
+            <StatusDot tone={reachable ? 'ok' : tunnelDown ? 'warn' : 'muted'} size={8} pulse={reachable && working > 0} />
+            <Text
+              variant="caption"
+              tone={reachable ? undefined : tunnelDown ? undefined : 'faint'}
+              style={reachable ? { color: theme.ok } : tunnelDown ? { color: theme.warn } : undefined}
+            >
+              {reachable ? t('machines.online') : tunnelDown ? t('machines.tunnelDown') : t('machines.offline')}
             </Text>
           </View>
           <Text variant="caption" tone="faint" numberOfLines={1} ellipsizeMode="middle">
@@ -162,7 +176,7 @@ export default function Machines() {
               </Text>
             ) : null}
           </View>
-          {!item.online && item.lastSeenAt ? (
+          {!reachable && item.lastSeenAt ? (
             <Text variant="caption" tone="faint">
               {t('machines.lastSeen', { when: relTime(item.lastSeenAt, t) })}
             </Text>

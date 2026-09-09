@@ -205,7 +205,7 @@
   },
   "machines": {
     "title": "我的机器",
-    "subtitle": "{{count}} 台机器 · {{online}} 在线",
+    "subtitle": "{{count}} 台机器 · {{online}} 可访问",
     "drawerHint": "{{count}} 台机器",
     "online": "在线",
     "offline": "离线",
@@ -217,6 +217,7 @@
     "refresh": "刷新",
     "errorTitle": "无法读取机器列表",
     "sessionLost": "登录已失效,请重新登录",
-    "lastSeen": "最近在线 {{when}}"
+    "lastSeen": "最近在线 {{when}}",
+    "tunnelDown": "在线但隧道断开，暂时打不开"
   }
 }
