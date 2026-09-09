@@ -305,10 +305,17 @@ export function turnSig(t: HistoryTurn): string {
 // to every tool_result) are moved AFTER the run so it stays a single group.
 // Only the render copy changes: pagination, committed ids and live de-duping
 // keep using the untouched items.
+// A "tool round" record: at least one tool call and NO prose — thinking is
+// allowed (Claude Code writes a thinking block before almost every tool call;
+// treating it as prose would leave every committed round its own card).
 export function isToolOnlyAssistantTurn(turn: HistoryTurn): boolean {
   if (turn?.role !== 'assistant' || (turn as any)?.outcome) return false;
   const steps = getVisibleHistorySteps(turn, false) || [];
-  return steps.length > 0 && steps.every((step: any) => step?.type === 'tool');
+  return (
+    steps.length > 0 &&
+    steps.some((step: any) => step?.type === 'tool') &&
+    steps.every((step: any) => step?.type === 'tool' || step?.type === 'thinking')
+  );
 }
 
 export function prepareRenderTurns(turns: HistoryTurn[]): HistoryTurn[] {

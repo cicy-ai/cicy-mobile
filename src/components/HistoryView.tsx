@@ -25,7 +25,7 @@ import {
   toolEditDiff,
   toolHeadline,
 } from '@/src/lib/history/toolFormat';
-import { prepareRenderTurns } from '@/src/lib/history/turns';
+import { prepareRenderTurns, getVisibleHistorySteps } from '@/src/lib/history/turns';
 import { normalizeAgentType } from '@/src/lib/agentType';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 import { ImageLightbox } from './ImageLightbox';
@@ -579,7 +579,9 @@ function Turn({
   // its leading gap left a large blank between the q and the next (answer) turn
   // ("q和a 之间很大间隔"). Only render the answer section when it has content.
   const hasAnswer = (turn.steps?.length ?? 0) > 0 || !!turn.a || streaming;
-  const steps = turn.steps ?? [];
+  // Empty thinking/text steps are dropped first (web's getVisibleHistorySteps)
+  // so a blank block never splits a tool run.
+  const steps = getVisibleHistorySteps(turn, isLast) ?? [];
   const capped = !showAllSteps && steps.length > STEP_RENDER_CAP;
   // Keys stay the ORIGINAL index so the visible window sliding during streaming
   // doesn't remount every Step each poll.
@@ -676,12 +678,17 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }
 
 type ToolData = { name?: string; arg?: string; result?: string; isError?: boolean };
 
-type ToolRunEntry = { tool: ToolData; toolId: string; running: boolean };
+type ToolRunEntry =
+  | { kind: 'tool'; key: string; tool: ToolData; toolId: string; running: boolean }
+  | { kind: 'thinking'; key: string; text: string; streaming: boolean };
 
-// Port of web's collectToolRuns + ToolRunGroup: CONSECUTIVE tool steps of a
-// turn fold into one run that shows only the newest card, with a ×N pill and a
-// chevron that unfolds the older cards underneath (newest stays on top, so the
-// control never scrolls away). Thinking / text steps break a run.
+// Port of web's collectToolRuns + ToolRunGroup, one step further: a run is a
+// maximal stretch of tool AND thinking steps holding at least one tool call
+// (Claude Code thinks before almost every call — if thinking broke the run,
+// nothing would ever fold). Collapsed → only the newest tool card with a ×N
+// pill; expanded → the newest card stays on top, everything older unfolds
+// below in chronological order (thinking blocks included). Text steps break
+// a run. Steps are assumed pre-filtered (getVisibleHistorySteps).
 function renderStepsWithToolRuns(
   visibleSteps: HistoryStep[],
   offset: number,
@@ -692,9 +699,15 @@ function renderStepsWithToolRuns(
   const out: React.ReactNode[] = [];
   let run: { firstIndex: number; entries: ToolRunEntry[] } | null = null;
   const flush = () => {
-    if (!run || !run.entries.length) { run = null; return; }
-    const groupId = `tool-run:${String(turnKey).replace(/^live-/, '')}:${run.firstIndex}`;
-    out.push(<ToolRunGroup key={groupId} entries={run.entries} groupId={groupId} />);
+    if (!run) return;
+    const hasTool = run.entries.some((e) => e.kind === 'tool');
+    if (hasTool) {
+      const groupId = `tool-run:${String(turnKey).replace(/^live-/, '')}:${run.firstIndex}`;
+      out.push(<ToolRunGroup key={groupId} entries={run.entries} groupId={groupId} />);
+    } else {
+      // thinking-only stretch → plain blocks
+      for (const e of run.entries) if (e.kind === 'thinking') out.push(<ThinkingBlock key={e.key} text={e.text} streaming={e.streaming} />);
+    }
     run = null;
   };
   visibleSteps.forEach((step, i) => {
@@ -707,8 +720,13 @@ function renderStepsWithToolRuns(
         // In the streaming step, a tool with no result yet is executing right
         // now (the CLI runs it and feeds the output back next round).
         const running = stepStreaming && !String(t?.result ?? '').trim() && t?.isError !== true;
-        run!.entries.push({ tool: t, toolId, running });
+        run!.entries.push({ kind: 'tool', key: toolId, tool: t, toolId, running });
       });
+      return;
+    }
+    if (step.type === 'thinking' && typeof step.text === 'string') {
+      if (!run) run = { firstIndex: stepIndex, entries: [] };
+      run.entries.push({ kind: 'thinking', key: `th-${turnKey}-${stepIndex}`, text: step.text, streaming: stepStreaming });
       return;
     }
     flush();
@@ -728,8 +746,9 @@ function ToolRunGroup({ entries, groupId }: { entries: ToolRunEntry[]; groupId: 
   useEffect(() => {
     setExpanded(toolRunOpenState.get(groupId) ?? false);
   }, [groupId]);
-  const count = entries.length;
-  const latest = entries[count - 1];
+  const tools = entries.filter((e) => e.kind === 'tool') as Extract<ToolRunEntry, { kind: 'tool' }>[];
+  const count = tools.length;
+  const latest = tools[count - 1];
   if (!latest) return null;
   const toggleRun = () => {
     setExpanded((v) => {
@@ -738,8 +757,9 @@ function ToolRunGroup({ entries, groupId }: { entries: ToolRunEntry[]; groupId: 
       return next;
     });
   };
+  const foldedCount = entries.length; // tools + thinking blocks hidden while collapsed
   const runControl =
-    count > 1 ? (
+    foldedCount > 1 ? (
       <PressableScale onPress={toggleRun} haptic scaleTo={0.9} hitSlop={8} style={styles.toolRunControl}>
         <View style={[styles.toolRunCount, { backgroundColor: theme.surfaceMuted }]}>
           <Text variant="caption" tone="muted" style={{ fontSize: 10 }}>
@@ -749,19 +769,21 @@ function ToolRunGroup({ entries, groupId }: { entries: ToolRunEntry[]; groupId: 
         <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={14} color={theme.textFaint} />
       </PressableScale>
     ) : null;
-  // Newest card first (carrying the run control), older ones unfold below.
-  const visible = expanded ? [latest, ...entries.slice(0, -1)] : [latest];
-  return (
+  // Newest card first (carrying the run control); everything older — tool
+  // cards and thinking blocks — unfolds below in chronological order.
+  const older = entries.filter((e) => e.key !== latest.key);
+    return (
     <View style={{ gap: spacing.sm }}>
-      {visible.map((e) => (
-        <ToolCard
-          key={e.toolId}
-          tool={e.tool}
-          toolId={e.toolId}
-          running={e.running}
-          runControl={e.toolId === latest.toolId ? runControl : undefined}
-        />
-      ))}
+      <ToolCard tool={latest.tool} toolId={latest.toolId} running={latest.running} runControl={runControl} />
+      {expanded
+        ? older.map((e) =>
+            e.kind === 'tool' ? (
+              <ToolCard key={e.key} tool={e.tool} toolId={e.toolId} running={e.running} />
+            ) : (
+              <ThinkingBlock key={e.key} text={e.text} streaming={e.streaming} />
+            ),
+          )
+        : null}
     </View>
   );
 }
