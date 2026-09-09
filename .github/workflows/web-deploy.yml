@@ -7,19 +7,36 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['worker.js', 'wrangler.jsonc']
+    paths: ['worker.js', 'wrangler.jsonc', '.github/workflows/web-deploy.yml']
+
+# One deployer at a time. A worker.js push landing next to a v* tag used to run
+# this in parallel with the release's web job: whichever finished last won, the
+# release's "live bundle matches build" check saw the other build and failed.
+concurrency:
+  group: cicy-mobile-web
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - name: Install deps
         run: npm ci
+      # Same version the last release shipped (repo app.json is a placeholder),
+      # so the web footer / expoConfig never regress to 1.0.0 on a hotfix deploy.
+      - name: Sync version from latest release tag
+        run: |
+          git fetch --tags --force
+          VER=$(git describe --tags --match 'v*' --abbrev=0 | sed 's/^v//')
+          echo "Resolved release version: $VER"
+          node scripts/sync-version.mjs "$VER"
       - name: Build web export
         run: npx expo export -p web
       - name: Deploy to Cloudflare Workers

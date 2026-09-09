@@ -32,6 +32,10 @@ jobs:
   web:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # Serialised with web-deploy.yml (same group) — see the note there.
+    concurrency:
+      group: cicy-mobile-web
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
