@@ -152,13 +152,22 @@ export default function Chat() {
   // flush below waits until the reply state is known again so a restored
   // queue never fires into a still-running reply.
   const [busyKnown, setBusyKnown] = useState(false);
+  // Which agent's queue is currently loaded. The persist effect below must not
+  // run before the restore for THIS agent has landed: resetting to [] on switch
+  // used to be written straight back to the store and wiped the saved queue
+  // before loadQueue() could return it ("切出去再切回来队列没了").
+  const queueOwnerRef = useRef<string>('');
   useEffect(() => {
     setBusy(false);
     setQueue([]);
     setBusyKnown(false);
+    queueOwnerRef.current = '';
     let alive = true;
+    const owner = `${serverUrl}|${agentId}`;
     void loadQueue(serverUrl, agentId).then((q) => {
-      if (!alive || !q.length) return;
+      if (!alive) return;
+      queueOwnerRef.current = owner;
+      if (!q.length) return;
       queueSeqRef.current = Math.max(queueSeqRef.current, ...q.map((x) => x.id + 1));
       setQueue(q);
     });
@@ -168,6 +177,7 @@ export default function Chat() {
     return () => { alive = false; clearTimeout(settle); };
   }, [agentId, serverUrl]);
   useEffect(() => {
+    if (queueOwnerRef.current !== `${serverUrl}|${agentId}`) return; // not restored yet
     saveQueue(serverUrl, agentId, queue);
   }, [queue, serverUrl, agentId]);
 
