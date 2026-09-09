@@ -26,6 +26,7 @@ import { PressableScale } from '@/src/components/PressableScale';
 import { Screen } from '@/src/components/Screen';
 import { Text } from '@/src/components/Text';
 import { api, isUnconfirmedSend } from '@/src/api/http';
+import { loadQueue, saveQueue } from '@/src/lib/queueStore';
 import { uploadAttachment } from '@/src/api/upload';
 import type { PendingAttachment } from '@/src/lib/attachments';
 import { isHeadlessCicyAgent } from '@/src/lib/agentType';
@@ -137,11 +138,29 @@ export default function Chat() {
     return () => { showSub.remove(); hideSub.remove(); };
   }, []);
 
-  // Reset cross-agent state when switching chats.
+  // Reset cross-agent state when switching chats — and restore this agent's
+  // outbox (messages queued while it was busy) instead of dropping it. The
+  // flush below waits until the reply state is known again so a restored
+  // queue never fires into a still-running reply.
+  const [busyKnown, setBusyKnown] = useState(false);
   useEffect(() => {
     setBusy(false);
     setQueue([]);
-  }, [agentId]);
+    setBusyKnown(false);
+    let alive = true;
+    void loadQueue(serverUrl, agentId).then((q) => {
+      if (!alive || !q.length) return;
+      queueSeqRef.current = Math.max(queueSeqRef.current, ...q.map((x) => x.id + 1));
+      setQueue(q);
+    });
+    // No in-flight/done event within 5s (idle agent → nothing to report) →
+    // treat as idle and let the flush proceed.
+    const settle = setTimeout(() => setBusyKnown(true), 5000);
+    return () => { alive = false; clearTimeout(settle); };
+  }, [agentId, serverUrl]);
+  useEffect(() => {
+    saveQueue(serverUrl, agentId, queue);
+  }, [queue, serverUrl, agentId]);
 
   // busy 的解锁完全事件驱动(不再有任何 current-reply 轮询):
   //   · 上锁:send() 时,或 HistoryView 应用到 in-flight 快照(onReplyInFlight)。
@@ -394,10 +413,14 @@ export default function Chat() {
       setPending({ text: body, nonce: Date.now() });
       await api.sendToAgent(agentId, body, true);
     } catch (e: any) {
-      setPending(null);
-      setBusy(false);
-      setInput((cur) => cur || text); // restore what the user typed
-      setVoiceError(isUnconfirmedSend(e) ? t('chat.sendUnconfirmed') : t('chat.sendFailed', { error: String(e?.message ?? e) }));
+      if (isUnconfirmedSend(e)) {
+        setVoiceError(t('chat.sendUnconfirmed')); // delivered — keep bubble + busy, don't restore
+      } else {
+        setPending(null);
+        setBusy(false);
+        setInput((cur) => cur || text); // restore what the user typed
+        setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
+      }
     } finally {
       setSending(false);
     }
@@ -409,7 +432,7 @@ export default function Chat() {
   // infinite retry loop while offline (error toast per network RTT, forever).
   const flushRetryRef = useRef(0);
   useEffect(() => {
-    if (busy || sending || queue.length === 0) return;
+    if (busy || sending || queue.length === 0 || !busyKnown) return;
     const attempt = flushRetryRef.current;
     const delay = attempt === 0 ? 0 : Math.min(15000, 1500 * 2 ** (attempt - 1));
     const timer = setTimeout(() => {
@@ -432,17 +455,23 @@ export default function Chat() {
       api.sendToAgent(agentId, body, true).then(() => {
         flushRetryRef.current = 0;
       }).catch((e: any) => {
+        if (isUnconfirmedSend(e)) {
+          // Delivered — re-queuing it would send the batch twice.
+          flushRetryRef.current = 0;
+          setVoiceError(t('chat.sendUnconfirmed'));
+          return;
+        }
         flushRetryRef.current += 1;
         setPending(null);
         setBusy(false);
-        setVoiceError(isUnconfirmedSend(e) ? t('chat.sendUnconfirmed') : t('chat.sendFailed', { error: String(e?.message ?? e) }));
+        setVoiceError(t('chat.sendFailed', { error: String(e?.message ?? e) }));
         // put the batch back so nothing is lost
         setQueue((prev) => [...batch, ...prev]);
       });
     }, delay);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy, sending, queue.length]);
+  }, [busy, sending, queue.length, busyKnown]);
 
   // Stop the current generation: cicy (headless) → gateway cancel; terminal
   // agents (claude/codex) → Escape into the pane. Mirrors DispatcherChat.
@@ -621,7 +650,7 @@ export default function Chat() {
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
         <View style={{ flex: 1, backgroundColor: theme.bg }}>
-          <HistoryView agentId={agentId} pending={pending} onReplyInFlight={() => setBusy(true)} onReplyDone={() => setBusy(false)} agentType={agentMeta.agentType} busy={busy} />
+          <HistoryView agentId={agentId} pending={pending} onReplyInFlight={() => { setBusyKnown(true); setBusy(true); }} onReplyDone={() => { setBusyKnown(true); setBusy(false); }} agentType={agentMeta.agentType} busy={busy} />
           {/* Telegram hides our header (native back bar instead) — the terminal
               entry floats over the top-right corner of the history there. */}
           {inTg && hasTerminal && (
