@@ -12,6 +12,7 @@ import type {
   Pane,
   PanesResponse,
   PollData,
+  ProjectGroup,
 } from './types';
 
 // An explicit server base + token, used when the caller is NOT the current
@@ -177,6 +178,11 @@ export function createApi(endpoint?: Endpoint) {
 
     // Full pane configs — only needed to learn `use_custom_gateway` per agent so
     // we can hide the History tab for non-gateway (claude-code direct) agents.
+    getProjects: async (): Promise<ProjectGroup[]> => {
+      const res = await req<{ groups?: ProjectGroup[] } | ProjectGroup[]>('/api/groups');
+      return Array.isArray(res) ? res : (res?.groups ?? []);
+    },
+
     getPanes: async (): Promise<Pane[]> => {
       const res = await req<PanesResponse | Pane[]>('/api/panes');
       return Array.isArray(res) ? res : (res?.panes ?? []);

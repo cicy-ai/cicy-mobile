@@ -6,13 +6,14 @@ import { Redirect } from 'expo-router';
 import { useAuthStore } from '@/src/store/auth';
 
 // Onboarding order:
-//   1. must sign in first (cloud session);
-//   2. once signed in, if there's no hub yet → scan one (teams come from hubs);
-//   3. otherwise → the team agents list (opens on the first team).
+//   1. must sign in to the CiCy Hub first (email + code);
+//   2. signed in → the machine list (every cicy-code of that account);
+//   a device with only QR-scanned teams and no hub account goes straight to
+//   the team agents list.
 export default function Index() {
   const session = useAuthStore((s) => s.session);
-  const hubs = useAuthStore((s) => s.hubs);
-  if (!session) return <Redirect href="/login" />;
-  if (hubs.length === 0) return <Redirect href="/scan" />;
-  return <Redirect href="/agents" />;
+  const teams = useAuthStore((s) => s.teams);
+  if (!session && teams.length === 0) return <Redirect href="/login" />;
+  if (!session) return <Redirect href="/agents" />;
+  return <Redirect href="/machines" />;
 }

@@ -147,3 +147,16 @@ export type Pane = {
 export type PanesResponse = {
   panes?: Pane[];
 };
+
+// One project (cicy-code "agent group"): a named set of panes sharing project
+// rules / memory. pane_ids are full pane ids ("w-10022:main.0") or bare wids.
+export type ProjectGroup = {
+  id: number | string;
+  name: string;
+  description?: string;
+  is_default?: boolean;
+  is_pinned?: boolean;
+  project_template?: string;
+  pane_ids?: string[];
+  pane_count?: number;
+};

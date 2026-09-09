@@ -35,7 +35,7 @@ const HUB_BASE = 'https://pet.hub.cicy-ai.com';
 
 export default function PetScreen() {
   const theme = useTheme();
-  const hubs = useAuthStore((s) => s.hubs);
+  const session = useAuthStore((s) => s.session);
   const [override, setOverride] = useState<string | null>(null);   // 手动填的自定义地址(优先)
   const [ready, setReady] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -43,11 +43,9 @@ export default function PetScreen() {
   const [draft, setDraft] = useState('');
   const webRef = useRef<WebView>(null);
 
-  // hub token:优先 cicy-ai.com 那个 hub,退而取第一个
-  const hubToken = useMemo(() => {
-    const h = hubs.find((x) => x.url.includes('cicy-ai.com')) ?? hubs[0];
-    return h?.token ?? '';
-  }, [hubs]);
+  // hub token = the CiCy Hub login token (the same credential every machine
+  // is reached with); the pet gateway host accepts it via ?token= too.
+  const hubToken = session ?? '';
 
   // pet 视图带 device=phone:漫游时她"飞到手机"就在这台就地渲染+发声+对口型
   const PAGE = { pet: 'pet.html?device=phone', remote: 'remote.html', config: 'config.html' } as const;

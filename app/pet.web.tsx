@@ -17,13 +17,10 @@ import { spacing } from '@/src/theme';
 const HUB_BASE = 'https://pet.hub.cicy-ai.com';
 
 export default function PetScreen() {
-  const hubs = useAuthStore((s) => s.hubs);
+  const session = useAuthStore((s) => s.session);
   const [remote, setRemote] = useState(false);
 
-  const hubToken = useMemo(() => {
-    const h = hubs.find((x) => x.url.includes('cicy-ai.com')) ?? hubs[0];
-    return h?.token ?? '';
-  }, [hubs]);
+  const hubToken = session ?? '';
 
   const url = useMemo(() => {
     if (!hubToken) return null;

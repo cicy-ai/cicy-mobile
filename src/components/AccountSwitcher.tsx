@@ -1,7 +1,7 @@
 // Copyright 2026 CiCy AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Global account switcher — a WeChat-style sheet listing every cloud account
+// Global account switcher — a WeChat-style sheet listing every CiCy Hub account
 // signed in on this device. The drawer shows only the CURRENT account plus a
 // small switch button that opens this. Tap an account → switch; ✕ → remove;
 // bottom row → add another (email login).
@@ -18,19 +18,6 @@ import { Text } from './Text';
 import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, useTheme } from '@/src/theme';
 
-function tierLabel(tier: string | null): string {
-  switch (tier) {
-    case 'personal':
-      return 'Free';
-    case 'team':
-      return 'Team';
-    case 'enterprise':
-      return 'Enterprise';
-    default:
-      return '';
-  }
-}
-
 type Props = { open: boolean; onClose: () => void };
 
 export function AccountSwitcher({ open, onClose }: Props) {
@@ -40,7 +27,6 @@ export function AccountSwitcher({ open, onClose }: Props) {
   const accounts = useAuthStore((s) => s.accounts);
   const session = useAuthStore((s) => s.session);
   const userEmail = useAuthStore((s) => s.userEmail);
-  const tier = useAuthStore((s) => s.tier);
   const switchAccount = useAuthStore((s) => s.switchAccount);
   const removeAccount = useAuthStore((s) => s.removeAccount);
   const [switching, setSwitching] = useState<string | null>(null);
@@ -87,20 +73,13 @@ export function AccountSwitcher({ open, onClose }: Props) {
                   style={[styles.row, active && { backgroundColor: theme.surfaceMuted }]}
                 >
                   <Ionicons
-                    name={active ? 'cloud-done-outline' : 'cloud-outline'}
+                    name={active ? 'checkmark-circle' : 'person-circle-outline'}
                     size={20}
                     color={active ? theme.accent : theme.textFaint}
                   />
                   <Text variant="callout" tone={active ? undefined : 'muted'} numberOfLines={1} style={{ flex: 1 }}>
                     {acct.email}
                   </Text>
-                  {active && tierLabel(tier) ? (
-                    <View style={[styles.tierBadge, { backgroundColor: theme.accent + '22', borderColor: theme.accent + '55' }]}>
-                      <Text variant="caption" style={{ color: theme.accent, fontSize: 10, fontWeight: '600' }}>
-                        {tierLabel(tier)}
-                      </Text>
-                    </View>
-                  ) : null}
                   {busy ? (
                     <Text variant="caption" tone="faint">
                       …
@@ -171,11 +150,5 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-  },
-  tierBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
   },
 });

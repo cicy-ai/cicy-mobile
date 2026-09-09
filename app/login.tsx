@@ -20,37 +20,41 @@ import { Screen } from '@/src/components/Screen';
 import { Text } from '@/src/components/Text';
 import {
   isValidEmail,
-  pollForSession,
-  randomState,
-  requestEmailLogin,
-} from '@/src/api/cloudAuth';
+  pollLogin,
+  startLogin,
+  submitCode,
+  type HubError,
+} from '@/src/api/hubAuth';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { useAuthStore } from '@/src/store/auth';
 import { radius, spacing, type as typeScale, useTheme } from '@/src/theme';
 
 const RESEND_COOLDOWN_S = 60;
 
-// cicy-cloud email magic-link login — the cloud-first front door (QR scan is
-// the secondary path at the bottom). Top-aligned form so the keyboard never
-// covers the input; the post-send state is a full "check your inbox" screen
-// with a resend cooldown. The link can be opened on ANY device; we just poll
-// until the cloud has minted a session, then land in the built-in default team.
+// CiCy Hub email sign-in — the front door. One email; the hub mails a 6-digit
+// code (and a magic link). Type the code here, or open the link on any device:
+// either way we poll until the hub hands over the token, then land on the
+// machine list. QR scan of a self-hosted node stays as the secondary path.
 export default function Login() {
   const { t } = useTranslation();
   const theme = useTheme();
   const teams = useAuthStore((s) => s.teams);
-  const loginCloud = useAuthStore((s) => s.loginCloud);
-  const canGoBack = teams.length > 0;
+  const session = useAuthStore((s) => s.session);
+  const loginHub = useAuthStore((s) => s.loginHub);
+  const canGoBack = teams.length > 0 || !!session;
 
   useEffect(() => {
     dismissBootSplash();
   }, []);
 
   const [email, setEmail] = useState('');
-  const [phase, setPhase] = useState<'idle' | 'sending' | 'waiting' | 'joining'>('idle');
+  const [code, setCode] = useState('');
+  const [phase, setPhase] = useState<'idle' | 'sending' | 'code' | 'verifying' | 'joining'>('idle');
   const [error, setError] = useState<string | null>(null);
   // Bump to cancel an in-flight poll loop (retry / change-email / unmount).
   const attemptRef = useRef(0);
+  const stateRef = useRef<string | null>(null);
+  const kickRef = useRef<{ wake: () => void }>({ wake: () => {} });
   useEffect(() => () => { attemptRef.current += 1; }, []);
 
   // Resend cooldown while waiting.
@@ -61,27 +65,53 @@ export default function Login() {
     return () => clearTimeout(timer);
   }, [cooldown]);
 
+  const hubErrText = (e: any): string => {
+    const c = String((e as HubError)?.code || e?.message || e);
+    switch (c) {
+      case 'invalid_email':
+        return t('login.invalidEmail');
+      case 'invalid_code':
+        return t('login.codeInvalid');
+      case 'rate_limited':
+        return t('login.rateLimited');
+      case 'mail_failed':
+        return t('login.mailFailed');
+      case 'name_taken':
+        return t('login.nameTaken');
+      case 'expired':
+        return t('login.expired');
+      case 'timeout':
+        return t('login.timeout');
+      default:
+        return t('login.requestFailed', { error: c });
+    }
+  };
+
   const start = async () => {
-    const addr = email.trim();
+    const addr = email.trim().toLowerCase();
     if (!isValidEmail(addr)) {
       setError(t('login.invalidEmail'));
       return;
     }
     setError(null);
+    setCode('');
     setPhase('sending');
     const attempt = attemptRef.current + 1;
     attemptRef.current = attempt;
-    const state = randomState();
+    let state: string;
     try {
-      await requestEmailLogin(addr, state);
+      state = (await startLogin(addr)).state;
     } catch (e: any) {
+      if (attemptRef.current !== attempt) return;
       setPhase('idle');
-      setError(t('login.requestFailed', { error: String(e?.message ?? e) }));
+      setError(hubErrText(e));
       return;
     }
-    setPhase('waiting');
+    if (attemptRef.current !== attempt) return;
+    stateRef.current = state;
+    setPhase('code');
     setCooldown(RESEND_COOLDOWN_S);
-    const outcome = await pollForSession(state, () => attemptRef.current !== attempt);
+    const outcome = await pollLogin(state, () => attemptRef.current !== attempt, kickRef.current);
     if (attemptRef.current !== attempt) return; // superseded
     if (!outcome.ok) {
       if (outcome.error === 'cancelled') return;
@@ -91,8 +121,8 @@ export default function Login() {
     }
     setPhase('joining');
     try {
-      await loginCloud(outcome.session);
-      // Back through the index gate: no hub yet → scan one; otherwise /agents.
+      await loginHub(outcome.session);
+      // Through the index gate → the machine list.
       router.replace('/');
     } catch (e: any) {
       setPhase('idle');
@@ -100,13 +130,34 @@ export default function Login() {
     }
   };
 
+  const verify = async () => {
+    const c = code.replace(/\D/g, '');
+    const state = stateRef.current;
+    if (c.length !== 6 || !state) {
+      setError(t('login.codeInvalid'));
+      return;
+    }
+    setError(null);
+    setPhase('verifying');
+    try {
+      await submitCode(state, c);
+      // Approved → wake the poll loop so it picks the token up right away.
+      kickRef.current.wake();
+    } catch (e: any) {
+      setPhase('code');
+      setError(hubErrText(e));
+    }
+  };
+
   const backToEmail = () => {
     attemptRef.current += 1; // stops the poll
+    stateRef.current = null;
     setPhase('idle');
+    setCode('');
     setError(null);
   };
 
-  const waiting = phase === 'waiting' || phase === 'joining';
+  const waiting = phase === 'code' || phase === 'verifying' || phase === 'joining';
 
   return (
     <Screen padded edges={['top', 'left', 'right']}>
@@ -122,13 +173,13 @@ export default function Login() {
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
         {waiting ? (
-          /* ── Check-your-inbox screen ── */
+          /* ── Code entry (the mail link works too) ── */
           <View style={styles.form}>
             <View style={[styles.iconCircle, { backgroundColor: theme.surfaceMuted }]}>
               <Ionicons name="mail-unread-outline" size={30} color={theme.accent} />
             </View>
             <Text variant="title" style={styles.title}>
-              {phase === 'joining' ? t('login.joiningTitle') : t('login.sentTitle')}
+              {phase === 'joining' ? t('login.joiningTitle') : t('login.codeTitle')}
             </Text>
             <Text variant="bodyMedium" style={[styles.emailEcho, { color: theme.accent }]}>
               {email.trim()}
@@ -140,30 +191,49 @@ export default function Login() {
               </View>
             ) : (
               <>
-                <View style={[styles.stepsBox, styles.steps, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-                  {[t('login.step1'), t('login.step2'), t('login.step3')].map((step, i) => (
-                    <View key={step} style={styles.stepRow}>
-                      <View style={[styles.stepDot, { backgroundColor: theme.surfaceMuted }]}>
-                        <Text variant="caption" tone="muted">{i + 1}</Text>
-                      </View>
-                      <Text variant="callout" tone="muted" style={{ flex: 1 }}>
-                        {step}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-                {/* waiting spinner on its own centered line, not inline with text */}
-                <ActivityIndicator color={theme.textMuted} style={styles.waitSpinner} />
-              </>
-            )}
-
-            {phase === 'waiting' && (
-              <>
+                <Text tone="muted" variant="callout" style={styles.subtitle}>
+                  {t('login.codeHint')}
+                </Text>
+                <TextInput
+                  value={code}
+                  onChangeText={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="••••••"
+                  placeholderTextColor={theme.textFaint}
+                  keyboardType="number-pad"
+                  textContentType="oneTimeCode"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  maxLength={6}
+                  returnKeyType="go"
+                  onSubmitEditing={() => void verify()}
+                  editable={phase === 'code'}
+                  style={[
+                    styles.input,
+                    styles.codeInput,
+                    { color: theme.text, backgroundColor: theme.surface, borderColor: theme.border },
+                  ]}
+                />
+                {error ? (
+                  <Text variant="caption" tone="danger" style={styles.errorText}>
+                    {error}
+                  </Text>
+                ) : null}
+                <View style={{ height: spacing.lg }} />
+                <Button
+                  title={t('login.verify')}
+                  onPress={() => void verify()}
+                  loading={phase === 'verifying'}
+                  disabled={phase !== 'code' || code.length !== 6}
+                />
+                <Text variant="caption" tone="faint" style={styles.mechanicsHint}>
+                  {t('login.linkAlsoWorks')}
+                </Text>
+                <View style={{ height: spacing.lg }} />
                 <Button
                   title={cooldown > 0 ? t('login.resendIn', { s: cooldown }) : t('login.resend')}
                   variant="secondary"
                   onPress={() => void start()}
-                  disabled={cooldown > 0}
+                  disabled={cooldown > 0 || phase !== 'code'}
                 />
                 <PressableScale onPress={backToEmail} style={styles.plainLink} hitSlop={8}>
                   <Text variant="callout" tone="muted">
@@ -220,7 +290,7 @@ export default function Login() {
               {t('login.mechanicsHint')}
             </Text>
 
-            {/* Secondary path — join a self-hosted team by QR instead. */}
+            {/* Secondary path — join a self-hosted node by QR instead. */}
             <View style={styles.divider}>
               <View style={[styles.line, { backgroundColor: theme.border }]} />
               <Text variant="caption" tone="faint" style={{ marginHorizontal: spacing.md }}>
@@ -295,24 +365,6 @@ const styles = StyleSheet.create({
     marginTop: spacing.xl,
     marginBottom: spacing.xl,
   },
-  steps: {
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: spacing.lg,
-    gap: spacing.md,
-  },
-  stepRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-  },
-  stepDot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   plainLink: {
     paddingVertical: spacing.md,
     marginTop: spacing.sm,
@@ -326,8 +378,11 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
   },
-  waitSpinner: {
-    marginBottom: spacing.xl,
+  codeInput: {
+    fontSize: 24,
+    letterSpacing: 10,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
   },
   errorText: { marginTop: spacing.sm, alignSelf: 'flex-start' },
   mechanicsHint: {

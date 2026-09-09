@@ -1,7 +1,9 @@
 # CiCy Mobile
 
-The mobile client for the **CiCy** agent platform — browse your agents, open an
-agent and chat with it, and scan a QR code to join a team. One
+The mobile client for the **CiCy** agent platform — sign in to the CiCy Hub
+with your email, see every machine (cicy-code instance) of that account, drill
+into each machine's projects and agents, and chat with (or talk to) any agent.
+A QR code still joins a single self-hosted node. One
 [Expo](https://expo.dev) codebase ships three ways:
 
 - **iOS / Android** native apps
@@ -22,11 +24,26 @@ agent and chat with it, and scan a QR code to join a team. One
 
 ## Architecture
 
-The app is a **pure client — it has no backend of its own.** Each team's
-`cicy-code` server *is* the backend, reached directly at the HTTPS address
-carried in the add-team QR (the server's `CICY_PUBLIC_URL`). The server answers
-CORS itself, so the page calls it cross-origin; nothing is proxied and no
-backend address or token is ever hardcoded in the client.
+The app is a **pure client — it has no backend of its own.** Each machine's
+`cicy-code` server *is* the backend.
+
+- **Sign-in** (`src/api/hubAuth.ts`) is the CiCy Hub (`cicy-ws-hub`) email
+  flow: `POST /api/login/start` → 6-digit code (or the mailed link) →
+  `/api/login/poll` hands over the hub token. Same contract as cicy-desktop's
+  `hub-client.js`; the phone registers as a hidden `mobile-*` viewer instance.
+- **Machines** (`app/machines.tsx`) come from `GET /api/instances` — every
+  cicy-code of the same email. Each openable instance becomes a Team whose
+  `serverUrl` is its hub hostname (`https://<name>.hub.cicy-ai.com`) and whose
+  token is the hub token: the hub gateway accepts the owner's token and swaps
+  in the node's own api token, so every existing `/api/*` call, the chat
+  websocket and `/api/stt` (push-to-talk) work unchanged through the gateway.
+- **Projects → agents** (`app/agents.tsx`): a hub machine lists *all* its
+  panes, sectioned by `/api/groups` (projects); QR-scanned nodes keep the
+  master-and-workers view. The store (`src/store/auth.ts`) refreshes the
+  directory every 60 s and on pull-to-refresh.
+- QR-scanned teams are reached directly at the HTTPS address carried in the
+  add-team QR (the server's `CICY_PUBLIC_URL`). Servers answer CORS themselves;
+  nothing is proxied and no backend address or token is hardcoded.
 
 - **Platform splits** live in `*.web.tsx` siblings so native is never touched —
   e.g. `TerminalView.tsx` (native WebView) vs `TerminalView.web.tsx` (iframe),

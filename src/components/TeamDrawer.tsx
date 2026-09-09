@@ -23,10 +23,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { AccountSwitcher } from './AccountSwitcher';
 import { ConfirmModal } from './ConfirmModal';
 import { PressableScale } from './PressableScale';
+import { StatusDot } from './StatusDot';
 import { TeamAvatar } from './TeamAvatar';
 import { Text } from './Text';
 import { runningOtaLabel } from '@/src/lib/otaInfo';
-import { useAuthStore, type HubConn, type Team } from '@/src/store/auth';
+import { useAuthStore, type Team } from '@/src/store/auth';
 import { radius, spacing, useTheme } from '@/src/theme';
 
 type Props = {
@@ -35,21 +36,6 @@ type Props = {
 };
 
 const DRAWER_W = Math.min(320, Dimensions.get('window').width * 0.84);
-
-// Account plan level → short display badge. Mirrors the cloud's tier names
-// (personal | team | enterprise); '' / unknown → no badge.
-function tierLabel(tier: string | null): string {
-  switch (tier) {
-    case 'personal':
-      return 'Free';
-    case 'team':
-      return 'Team';
-    case 'enterprise':
-      return 'Enterprise';
-    default:
-      return '';
-  }
-}
 
 export function TeamDrawer({ open, onClose }: Props) {
   const { t } = useTranslation();
@@ -71,18 +57,19 @@ export function TeamDrawer({ open, onClose }: Props) {
   const currentTeamId = useAuthStore((s) => s.currentTeamId);
   const switchTeam = useAuthStore((s) => s.switchTeam);
   const removeTeam = useAuthStore((s) => s.removeTeam);
-  const hubs = useAuthStore((s) => s.hubs);
-  const disconnectHub = useAuthStore((s) => s.disconnectHub);
   const session = useAuthStore((s) => s.session);
   const userEmail = useAuthStore((s) => s.userEmail);
-  const tier = useAuthStore((s) => s.tier);
   const [switcherOpen, setSwitcherOpen] = useState(false);
-  const [confirmHub, setConfirmHub] = useState<HubConn | null>(null);
 
-  // Built-in default team pinned first, then cloud teams, then scanned customs
-  // (each group keeps its addedAt order).
-  const groupRank = (tm: Team) => (tm.builtin ? 0 : tm.kind === 'cloud' ? 1 : 2);
-  const ordered = [...teams].sort((a, b) => groupRank(a) - groupRank(b) || a.addedAt - b.addedAt);
+  // Hub machines first (online ones on top, as the store sorts them), then
+  // QR-scanned customs in the order they were added.
+  const groupRank = (tm: Team) => (tm.kind === 'hub' ? 0 : 1);
+  const ordered = [...teams].sort((a, b) => {
+    const r = groupRank(a) - groupRank(b);
+    if (r) return r;
+    if (a.kind === 'hub' && b.kind === 'hub') return 0; // keep store order
+    return a.addedAt - b.addedAt;
+  });
 
   const tx = useRef(new Animated.Value(-DRAWER_W)).current;
   const scrimOpacity = useRef(new Animated.Value(0)).current;
@@ -128,7 +115,7 @@ export function TeamDrawer({ open, onClose }: Props) {
     const remaining = useAuthStore.getState().teams;
     onClose();
     if (remaining.length === 0) {
-      setTimeout(() => router.replace('/scan'), 50);
+      setTimeout(() => router.replace('/'), 50);
     }
   }
 
@@ -176,42 +163,48 @@ export function TeamDrawer({ open, onClose }: Props) {
           </View>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list}>
-            {/* Hubs — teams below are sourced from these. ✕ disconnects one;
-                the ＋ row scans another (the app supports several). */}
-            {hubs.map((h) => (
-              <View key={h.id} style={styles.teamRow}>
+            {/* All machines — the hub directory this account's teams come from. */}
+            {session ? (
+              <PressableScale
+                onPress={() => {
+                  onClose();
+                  setTimeout(() => router.navigate('/machines'), 80);
+                }}
+                haptic
+                scaleTo={0.97}
+                style={styles.teamRow}
+              >
                 <View style={[styles.hubIcon, { backgroundColor: theme.accent, borderColor: theme.border }]}>
-                  <Ionicons name="git-network-outline" size={20} color={theme.accentText} />
+                  <Ionicons name="hardware-chip-outline" size={20} color={theme.accentText} />
                 </View>
                 <View style={{ flex: 1, gap: 2 }}>
                   <Text variant="callout" numberOfLines={1}>
-                    {h.title || t('hub.title')}
+                    {t('machines.title')}
                   </Text>
-                  <Text variant="caption" tone="faint" numberOfLines={1} ellipsizeMode="middle">
-                    {h.url.replace(/^https?:\/\//, '')}
+                  <Text variant="caption" tone="faint" numberOfLines={1}>
+                    {t('machines.drawerHint', { count: teams.filter((tm) => tm.kind === 'hub').length })}
                   </Text>
                 </View>
-                <PressableScale onPress={() => setConfirmHub(h)} haptic hitSlop={10}>
-                  <Ionicons name="close-circle-outline" size={18} color={theme.textFaint} />
-                </PressableScale>
-              </View>
-            ))}
-            <PressableScale
-              onPress={() => {
-                onClose();
-                setTimeout(() => router.push('/scan'), 80);
-              }}
-              haptic
-              scaleTo={0.97}
-              style={styles.teamRow}
-            >
-              <View style={[styles.hubIcon, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-                <Ionicons name="add" size={20} color={theme.accent} />
-              </View>
-              <Text variant="callout" style={{ color: theme.accent, flex: 1 }}>
-                {hubs.length ? t('hub.addHub', { defaultValue: 'Add hub' }) : t('hub.scanToConnect')}
-              </Text>
-            </PressableScale>
+                <Ionicons name="chevron-forward" size={16} color={theme.textFaint} />
+              </PressableScale>
+            ) : (
+              <PressableScale
+                onPress={() => {
+                  onClose();
+                  setTimeout(() => router.push('/login'), 80);
+                }}
+                haptic
+                scaleTo={0.97}
+                style={styles.teamRow}
+              >
+                <View style={[styles.hubIcon, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                  <Ionicons name="log-in-outline" size={20} color={theme.accent} />
+                </View>
+                <Text variant="callout" style={{ color: theme.accent, flex: 1 }}>
+                  {t('login.entry')}
+                </Text>
+              </PressableScale>
+            )}
 
             <View style={[styles.sectionDivider, { backgroundColor: theme.border }]} />
 
@@ -220,9 +213,9 @@ export function TeamDrawer({ open, onClose }: Props) {
                 <PressableScale
                   key={team.id}
                   onPress={() => onPickTeam(team)}
-                  // The built-in default team can't be removed — sign out of
-                  // the cloud account below instead.
-                  onLongPress={team.builtin || team.kind === 'hub' ? undefined : () => setConfirmTeam(team)}
+                  // Hub machines come from the account — they leave with it,
+                  // not by long-press; only QR-scanned customs are removable here.
+                  onLongPress={team.kind === 'hub' ? undefined : () => setConfirmTeam(team)}
                   haptic
                   scaleTo={0.97}
                   style={styles.teamRow}
@@ -236,8 +229,8 @@ export function TeamDrawer({ open, onClose }: Props) {
                       {team.serverUrl.replace(/^https?:\/\//, '')}
                     </Text>
                   </View>
-                  {team.kind === 'cloud' ? (
-                    <Ionicons name="cloud-outline" size={14} color={theme.textFaint} />
+                  {team.kind === 'hub' ? (
+                    <StatusDot tone={team.online ? 'ok' : 'muted'} size={8} />
                   ) : null}
                 </PressableScale>
               );
@@ -249,20 +242,13 @@ export function TeamDrawer({ open, onClose }: Props) {
           <View style={[styles.accounts, { borderTopColor: theme.border }]}>
             <View style={styles.accountRow}>
               <Ionicons
-                name={session ? 'cloud-done-outline' : 'cloud-outline'}
+                name={session ? 'person-circle' : 'person-circle-outline'}
                 size={18}
                 color={session ? theme.accent : theme.textFaint}
               />
               <Text variant="caption" tone={session ? undefined : 'muted'} numberOfLines={1} style={{ flex: 1 }}>
                 {session ? userEmail || t('login.entry') : t('login.entry')}
               </Text>
-              {session && tierLabel(tier) ? (
-                <View style={[styles.tierBadge, { backgroundColor: theme.accent + '22', borderColor: theme.accent + '55' }]}>
-                  <Text variant="caption" style={{ color: theme.accent, fontSize: 10, fontWeight: '600' }}>
-                    {tierLabel(tier)}
-                  </Text>
-                </View>
-              ) : null}
               <PressableScale
                 onPress={() => {
                   if (session) setSwitcherOpen(true);
@@ -305,20 +291,6 @@ export function TeamDrawer({ open, onClose }: Props) {
           onCancel={() => setConfirmTeam(null)}
         />
 
-        <ConfirmModal
-          open={!!confirmHub}
-          title={t('hub.disconnectConfirmTitle')}
-          body={t('hub.disconnectConfirmBody')}
-          confirmText={t('hub.disconnect')}
-          cancelText={t('common.cancel')}
-          destructive
-          onConfirm={() => {
-            const h = confirmHub;
-            setConfirmHub(null);
-            if (h) void disconnectHub(h.id);
-          }}
-          onCancel={() => setConfirmHub(null)}
-        />
 
         <AccountSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
       </View>
@@ -372,12 +344,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xs,
     paddingVertical: spacing.sm,
     borderRadius: radius.sm,
-  },
-  tierBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
   },
   footer: {
     paddingHorizontal: spacing.sm,

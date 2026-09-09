@@ -35,7 +35,7 @@ import { api } from '@/src/api/http';
 import { ChatWsClient } from '@/src/api/chatws';
 import { checkApkUpdate, type ApkUpdate } from '@/src/lib/appUpdate';
 import { useOtaReady } from '@/src/lib/otaInfo';
-import type { Agent } from '@/src/api/types';
+import type { Agent, ProjectGroup } from '@/src/api/types';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import {
   fmtCost,
@@ -135,6 +135,11 @@ export default function Agents() {
   const teams = useAuthStore((s) => s.teams);
   const currentTeamId = useAuthStore((s) => s.currentTeamId);
   const currentTeam = teams.find((tm) => tm.id === currentTeamId) ?? null;
+  const session = useAuthStore((s) => s.session);
+  // Hub machines show EVERY agent on the node, grouped by project; QR-scanned
+  // customs keep the one-master-and-its-workers view.
+  const hubMode = currentTeam?.kind === 'hub';
+  const [projects, setProjects] = useState<ProjectGroup[]>([]);
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -162,8 +167,9 @@ export default function Agents() {
   const [bindOpen, setBindOpen] = useState(false);
   const [bindCandidates, setBindCandidates] = useState<{ wid: string; title: string; agentType: string }[] | null>(null);
   const [bindBusy, setBindBusy] = useState(false);
-  // Cloud default team: server enforces agent_type 'cicy' (w-10122).
-  const cloudLocked = !!currentTeam?.builtin;
+  // Member types are free on every node reachable today (the cloud-locked
+  // 'cicy'-only tenant is retired).
+  const cloudLocked = false;
   // Sideload self-update: newer APK on the CDN → banner (Android only).
   const ota = useOtaReady();
   const [apkUpdate, setApkUpdate] = useState<ApkUpdate | null>(null);
@@ -245,10 +251,11 @@ export default function Agents() {
 
   type ListRow =
     | { kind: 'agent'; agent: Agent; depth: number; forkCount: number; collapsed: boolean }
-    | { kind: 'machine'; key: string; label: string };
+    | { kind: 'machine'; key: string; label: string }
+    | { kind: 'project'; key: string; label: string; count: number; slug?: string };
   const listRows = useMemo<ListRow[]>(() => {
     const wid = (a: Agent) => String(a.name ?? a.id ?? a.pane_id ?? '');
-    const master = agents.find((a) => wid(a) === hostPaneId) ?? null;
+    const master = hubMode ? null : (agents.find((a) => wid(a) === hostPaneId) ?? null);
     const workers = agents.filter((a) => a !== master);
     const byWid = new Map(workers.map((a) => [wid(a), a] as const));
     const isFork = (a: Agent) => String((a as any).source_kind || '') === 'fork' && !!(a as any).source_ref;
@@ -286,8 +293,31 @@ export default function Agents() {
       rows.push({ kind: 'agent', agent: a, depth, forkCount, collapsed });
       if (!collapsed) for (const kid of byParent.get(w) || []) pushTree(kid, depth + 1);
     };
-    if (master) rows.push({ kind: 'agent', agent: master, depth: 0, forkCount: 0, collapsed: false });
     const topLevel = workers.filter((a) => !nested.has(wid(a)));
+    if (hubMode && (projects.length > 0 || master)) {
+      // Project sections: each project lists the agents whose pane belongs to
+      // it (masters included — on a hub machine they are ordinary members of
+      // their project); whatever is in no project goes under "Ungrouped".
+      const everyone = master ? [master, ...topLevel] : topLevel;
+      const placed = new Set<string>();
+      const sections: { key: string; label: string; slug?: string; members: Agent[] }[] = [];
+      for (const g of projects) {
+        const ids = new Set((g.pane_ids || []).map((p) => String(p).split(':')[0]));
+        const members = everyone.filter((a) => ids.has(wid(a)) && !placed.has(wid(a)));
+        for (const m of members) placed.add(wid(m));
+        if (!members.length && !g.is_default) continue; // hide empty projects
+        sections.push({ key: `p:${g.id}`, label: g.name || String(g.project_template || g.id), slug: g.project_template, members });
+      }
+      const rest = everyone.filter((a) => !placed.has(wid(a)));
+      if (rest.length) sections.push({ key: 'p:ungrouped', label: t('agents.projectUngrouped'), members: rest });
+      for (const sec of sections) {
+        const count = sec.members.reduce((n, a) => n + 1 + subtreeCount(wid(a)), 0);
+        rows.push({ kind: 'project', key: sec.key, label: sec.label, count, slug: sec.slug });
+        for (const a of sec.members) pushTree(a, 0);
+      }
+      return rows;
+    }
+    if (master) rows.push({ kind: 'agent', agent: master, depth: 0, forkCount: 0, collapsed: false });
     const groups = new Map<string, Agent[]>();
     for (const a of topLevel) {
       const label = String((a as any).machine_label || '').trim() || t('agents.localMachine');
@@ -300,7 +330,7 @@ export default function Agents() {
       for (const a of members) pushTree(a, 0);
     }
     return rows;
-  }, [agents, hostPaneId, collapsedWids, t]);
+  }, [agents, hostPaneId, collapsedWids, t, hubMode, projects]);
 
   const load = useCallback(async () => {
     if (!currentTeam) {
@@ -313,23 +343,29 @@ export default function Agents() {
     // the error screen flash to empty and back every tick on a persistently-
     // failing team (e.g. 502). Clear the error only once a fetch SUCCEEDS.
     try {
-      // True cloud-hosted tenants: roster comes from /api/panes ONLY. The
-      // tenant's cicy roles are configOnly (no pane_agents binding), so
-      // /api/poll returns nothing for them — per w-10122, /api/poll is for
-      // bound self-hosted/custom teams. Mirrored SELF-HOST teams (serverKind
-      // custom/private/local) are real cicy-code nodes: they must use the
-      // poll+panes roster below, or the list fills with config-only role rows
-      // the web UI never shows.
-      if (currentTeam.kind === 'cloud' && (currentTeam.serverKind ?? 'cloud') === 'cloud') {
-        const cloudPanes = await api.getPanes();
-        const valid = cloudPanes.filter((p) => typeof p.pane_id === 'string' && p.pane_id);
-        const masterPane = valid.find((p) => p.role === 'master');
-        const masterShort = masterPane ? masterPane.pane_id.split(':')[0] : null;
-        setHostPaneId(masterShort ?? (valid[0] ? valid[0].pane_id.split(':')[0] : null));
-        const gw: Record<string, boolean> = {};
-        for (const p of valid) gw[p.pane_id.split(':')[0]] = !!p.use_custom_gateway;
-        setGatewayByName(gw);
-        const rows: Agent[] = valid.map((p) => {
+      if (hubMode) {
+        // Hub machine: the whole node. Every master pane + every worker row,
+        // plus the project list so the roster can be sectioned by project.
+        const [poll, panes, groups] = await Promise.all([
+          api.poll(),
+          api.getPanes(),
+          api.getProjects().catch(() => [] as ProjectGroup[]),
+        ]);
+        const validPanes = panes.filter((p) => typeof p.pane_id === 'string' && p.pane_id);
+        const masterPanes = validPanes.filter((p) => p.role === 'master');
+        // One socket is registered on a master for the push channel; any will do.
+        const firstMaster = masterPanes[0]?.pane_id.split(':')[0] ?? null;
+        const workerRows = poll.agents ?? [];
+        setHostPaneId(firstMaster ?? workerRows[0]?.pane_id ?? DEFAULT_MASTER);
+        const workspaceByName = new Map<string, string>();
+        const gwByName: Record<string, boolean> = {};
+        for (const p of validPanes) {
+          const key = p.pane_id.split(':')[0];
+          if (p.workspace) workspaceByName.set(key, p.workspace);
+          gwByName[key] = !!p.use_custom_gateway;
+        }
+        setGatewayByName(gwByName);
+        const masters: Agent[] = masterPanes.map((p) => {
           const short = p.pane_id.split(':')[0];
           return {
             name: short,
@@ -338,17 +374,33 @@ export default function Agents() {
             title: p.title || short,
             status: 'active',
             workspace: p.workspace,
+            role: 'master',
           } as Agent;
         });
-        // master pinned first, everyone else in server order
-        rows.sort((a, b) => (a.name === masterShort ? -1 : 0) - (b.name === masterShort ? -1 : 0));
-        // Cloud tenants keep the panes-derived roster; the WS poll_data frame
-        // carries no rows for configOnly roles, so never recompose from it.
-        composeFromWorkersRef.current = null;
-        setAgents(rows);
+        const masterSet = new Set(masters.map((m) => m.name));
+        // Workers by wid; a poll_data push (which carries only the registered
+        // master's workers) merges INTO this map so other masters' workers stay.
+        const workersByWid = new Map<string, Agent>();
+        const fold = (rows: any[]) => {
+          for (const a of rows) {
+            const w = String(a?.name || '');
+            if (!w || masterSet.has(w)) continue;
+            workersByWid.set(w, { ...a, workspace: workspaceByName.get(w) ?? a.workspace });
+          }
+        };
+        fold(workerRows);
+        const compose = (rows: any[]) => {
+          fold(rows);
+          setAgents([...masters, ...workersByWid.values()]);
+        };
+        composeFromWorkersRef.current = compose;
+        panesRef.current = panes;
+        setProjects(groups);
+        setAgents([...masters, ...workersByWid.values()]);
         setError(null);
         return;
       }
+      setProjects([]);
 
       // Self-host teams — cicy-code web's pipeline with ONE mobile-only extra:
       //   · SEED: poll+panes ONCE on entry. /api/poll is unavoidable here — the
@@ -418,13 +470,14 @@ export default function Agents() {
     } catch (e: any) {
       setError(String(e?.message ?? e));
     }
-  }, [currentTeam]);
+  }, [currentTeam, hubMode]);
 
   // Team switched → wipe the previous team's list immediately. Without this
   // the old agents (and any stale error) linger until the new fetch lands —
   // or forever, if the new team's server errors out.
   useEffect(() => {
     setAgents([]);
+    setProjects([]);
     setError(null);
   }, [currentTeamId]);
 
@@ -965,7 +1018,13 @@ export default function Agents() {
             {t('agents.emptyTeamHint')}
           </Text>
           <View style={{ height: spacing.xl }} />
-          <Button title={t('agents.scanToAdd')} onPress={() => router.push('/scan')} />
+          <Button
+            title={session ? t('agents.toMachines') : t('login.entry')}
+            onPress={() => router.replace(session ? '/machines' : '/login')}
+          />
+          <PressableScale onPress={() => router.push('/scan')} style={{ paddingVertical: spacing.md }} hitSlop={8}>
+            <Text variant="callout" tone="muted">{t('agents.scanToAdd')}</Text>
+          </PressableScale>
         </View>
         {drawerEl}
       </Screen>
@@ -1015,7 +1074,7 @@ export default function Agents() {
       <FlatList
         data={listRows}
         keyExtractor={(r) =>
-          r.kind === 'machine' ? r.key : String(r.agent.name ?? r.agent.id ?? r.agent.pane_id ?? '')
+          r.kind !== 'agent' ? r.key : String(r.agent.name ?? r.agent.id ?? r.agent.pane_id ?? '')
         }
         contentContainerStyle={{
           flexGrow: 1,
@@ -1031,12 +1090,22 @@ export default function Agents() {
           <View style={styles.center}>
             <Ionicons name="terminal-outline" size={48} color={theme.textMuted} />
             <Text tone="muted" variant="callout" style={{ marginTop: spacing.md, textAlign: 'center' }}>
-              {t('agents.emptyHint')}
+              {hubMode ? t('agents.noProjects') : t('agents.emptyHint')}
             </Text>
           </View>
         }
         renderItem={({ item }) =>
-          item.kind === 'machine' ? (
+          item.kind === 'project' ? (
+            <View style={[styles.projectHeader, { borderBottomColor: theme.border }]}>
+              <Ionicons name="folder-open-outline" size={14} color={theme.accent} />
+              <Text variant="callout" numberOfLines={1} style={{ flex: 1, fontWeight: '600' }}>
+                {item.label}
+              </Text>
+              <Text variant="caption" tone="faint">
+                {t('agents.projectAgents', { count: item.count })}
+              </Text>
+            </View>
+          ) : item.kind === 'machine' ? (
             <View style={styles.machineHeader}>
               <Ionicons name="hardware-chip-outline" size={12} color={theme.textFaint} />
               <Text variant="caption" tone="faint" numberOfLines={1}>
@@ -1303,6 +1372,15 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingHorizontal: 4,
     paddingTop: spacing.sm,
+  },
+  projectHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 4,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xs,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   createInput: {
     width: '100%',
