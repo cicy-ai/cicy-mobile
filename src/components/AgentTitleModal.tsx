@@ -84,7 +84,10 @@ export function AgentTitleModal({ open, agentId, title, agentType, onClose, onSa
 
   return (
     <Modal visible={open} transparent animationType="none" onRequestClose={onClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.root}>
+      {/* padding on BOTH platforms: inside a Modal Android's window does not
+          resize for the keyboard, so without it the card (and its input)
+          stayed under the keyboard. The chat screen uses the same setting. */}
+      <KeyboardAvoidingView behavior="padding" style={styles.root}>
         <Animated.View style={[StyleSheet.absoluteFillObject, { opacity: anim }]}>
           <Pressable style={styles.scrim} onPress={onClose} />
         </Animated.View>

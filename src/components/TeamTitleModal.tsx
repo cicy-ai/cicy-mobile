@@ -79,7 +79,7 @@ export function TeamTitleModal({ open, team, onClose }: Props) {
   return (
     <Modal visible={open} transparent animationType="none" onRequestClose={onClose}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior="padding"
         style={styles.root}
       >
         <Animated.View style={[StyleSheet.absoluteFillObject, { opacity: anim }]}>
