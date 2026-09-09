@@ -50,11 +50,18 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler@4 deploy
       - name: Verify live bundle matches build
+        # Cloudflare takes a little while to serve the new version everywhere;
+        # one immediate check raced it and failed every release (v1.0.28-30)
+        # although the deploy had gone through. Poll for up to ~3 minutes.
         run: |
           LOCAL=$(ls dist/_expo/static/js/web/ | grep '^entry')
-          LIVE=$(curl -s https://m.cicy-ai.com/ | grep -o 'entry-[a-f0-9]*\.js' | head -1)
-          echo "local=$LOCAL live=$LIVE"
-          test "$LOCAL" = "$LIVE"
+          for i in $(seq 1 12); do
+            LIVE=$(curl -s -H 'Cache-Control: no-cache' "https://m.cicy-ai.com/?v=$i" | grep -o 'entry-[a-f0-9]*\.js' | head -1)
+            echo "try $i: local=$LOCAL live=$LIVE"
+            [ "$LOCAL" = "$LIVE" ] && exit 0
+            sleep 15
+          done
+          exit 1
 
   # ── Android APK → GitHub Release ─────────────────────────────────────────────
   android:
