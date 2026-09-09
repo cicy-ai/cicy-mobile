@@ -259,12 +259,24 @@ export default function Agents() {
     const workers = agents.filter((a) => a !== master);
     const byWid = new Map(workers.map((a) => [wid(a), a] as const));
     const isFork = (a: Agent) => String((a as any).source_kind || '') === 'fork' && !!(a as any).source_ref;
+    // Project membership first (hub machines): a fork only nests under its
+    // parent when both live in the SAME project — otherwise a fork that was
+    // moved to another project would be drawn (and counted) under the wrong
+    // section, pulling its own subtree along with it.
+    const sectionOf = new Map<string, string>();
+    if (hubMode && projects.length > 0) {
+      for (const g of projects) {
+        const ids = new Set((g.pane_ids || []).map((p) => String(p).split(':')[0]));
+        for (const a of workers) if (ids.has(wid(a)) && !sectionOf.has(wid(a))) sectionOf.set(wid(a), `p:${g.id}`);
+      }
+    }
     const byParent = new Map<string, Agent[]>();
     const nested = new Set<string>();
     for (const a of workers) {
       if (!isFork(a)) continue;
       const parentWid = String((a as any).source_ref || '').split(':')[0];
       if (!parentWid || !byWid.has(parentWid) || parentWid === wid(a)) continue;
+      if (sectionOf.size && sectionOf.get(parentWid) !== sectionOf.get(wid(a))) continue;
       if (!byParent.has(parentWid)) byParent.set(parentWid, []);
       byParent.get(parentWid)!.push(a);
       nested.add(wid(a));
