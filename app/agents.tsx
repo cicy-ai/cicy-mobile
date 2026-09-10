@@ -620,7 +620,13 @@ export default function Agents() {
       </PressableScale>
     ) : apkUpdate ? (
       <PressableScale
-        onPress={() => { Linking.openURL(apkUpdate.apk).catch(() => {}); }}
+        onPress={() => {
+          // Re-read the manifest on tap so a banner that was fetched before a
+          // manifest change never opens a stale package link.
+          checkApkUpdate()
+            .then((u) => Linking.openURL((u || apkUpdate).apk))
+            .catch(() => Linking.openURL(apkUpdate.apk).catch(() => {}));
+        }}
         haptic
         scaleTo={0.98}
         style={[styles.updateBanner, { backgroundColor: theme.surface, borderColor: theme.accent }]}
