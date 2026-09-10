@@ -23,9 +23,13 @@ on:
   workflow_dispatch:
     inputs:
       ios_version:
-        description: iOS build version (e.g. 1.0.3)
-        required: true
-        default: 0.0.0-dev
+        description: iOS build version (e.g. 1.0.3) — leave empty to skip the iOS build
+        required: false
+        default: ''
+      apk_version:
+        description: Re-point version.json at an already-published raw APK (e.g. 1.0.32) — no build
+        required: false
+        default: ''
 
 jobs:
   # ── Telegram Mini App / PWA → Cloudflare ─────────────────────────────────────
@@ -106,9 +110,9 @@ jobs:
         run: |
           VER="${GITHUB_REF_NAME#v}"
           cp android/app/build/outputs/apk/release/app-release.apk "cicy-${VER}.apk"
-          # Installed apps expect a zip-wrapped APK (`zip:true` in version.json:
-          # download the zip, extract, install) — kept for them; R2 also gets
-          # the raw .apk below.
+          # GitHub Release keeps the zip-wrapped copy (the install skill pulls
+          # releases/latest/download/cicy-latest.zip); phones get the raw .apk
+          # from R2 via version.json below.
           zip -qj "cicy-${VER}.zip" "cicy-${VER}.apk"
           # Stable-name alias so GitHub Release has BOTH cicy-<ver>.zip and
           # cicy-latest.zip (releases/latest/download/cicy-latest.zip — the skill
@@ -128,9 +132,9 @@ jobs:
       # Delivery store is Cloudflare R2 (public read at r2.deepfetch.de5.net —
       # measured reachable from mainland desktops at ~2 MB/s on 2026-09-09).
       # Alibaba OSS, the previous store, now answers 403 to both uploads and
-      # public reads, so everything moved back to R2. The zip-wrapped APK stays
-      # (installed apps expect `zip:true`), plus the raw .apk for the README
-      # link / `m.cicy-ai.com/apk` (R2 has no apk sniffer).
+      # public reads, so everything moved back to R2. Both the raw .apk (what
+      # version.json / the README / `m.cicy-ai.com/apk` hand to phones — R2 has
+      # no apk sniffer, so it installs directly) and the zip-wrapped copy.
       - name: Upload APK + zip → R2
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -144,23 +148,19 @@ jobs:
           for key in "cicy-${VER}.apk" "cicy-latest.apk"; do
             r2_put "cicy-mobile/${key}" "cicy-${VER}.apk" application/vnd.android.package-archive
           done
-          echo "R2 ZIP: https://r2.deepfetch.de5.net/cicy-mobile/cicy-${VER}.zip"
+          echo "R2 APK: https://r2.deepfetch.de5.net/cicy-mobile/cicy-${VER}.apk"
       # version.json drives the in-app "new version" banner (read through the
-      # worker's /version.json route). Written LAST (after the zip is up) so the
-      # check never points at a missing file.
+      # worker's /version.json route). Written LAST (after the packages are up)
+      # so the check never points at a missing file. It points at the RAW .apk:
+      # the phone opens the link and Android installs it straight away (the
+      # zip wrapper only existed because OSS barred bare .apk downloads).
       - name: Write version.json → R2
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
         run: |
-          VER="${GITHUB_REF_NAME#v}"
-          # `zip:true` tells the app the payload is a zip-wrapped APK (extract
-          # before install). Field stays named `apk` for backward compat.
-          ZIP="https://r2.deepfetch.de5.net/cicy-mobile/cicy-${VER}.zip"
-          printf '{"version":"%s","apk":"%s","zip":true}' "$VER" "$ZIP" > version.json
           source scripts/r2-put.sh
-          r2_put "cicy-mobile/version.json" version.json application/json
-          echo "version.json → R2 (apk=${ZIP})"
+          write_version_json "${GITHUB_REF_NAME#v}"
       # Publish the SAME JS as an OTA update so devices already on this
       # runtime converge without reinstalling the APK.
       - name: Publish matching OTA update
@@ -175,8 +175,24 @@ jobs:
   # Unsigned on purpose: Sideloadly / AltStore re-sign with the user's Apple ID
   # on install (free account = 7-day cert). Must build on macOS. NOTE: private-
   # repo macOS minutes bill at 10x — each run is expensive.
+  # ── version.json only (manual) ────────────────────────────────────────────
+  # Re-point the in-app update banner at an APK that is already on R2 without
+  # rebuilding anything (e.g. after changing the manifest format).
+  manifest:
+    if: github.event_name == 'workflow_dispatch' && inputs.apk_version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write version.json → R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
+        run: |
+          source scripts/r2-put.sh
+          write_version_json "${{ inputs.apk_version }}"
+
   ios:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.ios_version != ''
     runs-on: macos-latest
     permissions:
       contents: write # attach the IPA to the matching GitHub Release

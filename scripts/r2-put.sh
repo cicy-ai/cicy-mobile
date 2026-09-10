@@ -19,3 +19,21 @@ r2_put() {
   done
   return 1
 }
+
+# Point the in-app update manifest at the RAW apk of <version> (must already be
+# on R2 — checked first so the banner can never link a missing file).
+#   write_version_json <version>
+write_version_json() {
+  local ver="$1"
+  local apk="https://r2.deepfetch.de5.net/cicy-mobile/cicy-${ver}.apk"
+  local ct
+  ct=$(curl -sSI -o /dev/null -w '%{content_type}' "$apk" || true)
+  case "$ct" in
+    application/vnd.android.package-archive*) ;;
+    *) echo "raw apk missing on R2: $apk (content-type '$ct')" >&2; return 1 ;;
+  esac
+  # `zip:false`: the app opens the link and Android installs it straight away.
+  printf '{"version":"%s","apk":"%s","zip":false}' "$ver" "$apk" > version.json
+  r2_put "cicy-mobile/version.json" version.json application/json
+  echo "version.json → R2 (apk=${apk})"
+}
