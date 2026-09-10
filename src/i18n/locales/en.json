@@ -222,5 +222,11 @@
     "sessionLost": "Your sign-in expired — sign in again",
     "lastSeen": "Last seen {{when}}",
     "tunnelDown": "Online, tunnel down — cannot be opened yet"
+  },
+  "notify": {
+    "channel": "Agent replies",
+    "working": "Replying…",
+    "done": "Reply finished",
+    "failed": "Reply failed"
   }
 }

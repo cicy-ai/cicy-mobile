@@ -17,6 +17,8 @@ import { useColorScheme } from 'react-native';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { darkTheme, lightTheme } from '@/src/theme/tokens';
 import { useAuthStore } from '@/src/store/auth';
+import { onNotificationOpen } from '@/src/lib/replyNotify';
+import { router } from 'expo-router';
 import { initWebApp } from '@/src/lib/telegram';
 import { cicyCode } from '@/src/native/cicyCode';
 // Side-effect import: configures i18next with the device locale before any
@@ -58,6 +60,18 @@ export default function RootLayout() {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  // Tap on a reply notification → switch to that machine and open the chat.
+  useEffect(() => {
+    if (!hydrated) return;
+    return onNotificationOpen(({ agentId, serverUrl }) => {
+      const st = useAuthStore.getState();
+      const team = st.teams.find((t) => t.serverUrl.replace(/\/+$/, '') === serverUrl.replace(/\/+$/, ''));
+      const go = () => router.push({ pathname: '/chat/[agentId]', params: { agentId } });
+      if (team && team.id !== st.currentTeamId) void st.switchTeam(team.id).then(go);
+      else go();
+    });
+  }, [hydrated]);
 
   // Web: the boot splash is dismissed by the first screen once it has real
   // content (one continuous loading instead of spinner relays) — this is only

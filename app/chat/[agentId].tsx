@@ -3,7 +3,7 @@
 
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -28,6 +28,7 @@ import { Text } from '@/src/components/Text';
 import { api, isUnconfirmedSend } from '@/src/api/http';
 import { loadQueue, saveQueue } from '@/src/lib/queueStore';
 import { setSttAgent } from '@/src/api/stt';
+import { markReplyDone, replyRefFor, trackReply } from '@/src/lib/replyNotify';
 import { AgentTitleModal } from '@/src/components/AgentTitleModal';
 import { uploadAttachment } from '@/src/api/upload';
 import type { PendingAttachment } from '@/src/lib/attachments';
@@ -342,8 +343,10 @@ export default function Chat() {
       if (!/^\/\w+(\s|$)/.test(trimmed)) setBusy(true);
       setPending({ text: trimmed, nonce: Date.now() }); // optimistic: show q now
       await api.sendToAgent(agentId, trimmed, true);
+      notifySent(trimmed);
     } catch (e: any) {
       if (isUnconfirmedSend(e)) {
+        notifySent(trimmed);
         // Delivered, just not confirmed by the pane scrape — keep the bubble
         // and the busy lock; the reply (or the poll) settles it.
         setVoiceError(t('chat.sendUnconfirmed'));
@@ -371,6 +374,7 @@ export default function Chat() {
     if (!/^\/\w+(\s|$)/.test(body)) setBusy(true); // lock immediately — don't wait for the poll to notice
     setPending({ text: body, nonce: Date.now() });
     await api.sendToAgent(agentId, body, true);
+    notifySent(body);
   };
 
   // Attachments send THE MOMENT they're picked — no chip parked above the
@@ -431,8 +435,10 @@ export default function Chat() {
       if (!/^\/\w+(\s|$)/.test(body)) setBusy(true); // lock immediately — don't wait for the poll to notice
       setPending({ text: body, nonce: Date.now() });
       await api.sendToAgent(agentId, body, true);
+      notifySent(body);
     } catch (e: any) {
       if (isUnconfirmedSend(e)) {
+        notifySent(text);
         setVoiceError(t('chat.sendUnconfirmed')); // delivered — keep bubble + busy, don't restore
       } else {
         setPending(null);
@@ -473,8 +479,10 @@ export default function Chat() {
       setPending({ text: body, nonce: Date.now() });
       api.sendToAgent(agentId, body, true).then(() => {
         flushRetryRef.current = 0;
+        notifySent(body);
       }).catch((e: any) => {
         if (isUnconfirmedSend(e)) {
+          notifySent(body);
           // Delivered — re-queuing it would send the batch twice.
           flushRetryRef.current = 0;
           setVoiceError(t('chat.sendUnconfirmed'));
@@ -533,6 +541,13 @@ export default function Chat() {
   const hasTerminal = !!agentMeta.agentType && !isHeadlessCicyAgent(agentMeta.agentType);
   const displayTitle = agentMeta.title || agentId;
   const [renameOpen, setRenameOpen] = useState(false);
+  // One tray notification per prompt: "replying…" now, "finished" when the
+  // reply ends (WS event here, or the tracker's own polling once we leave).
+  const notifySent = useCallback((body: string) => {
+    if (/^\/\w+(\s|$)/.test(body)) return; // slash commands have no reply
+    const ref = replyRefFor(agentId, agentMeta.title || agentId, body);
+    if (ref) trackReply(ref);
+  }, [agentId, agentMeta.title]);
 
   const openTerminal = () =>
     router.push({
@@ -677,7 +692,7 @@ export default function Chat() {
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
         <View style={{ flex: 1, backgroundColor: theme.bg }}>
-          <HistoryView agentId={agentId} pending={pending} onReplyInFlight={() => { setBusyKnown(true); setBusy(true); }} onReplyDone={() => { setBusyKnown(true); setBusy(false); }} agentType={agentMeta.agentType} busy={busy} />
+          <HistoryView agentId={agentId} pending={pending} onReplyInFlight={() => { setBusyKnown(true); setBusy(true); }} onReplyDone={() => { setBusyKnown(true); setBusy(false); if (serverUrl) markReplyDone(serverUrl, agentId); }} agentType={agentMeta.agentType} busy={busy} />
           {/* Telegram hides our header (native back bar instead) — the terminal
               entry floats over the top-right corner of the history there. */}
           {inTg && hasTerminal && (

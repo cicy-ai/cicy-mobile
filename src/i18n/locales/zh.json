@@ -226,5 +226,11 @@
     "sessionLost": "登录已失效,请重新登录",
     "lastSeen": "最近在线 {{when}}",
     "tunnelDown": "在线但隧道断开，暂时打不开"
+  },
+  "notify": {
+    "channel": "Agent 回复",
+    "working": "正在回复…",
+    "done": "回复完成",
+    "failed": "回复失败"
   }
 }

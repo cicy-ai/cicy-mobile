@@ -80,13 +80,21 @@
           "photosPermission": "Allow $(PRODUCT_NAME) to access your photos to attach images to your agent.",
           "cameraPermission": "Allow $(PRODUCT_NAME) to use the camera to attach photos to your agent."
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#D97757",
+          "defaultChannel": "agent-replies"
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": false,
       "reactCompiler": true
     },
-    "runtimeVersion": "2",
+    "runtimeVersion": "3",
     "updates": {
       "url": "https://m.cicy-ai.com/updates/manifest",
       "enabled": true,
