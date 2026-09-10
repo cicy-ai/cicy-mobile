@@ -202,6 +202,12 @@ export function createApi(endpoint?: Endpoint) {
 
     // Full pane configs — only needed to learn `use_custom_gateway` per agent so
     // we can hide the History tab for non-gateway (claude-code direct) agents.
+    renameProject: (id: number | string, name: string) =>
+      req<unknown>(`/api/groups/${encodeURIComponent(String(id))}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      }),
+
     getProjects: async (): Promise<ProjectGroup[]> => {
       const res = await req<{ groups?: ProjectGroup[] } | ProjectGroup[]>('/api/groups');
       return Array.isArray(res) ? res : (res?.groups ?? []);

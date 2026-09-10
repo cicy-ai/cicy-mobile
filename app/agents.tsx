@@ -25,6 +25,7 @@ import { Button } from '@/src/components/Button';
 import { ConfirmModal } from '@/src/components/ConfirmModal';
 import { AgentAvatar } from '@/src/components/AgentAvatar';
 import { AgentTitleModal } from '@/src/components/AgentTitleModal';
+import { RenameModal } from '@/src/components/RenameModal';
 import { AgentStatusDot } from '@/src/components/AgentStatusDot';
 import { CtxRing } from '@/src/components/CtxRing';
 import { PressableScale } from '@/src/components/PressableScale';
@@ -166,6 +167,8 @@ export default function Agents() {
   // confirms + the ⊕ add menu (create new vs bind an existing unbound pane).
   const [memberMenu, setMemberMenu] = useState<Agent | null>(null);
   const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
+  // Project rename (hub machines): the card's pencil or a long-press.
+  const [renameProject, setRenameProject] = useState<ProjectGroup | null>(null);
   const [confirmFork, setConfirmFork] = useState<Agent | null>(null);
   const [confirmUnbind, setConfirmUnbind] = useState<Agent | null>(null);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -1148,6 +1151,10 @@ export default function Agents() {
           item.kind === 'projectCard' ? (
             <PressableScale
               onPress={() => setOpenProject(item.key)}
+              onLongPress={() => {
+                const g = projects.find((x) => `p:${x.id}` === item.key);
+                if (g) setRenameProject(g);
+              }}
               haptic
               scaleTo={0.98}
               style={[styles.projectCard, { backgroundColor: theme.surface, borderColor: theme.border }]}
@@ -1169,6 +1176,19 @@ export default function Agents() {
                   </Text>
                 ) : null}
               </View>
+              {item.key !== 'p:ungrouped' ? (
+                <PressableScale
+                  onPress={() => {
+                    const g = projects.find((x) => `p:${x.id}` === item.key);
+                    if (g) setRenameProject(g);
+                  }}
+                  haptic
+                  hitSlop={8}
+                  style={[styles.projectEdit, { borderColor: theme.border }]}
+                >
+                  <Ionicons name="pencil" size={13} color={theme.textMuted} />
+                </PressableScale>
+              ) : null}
               <Ionicons name="chevron-forward" size={18} color={theme.textFaint} />
             </PressableScale>
           ) : item.kind === 'project' ? (
@@ -1224,6 +1244,25 @@ export default function Agents() {
       {createModalEl}
       {deleteConfirmEl}
       {memberMenuEl}
+      {renameProject ? (
+        <RenameModal
+          open
+          heading={t('agents.renameProject')}
+          subtitle={renameProject.project_template ? String(renameProject.project_template) : undefined}
+          icon={
+            <View style={[styles.projectIcon, { backgroundColor: theme.surfaceMuted, borderColor: theme.border }]}>
+              <Ionicons name="folder-open-outline" size={22} color={theme.accent} />
+            </View>
+          }
+          value={renameProject.name || ''}
+          placeholder={t('agents.projectNamePlaceholder')}
+          onClose={() => setRenameProject(null)}
+          onSave={async (name) => {
+            await api.renameProject(renameProject.id, name);
+            setProjects((prev) => prev.map((g) => (g.id === renameProject.id ? { ...g, name } : g)));
+          }}
+        />
+      ) : null}
       {renameTarget ? (
         <AgentTitleModal
           open
@@ -1469,6 +1508,15 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  projectEdit: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 2,
   },
   projectIcon: {
     width: 44,

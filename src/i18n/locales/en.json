@@ -48,7 +48,9 @@
     "projectEmpty": "No agents in this project yet",
     "rename": "Rename",
     "renameTitle": "Rename agent",
-    "titlePlaceholder": "Name this agent"
+    "titlePlaceholder": "Name this agent",
+    "renameProject": "Rename project",
+    "projectNamePlaceholder": "Project name"
   },
   "login": {
     "entry": "Sign in to CiCy Hub",

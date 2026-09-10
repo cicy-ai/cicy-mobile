@@ -48,7 +48,9 @@
     "projectEmpty": "这个项目里还没有 Agent",
     "rename": "重命名",
     "renameTitle": "修改名称",
-    "titlePlaceholder": "给这个 Agent 起个名字"
+    "titlePlaceholder": "给这个 Agent 起个名字",
+    "renameProject": "修改项目名称",
+    "projectNamePlaceholder": "项目名称"
   },
   "login": {
     "entry": "登录 CiCy Hub",
