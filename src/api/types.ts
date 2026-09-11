@@ -96,6 +96,8 @@ export type HistoryIdsResp = {
   id: number; // == maxID — id of the last committed item (q_last)
   model?: string;
   provider?: string;
+  /** Recent user prompts of the conversation, oldest first (id = history id). */
+  prompts?: { id: number; ts?: string; content?: string }[];
 };
 
 export type CurrentHistoryResp = {

@@ -1,13 +1,12 @@
-// Copyright 2026 CiCy AI
-// SPDX-License-Identifier: Apache-2.0
-
-// Reply notifications: every prompt sent from the phone gets ONE notification
-// in the system tray that follows the reply — "正在回复…" the moment it is
-// sent, updated in place to "回复完成" (with the first line of the answer) or
-// "回复失败". The tracker outlives the chat screen: it polls the agent's
-// current-reply until a terminal state, so leaving the chat (or the app) does
-// not lose the update. Each notification carries the machine id, the agent id
-// and the agent title; tapping it opens that chat.
+// Reply notifications: EVERY prompt sent from the phone gets its own
+// notification in the system tray that follows its reply — "正在回复…" the
+// moment it is sent, updated in place to "回复完成" (with the first line of the
+// answer) or "回复失败". Several prompts may be in flight at once, to one agent
+// (cicy-code queues them) or to many; each is matched to its own history
+// prompt id (see replyTracker.ts) so the notifications settle independently
+// and in order. One poller per agent outlives the chat screen: leaving the
+// chat (or the app) does not lose the updates. Each notification carries the
+// machine id, the agent id and the agent title; tapping it opens that chat.
 //
 // Native only (expo-notifications is a no-op on web). Permission is asked the
 // first time a prompt is sent.
@@ -16,6 +15,8 @@ import { Platform } from 'react-native';
 import { createApi } from '@/src/api/http';
 import { useAuthStore } from '@/src/store/auth';
 import i18n from '@/src/i18n';
+
+import { firstLine, settle, type TrackedPrompt } from './replyTracker';
 
 export type ReplyRef = {
   serverUrl: string;
@@ -31,12 +32,18 @@ export type ReplyRef = {
 
 const CHANNEL_ID = 'agent-replies';
 const POLL_MS = 3000;
-const MAX_TRACK_MS = 60 * 60 * 1000; // give up after an hour
-const TERMINAL = new Set(['completed', 'done', 'idle', 'failed', 'error', 'cancelled', 'canceled', 'blocked', 'timeout']);
-const FAILED = new Set(['failed', 'error', 'cancelled', 'canceled', 'blocked', 'timeout']);
+const MAX_TRACK_MS = 60 * 60 * 1000; // give up on a prompt after an hour
 
-type Tracker = { key: string; timer: ReturnType<typeof setTimeout> | null; startedAt: number; ref: ReplyRef; lastId: number };
-const trackers = new Map<string, Tracker>();
+type Poller = {
+  key: string;
+  ref: ReplyRef; // agent/machine identity (prompt differs per entry)
+  api: ReturnType<typeof createApi>;
+  pending: (TrackedPrompt & { ref: ReplyRef })[];
+  timer: ReturnType<typeof setTimeout> | null;
+  ticking: boolean;
+};
+const pollers = new Map<string, Poller>();
+let seq = 0;
 
 let Notifications: typeof import('expo-notifications') | null = null;
 function mod() {
@@ -86,19 +93,13 @@ export function ensureNotifications(): Promise<boolean> {
   return ready;
 }
 
-function trackKey(ref: ReplyRef) {
+function agentKey(ref: { serverUrl: string; agentId: string }) {
   return `${ref.serverUrl.replace(/\/+$/, '')}|${ref.agentId}`;
 }
 
-function firstLine(s: string, max = 80): string {
-  const line = String(s || '').split('\n').map((x) => x.trim()).find(Boolean) || '';
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
-}
-
-async function present(ref: ReplyRef, state: 'working' | 'done' | 'failed', detail: string) {
+async function present(id: string, ref: ReplyRef, state: 'working' | 'done' | 'failed', detail: string) {
   const N = mod();
   if (!N || !(await ensureNotifications())) return;
-  const key = trackKey(ref);
   const stateText =
     state === 'working'
       ? i18n.t('notify.working', { defaultValue: 'Replying…' })
@@ -111,7 +112,7 @@ async function present(ref: ReplyRef, state: 'working' | 'done' | 'failed', deta
     // Same identifier → the tray entry is replaced in place, so one prompt is
     // one notification whose text moves from "replying" to "finished".
     await N.scheduleNotificationAsync({
-      identifier: key,
+      identifier: id,
       content: {
         title,
         body,
@@ -125,63 +126,82 @@ async function present(ref: ReplyRef, state: 'working' | 'done' | 'failed', deta
   }
 }
 
-function stop(key: string) {
-  const t = trackers.get(key);
-  if (t?.timer) clearTimeout(t.timer);
-  trackers.delete(key);
+function stopPoller(p: Poller) {
+  if (p.timer) clearTimeout(p.timer);
+  p.timer = null;
+  if (pollers.get(p.key) === p) pollers.delete(p.key);
+}
+
+async function tick(p: Poller) {
+  if (pollers.get(p.key) !== p || p.ticking) return;
+  p.ticking = true;
+  try {
+    // Prompts we have followed for too long are dropped silently.
+    const now = Date.now();
+    for (const e of [...p.pending]) {
+      if (now - e.startedAt > MAX_TRACK_MS) p.pending.splice(p.pending.indexOf(e), 1);
+    }
+    if (!p.pending.length) {
+      stopPoller(p);
+      return;
+    }
+    const [ids, reply] = await Promise.all([
+      p.api.getHistoryIds(p.ref.agentId).catch(() => null),
+      p.api.getCurrentReply(p.ref.agentId).catch(() => null),
+    ]);
+    if (ids || reply) {
+      const byId = new Map(p.pending.map((e) => [e.id, e] as const));
+      for (const done of settle(p.pending, ids, reply)) {
+        const e = byId.get(done.id);
+        if (e) void present(e.id, e.ref, done.state, done.answer || firstLine(e.prompt));
+      }
+    }
+  } finally {
+    p.ticking = false;
+    if (pollers.get(p.key) === p) {
+      if (p.pending.length) p.timer = setTimeout(() => void tick(p), POLL_MS);
+      else stopPoller(p);
+    }
+  }
 }
 
 /**
- * Start following a reply for `ref`. Posts the "replying" notification at once
- * and polls /api/agents/current-reply until the reply reaches a terminal
- * state, then updates the same notification. A second prompt to the same
- * agent restarts the tracker (one notification per agent at a time).
+ * Start following the reply to one prompt. Posts its "replying" notification
+ * at once and polls the agent (history-ids + current-reply) until THAT prompt
+ * is answered, then updates the same notification. Prompts to the same agent
+ * share one poller but keep separate notifications.
  */
 export function trackReply(ref: ReplyRef): void {
   if (Platform.OS === 'web') return;
-  const key = trackKey(ref);
-  stop(key);
-  const tracker: Tracker = { key, timer: null, startedAt: Date.now(), ref, lastId: 0 };
-  trackers.set(key, tracker);
-  void present(ref, 'working', firstLine(ref.prompt));
-  const api = createApi({ serverUrl: ref.serverUrl, token: ref.token });
-  const tick = async () => {
-    if (trackers.get(key) !== tracker) return;
-    if (Date.now() - tracker.startedAt > MAX_TRACK_MS) {
-      stop(key);
-      return;
-    }
-    try {
-      const r: any = await api.getCurrentReply(ref.agentId);
-      const status = String(r?.status || '').toLowerCase();
-      const complete = r?.complete === true || TERMINAL.has(status);
-      // The reply we are following is the one that started after our send:
-      // ignore a stale completed snapshot from the previous turn (history_id
-      // not advanced yet, question different from ours) for the first ticks.
-      const question = String(r?.question || '').trim();
-      const ours = !question || question.includes(firstLine(ref.prompt, 40)) || Date.now() - tracker.startedAt > 20_000;
-      if (complete && ours) {
-        const failed = FAILED.has(status);
-        const answer = firstLine(String(r?.answer || ''), 100);
-        await present(ref, failed ? 'failed' : 'done', answer || firstLine(ref.prompt));
-        stop(key);
-        return;
-      }
-    } catch {
-      /* transient — keep polling */
-    }
-    if (trackers.get(key) === tracker) tracker.timer = setTimeout(tick, POLL_MS);
-  };
-  tracker.timer = setTimeout(tick, POLL_MS);
+  const key = agentKey(ref);
+  let p = pollers.get(key);
+  if (!p) {
+    p = {
+      key,
+      ref,
+      api: createApi({ serverUrl: ref.serverUrl, token: ref.token }),
+      pending: [],
+      timer: null,
+      ticking: false,
+    };
+    pollers.set(key, p);
+  }
+  seq += 1;
+  const id = `${key}#${Date.now().toString(36)}-${seq}`;
+  p.pending.push({ id, prompt: ref.prompt, startedAt: Date.now(), ref });
+  void present(id, ref, 'working', firstLine(ref.prompt));
+  if (!p.timer && !p.ticking) p.timer = setTimeout(() => void tick(p!), POLL_MS);
 }
 
-/** Chat screen shortcut: the WS already told us the reply ended. */
-export function markReplyDone(serverUrl: string, agentId: string, detail?: string): void {
-  const key = `${serverUrl.replace(/\/+$/, '')}|${agentId}`;
-  const t = trackers.get(key);
-  if (!t) return;
-  stop(key);
-  void present(t.ref, 'done', detail || firstLine(t.ref.prompt));
+/** Chat screen hint: the WS said a reply for this agent just ended — poll now
+ *  instead of waiting for the next tick (which prompt finished is decided by
+ *  the history ids, never assumed). */
+export function markReplyDone(serverUrl: string, agentId: string): void {
+  const p = pollers.get(agentKey({ serverUrl, agentId }));
+  if (!p) return;
+  if (p.timer) clearTimeout(p.timer);
+  p.timer = null;
+  void tick(p);
 }
 
 /** Notification tap → open that chat. Returns the unsubscribe. */
