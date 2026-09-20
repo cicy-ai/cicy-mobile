@@ -231,6 +231,7 @@
     "channel": "Agent 回复",
     "working": "正在回复…",
     "done": "回复完成",
-    "failed": "回复失败"
+    "failed": "回复失败",
+    "channelDone": "回复完成提醒"
   }
 }

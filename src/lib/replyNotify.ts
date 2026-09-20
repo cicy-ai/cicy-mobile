@@ -1,12 +1,14 @@
-// Reply notifications: EVERY prompt sent from the phone gets its own
-// notification in the system tray that follows its reply — "正在回复…" the
-// moment it is sent, updated in place to "回复完成" (with the first line of the
-// answer) or "回复失败". Several prompts may be in flight at once, to one agent
-// (cicy-code queues them) or to many; each is matched to its own history
-// prompt id (see replyTracker.ts) so the notifications settle independently
-// and in order. One poller per agent outlives the chat screen: leaving the
-// chat (or the app) does not lose the updates. Each notification carries the
-// machine id, the agent id and the agent title; tapping it opens that chat.
+// Reply notifications: ONE notification per agent in the system tray that
+// follows the replies to the prompts sent from the phone — "正在回复…" the
+// moment a prompt is sent, updated in place to "回复完成" (with the first line
+// of the answer) or "回复失败" once every prompt sent to that agent has been
+// answered. Several prompts may be in flight on one agent (cicy-code queues
+// them): they are tracked individually (each matched to its own history prompt
+// id, see replyTracker.ts) but rendered as a single entry with a progress
+// count ("2/3"). Different agents get different entries. One poller per agent
+// outlives the chat screen: leaving the chat (or the app) does not lose the
+// updates. Each notification carries the machine id, the agent id and the
+// agent title; tapping it opens that chat.
 //
 // Native only (expo-notifications is a no-op on web). Permission is asked the
 // first time a prompt is sent.
@@ -31,6 +33,10 @@ export type ReplyRef = {
 };
 
 const CHANNEL_ID = 'agent-replies';
+// Finished replies land on a second channel that vibrates (Android channels
+// own the vibration setting, so "replying" stays silent and "finished" buzzes).
+const DONE_CHANNEL_ID = 'agent-replies-done';
+const DONE_VIBRATION = [0, 250, 150, 250];
 const POLL_MS = 3000;
 const MAX_TRACK_MS = 60 * 60 * 1000; // give up on a prompt after an hour
 
@@ -41,6 +47,11 @@ type Poller = {
   pending: (TrackedPrompt & { ref: ReplyRef })[];
   timer: ReturnType<typeof setTimeout> | null;
   ticking: boolean;
+  /** Current batch (since the agent was last idle): counts for the "n/m" line. */
+  total: number;
+  done: number;
+  failed: number;
+  lastAnswer: string;
 };
 const pollers = new Map<string, Poller>();
 let seq = 0;
@@ -77,8 +88,15 @@ export function ensureNotifications(): Promise<boolean> {
         if (Platform.OS === 'android') {
           await N.setNotificationChannelAsync(CHANNEL_ID, {
             name: i18n.t('notify.channel', { defaultValue: 'Agent replies' }),
-            importance: N.AndroidImportance.DEFAULT,
-            vibrationPattern: [0, 100],
+            importance: N.AndroidImportance.LOW,
+            enableVibrate: false,
+            showBadge: false,
+          });
+          await N.setNotificationChannelAsync(DONE_CHANNEL_ID, {
+            name: i18n.t('notify.channelDone', { defaultValue: 'Reply finished' }),
+            importance: N.AndroidImportance.HIGH,
+            enableVibrate: true,
+            vibrationPattern: DONE_VIBRATION,
             showBadge: false,
           });
         }
@@ -97,7 +115,7 @@ function agentKey(ref: { serverUrl: string; agentId: string }) {
   return `${ref.serverUrl.replace(/\/+$/, '')}|${ref.agentId}`;
 }
 
-async function present(id: string, ref: ReplyRef, state: 'working' | 'done' | 'failed', detail: string) {
+async function present(id: string, ref: ReplyRef, state: 'working' | 'done' | 'failed', detail: string, progress?: { done: number; total: number }) {
   const N = mod();
   if (!N || !(await ensureNotifications())) return;
   const stateText =
@@ -106,24 +124,51 @@ async function present(id: string, ref: ReplyRef, state: 'working' | 'done' | 'f
       : state === 'done'
       ? i18n.t('notify.done', { defaultValue: 'Reply finished' })
       : i18n.t('notify.failed', { defaultValue: 'Reply failed' });
-  const title = `${ref.agentTitle || ref.agentId} · ${stateText}`;
+  // More than one prompt in the batch → "正在回复… 1/3" so the user sees the
+  // queue drain inside the single entry.
+  const counter = progress && progress.total > 1 ? ` ${progress.done}/${progress.total}` : '';
+  const title = `${ref.agentTitle || ref.agentId} · ${stateText}${counter}`;
   const body = [detail, `${ref.machineTitle} (${ref.machineId}) · ${ref.agentId}`].filter(Boolean).join('\n');
+  const finished = state !== 'working';
   try {
-    // Same identifier → the tray entry is replaced in place, so one prompt is
-    // one notification whose text moves from "replying" to "finished".
+    // Same identifier (the agent key) → the tray entry is replaced in place,
+    // so an agent has one notification whose text moves along with its replies.
+    // Android keeps a posted notification on its original channel, so the
+    // finished state (vibrating channel) is dismissed + re-posted.
+    if (finished && Platform.OS === 'android') await N.dismissNotificationAsync(id).catch(() => {});
     await N.scheduleNotificationAsync({
       identifier: id,
       content: {
         title,
         body,
         data: { machineId: ref.machineId, agentId: ref.agentId, serverUrl: ref.serverUrl, state },
-        ...(Platform.OS === 'android' ? { channelId: CHANNEL_ID } : {}),
+        ...(Platform.OS === 'android'
+          ? { channelId: finished ? DONE_CHANNEL_ID : CHANNEL_ID, vibrate: finished ? DONE_VIBRATION : undefined }
+          : {}),
       },
       trigger: null,
     });
+    // Foreground: the tray update is quiet, so buzz explicitly.
+    if (finished) {
+      try {
+        const H = require('expo-haptics');
+        await H.notificationAsync(state === 'done' ? H.NotificationFeedbackType.Success : H.NotificationFeedbackType.Error);
+      } catch {}
+    }
   } catch {
     /* notifications are best-effort */
   }
+}
+
+/** Re-render the agent's single notification from the poller's counters. */
+function render(p: Poller) {
+  const latest = p.pending[p.pending.length - 1];
+  if (latest) {
+    void present(p.key, latest.ref, 'working', firstLine(latest.prompt), { done: p.done, total: p.total });
+    return;
+  }
+  const state = p.failed > 0 && p.done === p.failed ? 'failed' : 'done';
+  void present(p.key, p.ref, state, p.lastAnswer, { done: p.done, total: p.total });
 }
 
 function stopPoller(p: Poller) {
@@ -151,10 +196,15 @@ async function tick(p: Poller) {
     ]);
     if (ids || reply) {
       const byId = new Map(p.pending.map((e) => [e.id, e] as const));
+      let changed = false;
       for (const done of settle(p.pending, ids, reply)) {
         const e = byId.get(done.id);
-        if (e) void present(e.id, e.ref, done.state, done.answer || firstLine(e.prompt));
+        p.done += 1;
+        if (done.state === 'failed') p.failed += 1;
+        p.lastAnswer = done.answer || (e ? firstLine(e.prompt) : '');
+        changed = true;
       }
+      if (changed) render(p);
     }
   } finally {
     p.ticking = false;
@@ -166,10 +216,10 @@ async function tick(p: Poller) {
 }
 
 /**
- * Start following the reply to one prompt. Posts its "replying" notification
- * at once and polls the agent (history-ids + current-reply) until THAT prompt
- * is answered, then updates the same notification. Prompts to the same agent
- * share one poller but keep separate notifications.
+ * Start following the reply to one prompt. Updates the agent's notification
+ * to "replying" at once and polls the agent (history-ids + current-reply)
+ * until THAT prompt is answered. Prompts to the same agent share one poller
+ * AND one notification (with an n/m counter while several are in flight).
  */
 export function trackReply(ref: ReplyRef): void {
   if (Platform.OS === 'web') return;
@@ -183,13 +233,25 @@ export function trackReply(ref: ReplyRef): void {
       pending: [],
       timer: null,
       ticking: false,
+      total: 0,
+      done: 0,
+      failed: 0,
+      lastAnswer: '',
     };
     pollers.set(key, p);
+  }
+  // A new prompt after the agent went idle starts a fresh batch (fresh "n/m").
+  if (!p.pending.length) {
+    p.total = 0;
+    p.done = 0;
+    p.failed = 0;
+    p.lastAnswer = '';
   }
   seq += 1;
   const id = `${key}#${Date.now().toString(36)}-${seq}`;
   p.pending.push({ id, prompt: ref.prompt, startedAt: Date.now(), ref });
-  void present(id, ref, 'working', firstLine(ref.prompt));
+  p.total += 1;
+  render(p);
   if (!p.timer && !p.ticking) p.timer = setTimeout(() => void tick(p!), POLL_MS);
 }
 

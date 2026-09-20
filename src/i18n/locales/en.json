@@ -227,6 +227,7 @@
     "channel": "Agent replies",
     "working": "Replying…",
     "done": "Reply finished",
-    "failed": "Reply failed"
+    "failed": "Reply failed",
+    "channelDone": "Reply finished"
   }
 }
