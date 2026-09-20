@@ -125,3 +125,29 @@ export function settle(pending: TrackedPrompt[], ids: HistoryIdsLike, reply: Cur
   }
   return out;
 }
+
+const BODY_MAX = 160;
+/** The notification body while working: the tail of what is being written,
+ *  else the tool being run. */
+export function liveBody(m: any): string {
+  const text = String(m?.latest_response || '').replace(/\s+/g, ' ').trim();
+  if (text && String(m?.latest_response_type || 'text') === 'text') {
+    return text.length > BODY_MAX ? `…${text.slice(-(BODY_MAX - 1))}` : text;
+  }
+  const tool = m?.latest_tool;
+  if (tool && typeof tool === 'object') {
+    const name = String(tool.name || 'tool');
+    let arg = '';
+    try {
+      const inp = typeof tool.input === 'string' ? JSON.parse(tool.input) : tool.input;
+      arg = String(inp?.description || inp?.command || inp?.file_path || inp?.pattern || inp?.query || inp?.prompt || '');
+    } catch {
+      arg = String(tool.input || '');
+    }
+    arg = arg.replace(/\s+/g, ' ').trim();
+    if (arg.length > BODY_MAX - name.length - 3) arg = `${arg.slice(0, BODY_MAX - name.length - 4)}…`;
+    return arg ? `⚙ ${name}: ${arg}` : `⚙ ${name}`;
+  }
+  return text ? (text.length > BODY_MAX ? `…${text.slice(-(BODY_MAX - 1))}` : text) : '';
+}
+

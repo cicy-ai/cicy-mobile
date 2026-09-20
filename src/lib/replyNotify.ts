@@ -115,7 +115,7 @@ function agentKey(ref: { serverUrl: string; agentId: string }) {
   return `${ref.serverUrl.replace(/\/+$/, '')}|${ref.agentId}`;
 }
 
-async function present(id: string, ref: ReplyRef, state: 'working' | 'done' | 'failed', detail: string, progress?: { done: number; total: number }) {
+export async function present(id: string, ref: ReplyRef, state: 'working' | 'done' | 'failed', detail: string, progress?: { done: number; total: number }) {
   const N = mod();
   if (!N || !(await ensureNotifications())) return;
   const stateText =
@@ -160,15 +160,22 @@ async function present(id: string, ref: ReplyRef, state: 'working' | 'done' | 'f
   }
 }
 
-/** Re-render the agent's single notification from the poller's counters. */
+/** Re-render the agent's single notification from the poller's counters.
+ *  Only the "working" state is posted here (instantly on send, before the
+ *  node reports the turn); the live text and the finished state come from
+ *  agentWatch.ts, which owns the same notification id. */
 function render(p: Poller) {
   const latest = p.pending[p.pending.length - 1];
-  if (latest) {
-    void present(p.key, latest.ref, 'working', firstLine(latest.prompt), { done: p.done, total: p.total });
-    return;
-  }
-  const state = p.failed > 0 && p.done === p.failed ? 'failed' : 'done';
-  void present(p.key, p.ref, state, p.lastAnswer, { done: p.done, total: p.total });
+  if (!latest) return;
+  void present(p.key, latest.ref, 'working', firstLine(latest.prompt), { done: p.done, total: p.total });
+}
+
+/** Phone-sent prompts still unanswered on this agent (for agentWatch: the
+ *  n/m counter, and "don't say finished while our queue is not drained"). */
+export function sentProgress(serverUrl: string, agentId: string): { pending: number; done: number; total: number } | null {
+  const p = pollers.get(agentKey({ serverUrl, agentId }));
+  if (!p) return null;
+  return { pending: p.pending.length, done: p.done, total: p.total };
 }
 
 function stopPoller(p: Poller) {

@@ -18,6 +18,7 @@ import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { darkTheme, lightTheme } from '@/src/theme/tokens';
 import { useAuthStore } from '@/src/store/auth';
 import { useOtaForegroundCheck } from '@/src/lib/otaInfo';
+import { startAgentWatch } from '@/src/lib/agentWatch';
 import { onNotificationOpen } from '@/src/lib/replyNotify';
 import { router } from 'expo-router';
 import { initWebApp } from '@/src/lib/telegram';
@@ -64,6 +65,13 @@ export default function RootLayout() {
 
   // Pick up hot updates published while the app stayed warm (no cold start).
   useOtaForegroundCheck();
+
+  // Live notification for every working agent on every machine.
+  const session = useAuthStore((s) => s.session);
+  useEffect(() => {
+    if (!hydrated || !session) return;
+    return startAgentWatch();
+  }, [hydrated, session]);
 
   // Tap on a reply notification → switch to that machine and open the chat.
   useEffect(() => {
