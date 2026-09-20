@@ -17,6 +17,7 @@ import { useColorScheme } from 'react-native';
 import { dismissBootSplash } from '@/src/lib/bootSplash';
 import { darkTheme, lightTheme } from '@/src/theme/tokens';
 import { useAuthStore } from '@/src/store/auth';
+import { useOtaForegroundCheck } from '@/src/lib/otaInfo';
 import { onNotificationOpen } from '@/src/lib/replyNotify';
 import { router } from 'expo-router';
 import { initWebApp } from '@/src/lib/telegram';
@@ -60,6 +61,9 @@ export default function RootLayout() {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  // Pick up hot updates published while the app stayed warm (no cold start).
+  useOtaForegroundCheck();
 
   // Tap on a reply notification → switch to that machine and open the chat.
   useEffect(() => {
