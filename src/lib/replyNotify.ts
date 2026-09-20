@@ -143,7 +143,7 @@ async function present(id: string, ref: ReplyRef, state: 'working' | 'done' | 'f
         body,
         data: { machineId: ref.machineId, agentId: ref.agentId, serverUrl: ref.serverUrl, state },
         ...(Platform.OS === 'android'
-          ? { channelId: finished ? DONE_CHANNEL_ID : CHANNEL_ID, vibrate: finished ? DONE_VIBRATION : undefined }
+          ? { channelId: finished ? DONE_CHANNEL_ID : CHANNEL_ID, vibrationPattern: finished ? DONE_VIBRATION : undefined }
           : {}),
       },
       trigger: null,
