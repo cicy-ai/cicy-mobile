@@ -79,7 +79,17 @@ export default function RootLayout() {
     return onNotificationOpen(({ agentId, serverUrl }) => {
       const st = useAuthStore.getState();
       const team = st.teams.find((t) => t.serverUrl.replace(/\/+$/, '') === serverUrl.replace(/\/+$/, ''));
-      const go = () => router.push({ pathname: '/chat/[agentId]', params: { agentId } });
+      // Build the normal stack under the chat (machines → agents → chat) so
+      // back from the chat lands on the agent list, not on whatever screen
+      // the app happened to be on (or the boot screen after a cold launch).
+      const go = () => {
+        try {
+          if (router.canDismiss?.()) router.dismissAll();
+        } catch {}
+        router.replace('/machines');
+        router.push('/agents');
+        router.push({ pathname: '/chat/[agentId]', params: { agentId } });
+      };
       if (team && team.id !== st.currentTeamId) void st.switchTeam(team.id).then(go);
       else go();
     });

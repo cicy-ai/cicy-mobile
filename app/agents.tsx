@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   AppState,
   type AppStateStatus,
+  BackHandler,
   FlatList,
   Linking,
   Modal,
@@ -145,6 +146,21 @@ export default function Agents() {
   // Hub machines are two levels: the home lists PROJECTS only; tapping one
   // lists that project's agents. null = project list.
   const [openProject, setOpenProject] = useState<string | null>(null);
+  // The project → agents step is screen state, not a route, so the Android
+  // back button (and the predictive gesture) would pop the whole screen to
+  // the machine list. Intercept it while a project is open: back = project list.
+  const inProjectRef = useRef(false);
+  inProjectRef.current = hubMode && !!openProject;
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        if (!inProjectRef.current) return false;
+        setOpenProject(null);
+        return true;
+      });
+      return () => sub.remove();
+    }, []),
+  );
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
